@@ -202,13 +202,15 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | `S3_ENDPOINT` / `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` / `S3_REGION` | Artifact storage (S3 or Cloudflare R2). Without them, uploads are off and everything else works. | — |
 | `WEB_SESSION_TTL_HOURS` | How long a minted login session stays fresh | `1` |
 | `WEB_SESSION_MINT_TIMEOUT_SECONDS` | Upper bound on minting one login session | `180` |
-| `GEOIP_DB_DIR` | Where GeoIP databases for eval-agent region detection live | `./geoip` |
+| `GEOIP_DB_DIR` | Where GeoIP databases **and** the access-classification data sources (below) live | `./geoip` |
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
+| `VOX_PUBLIC_IP_ON_IFACE` | `true`/`false`. Whether the eval agent's default-route interface carries a public address directly (no home router) — one of the agent's `netSignals` used by access classification. Set by `scripts/vox-upgrade.sh`, which measures it on the **host** (a container only sees its own veth) and passes it through to the container; omitted when undetermined. Not meant to be set by hand. | — |
 | `VOX_CONTACT_EMAIL` / `VOX_GITHUB_URL` / `VOX_X_URL` | Footer contact links (the X icon is hidden when unset) | `vox@agora.build` / Vox repo / — |
 | `RATE_LIMIT_DISABLED` | `"true"` turns API rate limiting off. Never set in production. | — |
 | *(no setting)* | **Client IP behind Cloudflare.** Vox takes the caller's address from Cloudflare's `CF-Connecting-IP` only when the request really came through Cloudflare — the local proxy (Traefik) saw cloudflared or a Cloudflare edge address, or Cloudflare's edge connected directly — so per-IP rate limits and agent region detection see the real caller however many proxies are in between. A caller who reaches Traefik or the app port directly is counted by its own address, whatever headers it sends. Still keep the app's published port (e.g. `5000:5000`) firewalled from the internet: nothing should bypass Cloudflare. | — |
 | `PUBLIC_API_RATE_LIMIT_PER_MINUTE` | Requests per minute per IP for **keyless** calls to the public `/api/v1` endpoints (metrics, providers). Calls with an API key aren't counted. | `12` |
 | `VOX_STORAGE_ALLOW_PRIVATE` | `"1"` lets Tools → Analyze use a storage endpoint on a private address (e.g. MinIO on localhost). Local development only. Never set in production: Core connects to the endpoint a user types, and this guard keeps that off Core's own network. | — |
+| *(no setting)* | **Twilio Lookup for the `line` network tag and the `sim` match.** No env var: an admin enters a Twilio Account SID + Auth Token on **Console → Regions**, stored encrypted in `systemConfig` like the MaxMind key. Without credentials, `line` is manual-only and `sim` is never set. With them, each phone eval flow's dialled number — and our own SIM's number, for `sim` (phone-capable agents only) — is looked up (~$0.008/number) when it changes, cached 30 days in `number_lookups` (shared across flows/owners — about one paid lookup per number per month; the cache is keyed by a keyed hash of the number, never the number itself — with neither `CREDENTIAL_ENCRYPTION_KEY` nor `SESSION_SECRET` set nothing is cached). **Spending caps** (`server/paid-lookup-budget.ts`, stored in Postgres `paid_lookup_usage` — a restart or several Core instances don't reset or exceed them; days are **UTC calendar days**, resetting at 00:00 UTC): each flow editor may cause at most 10 uncached lookups per day (saves and 'Look up again'), each phone agent 1, each user's agents together (across all their agent tokens) 5, and two **reserved daily shares**: flow lookups 300 a day, SIM checks 200 a day (500 in all) — free accounts' flow edits can never use up the SIM checks' share. Cache hits are free and never counted; a provider call that got no billable response (network error/timeout, or a non-2xx other than 404) is refunded — a 2xx/404 answer counts even if storing it fails; concurrent saves of the same uncached number share one Twilio call. Past a cap the lookup is skipped as `rate-limited` — the flow's stored line lookup (or the agent's stored `sim`) is kept, and the console says automatic lookup is paused for the day. Whether the number changed is decided by a keyed hash of the full number (HMAC-SHA256 keyed from `CREDENTIAL_ENCRYPTION_KEY`, else `SESSION_SECRET`), stored as `line_lookup.numberHash` / `eval_agents.sim_number_hash` — the full number itself is never stored on a flow or agent; rotating the key makes each number count as changed once (re-looked up from the cache, normally free). A number held in a secret is never sent; **a save never waits for Twilio** — it responds first (with `lineLookupPending: true`), the lookup runs in the background and the console shows "Looking up the line provider…" until it lands; a failed lookup never blocks the save; a 'Look up again' still running after 10 s is reported as `timeout` (the stored answer is kept) and stored when it finishes, but only if the flow still dials that number. **Trust:** `link` and the phone side of `sim` are **agent-reported** — Core files them as detected as received; Mainline trusts them because Mainline agents are admin-run. A phone agent that stops reporting its SIM has its stored `sim` cleared. Network tags ship as Core migration v58 (`0057_network_tags.sql`): `tags`/`line_lookup` on `eval_flows`, `tags`/`link_type` on `eval_agents`, the `number_lookups` cache table, and `tags` on `eval_jobs`. **Migration v59** (`0058_access_sim.sql`) adds `eval_agents.access_class`/`access_reason`/`access_checked_at`/`sim_carrier`/`sim_reason`/`sim_number_redacted` and `number_lookups.mcc`/`mnc`. **Migration v60** (`0059_agent_net_signals.sql`) adds `eval_agents.net_signals` jsonb for the agent-reported signals below. **Migration v61** (`0060_sim_number_hash.sql`) adds `eval_agents.sim_number_hash`. **Migration v62** (`0061_paid_lookup_usage.sql`) adds the `paid_lookup_usage` counter table and recreates `number_lookups` keyed by `number_hash` (its cached rows are dropped — they refill on the next lookup of each number). **Migration v63** (`0062_sim_report_gen.sql`) adds `eval_agents.sim_report_gen`, so of two overlapping SIM reports the newer one wins. | — |
 
 GeoIP license attribution is separate from the curated Thanks page. The footer
 identifies the loaded source from the database header or legacy filename, using
@@ -219,6 +221,51 @@ Thanks-page entries must not remove these source-specific license notices.
 Public pages revalidate the in-memory `/api/geoip/attribution` notice once a
 minute without querying persistent configuration; `/api/config` retains its
 one-hour client cache. Admin refresh completion invalidates both queries.
+
+### Access classification data sources
+
+The `access` network tag (`lastmile` / `datacenter` / `unknown`) and location
+trust's `datacenter` class are both decided by the same pipeline
+(`server/access-class.ts`), fed by data downloaded into `GEOIP_DB_DIR` and
+refreshed in-app weekly (`server/access-data-refresh.ts`, same pattern as
+GeoIP). There is no checked-in hosting/VPN ASN list — the old 19-ASN
+`server/data/asn-classification.json` was deleted when this shipped.
+
+| Source | URL | Licence | Attribution | Refresh |
+|---|---|---|---|---|
+| X4BNet `lists_vpn` (datacenter + VPN IPv4/IPv6 ranges) | `github.com/X4BNet/lists_vpn` | MIT | MIT notice, "Copyright (c) 2024 X4B (Mathew Heard)" | Weekly, automatic |
+| client9/ipcat `datacenters.csv` | `github.com/client9/ipcat` | MIT (repo archived 2023, so the data is static) | MIT notice, Nick Galbreath / client9 | Weekly, automatic (supplemental — doesn't count toward "loaded") |
+| APNIC Labs per-AS end-user population estimates | `stats.labs.apnic.net/cgi-bin/aspop` | "(C) APNIC Pty/Ltd. Re-use with attribution permitted" | **Credited in the footer, next to the DB-IP notice** | Weekly, automatic |
+| PeeringDB `net` objects (network type: Content/Hosting vs Cable-DSL-ISP) | `peeringdb.com/api/net` | AUP restricts bulk reproduction/storage without approval; Vox is a commercial product | n/a | **Not downloaded automatically.** Needs PeeringDB's approval (contact support@peeringdb.com) for a stored bulk copy. An operator who has that approval can place an export at `GEOIP_DB_DIR/peeringdb-net.json`; when present it's loaded and used, otherwise this signal is simply absent (more `unknown`, never a wrong `lastmile`) |
+| Curated mobile-carrier ASN list | `server/data/mobile-carrier-asns.json` (checked in) | n/a — hand-curated from ARIN/APNIC registry data | n/a | Ships with the code; not downloaded |
+
+**Deploy-time behavior.** The first download happens at startup (any source
+missing or older than 7 days). Until the datacenter **and** VPN range lists
+have loaded at least once, a check that would read `datacenter`/`trusted`
+is **capped** (fail closed), with downloads retried at 15, 30, 60 minutes,
+then hourly, until they load. A capped check writes nothing — not the region,
+not location trust, not access, not the check time: a non-public agent simply
+can't *become* Verified until the data is in, but one that already is stays
+so (region, site, badge and the trust/access its claimed jobs freeze all
+untouched) through a fresh deploy or a transient download failure, and the
+first heartbeat after the data loads re-checks it. Coolify's filesystem is
+ephemeral, so this window recurs on every deploy unless `GEOIP_DB_DIR` is on
+a persistent volume.
+
+**Download validation.** A list line wider than /8 (IPv4) or /16 (IPv6) is
+dropped as invalid, and a refresh refuses — keeping the previous copy — a
+download larger than 64 MB or one covering more than 5% of the IPv4 space
+(VPN list; 0.07% in October 2026) or 20% (datacenter lists; 9.2%), or an
+IPv6 list covering more than 0.0005% (VPN; 0.00011%) or 0.005% (datacenter;
+0.00126%) of 2000::/3, the global IPv6 unicast space (one home ISP's /20 is
+0.00076% of it).
+
+**Known limit — residential proxies.** `access`/location trust both read the
+agent's `observed_ip`, which is the address of its *API calls to Core*, not
+its media path. A datacenter agent that routes its Core traffic through a
+commercial residential proxy can look like a home connection while the
+measured call still runs from the datacenter; nothing Core sees from that IP
+closes this.
 
 ### Generating Secrets
 
@@ -347,7 +394,7 @@ node dist/migrate.cjs
 
 Vox itself is one container, but a full deployment also runs:
 
-- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours.
+- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours. `vox-upgrade.sh` also detects the host's network link (wifi/ethernet/cellular) and passes it to the container as `VOX_LINK_TYPE` — a container only sees its own veth, not the host's NIC, so this is how `link` is reported at all for a Dockerized agent. Set `VOX_LINK_TYPE` by hand only for an agent not upgraded through that script (e.g. a manual `docker run`); an unrecognized value is ignored, not an error. The value is baked into the container when `vox-upgrade.sh` creates it and is refreshed only when the script recreates the container — after a host changes its link (e.g. moves from Ethernet to Wi-Fi or a cellular modem), re-run `vox-upgrade.sh`, or set `VOX_LINK_TYPE` by hand. Without it, a containerized agent reports no `link` at all: inside the container the default route is a virtual veth with nothing behind it to detect.
 - **Auth-session broker** and **REST broker** — sidecars (Dockerfile targets `broker` and `rest-broker` in `vox_eval_agentd/Dockerfile`) that log in to target sites and make API calls on behalf of evals, so credentials never reach an eval agent. Each registers with Vox using `VOX_CORE_URL` and a `BROKER_REG_TOKEN` minted in **Console → Brokers**, and must be reachable only on the internal network. `BROKER_ADVERTISE_URL` is the address **Vox** uses to call the broker, so it must resolve from the Vox container: on Coolify that is the broker's network alias, not its application UUID. Vox checks it when the broker registers and every minute after; **Console → Brokers** shows the result in the **From Core** column, with the reason when it can't connect.
 
 ## Other Platforms

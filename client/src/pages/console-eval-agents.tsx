@@ -11,10 +11,13 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock, Phone, AudioLines } from "lucide-react";
+import { Server, MapPin, Activity, Clock, Eye, EyeOff, Plus, Key, Copy, Check, Ban, Lock, Phone, AudioLines, Pencil } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { formatSmartTimestamp } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
+import { TagInput } from "@/components/tag-input";
+import { formatTag, explainSystemReason, type Tag } from "@shared/tags";
+import { ACCESS_TEXT, UNKNOWN_ACCESS_TEXT } from "@/lib/access-text";
 
 interface AuthStatus {
   initialized: boolean;
@@ -42,6 +45,75 @@ interface EvalAgent {
   locationTrust?: string;
   /** What the agent last reported on its heartbeat: "phone" (its DialF check passes), "analyze" (aeval runs there). */
   capabilities?: string[];
+  /** Hand-set network tags (its operator's). */
+  tags?: Tag[];
+  /** The link type the agent detected on its host (wifi/ethernet/cellular/satellite), or null. */
+  linkType?: string | null;
+  /** Server-decided: this user is the agent's operator and may edit its tags. */
+  canEditTags?: boolean;
+  /** System-only: lastmile | datacenter | unknown (null = not checked yet), and the classifier's reason. */
+  accessClass?: string | null;
+  accessReason?: string | null;
+  /** Phone agents: our SIM's carrier slug, when the SIM and a lookup of its number agree. */
+  simCarrier?: string | null;
+}
+
+/**
+ * An agent's network tags: the link type it detected (marked "detected") and
+ * the tags its operator set by hand. A hand-set link that differs from the
+ * detected one shows both — results on Mainline use the detected one. Only the
+ * operator gets the edit button (the server's canEditTags), so it never 403s.
+ */
+function AgentTagsCell({ agent }: { agent: EvalAgent }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<Tag[]>([]);
+  const tags = agent.tags ?? [];
+  const save = useMutation({
+    mutationFn: async () => (await apiRequest("PATCH", `/api/eval-agents/${agent.id}/tags`, { tags: draft })).json(),
+    onSuccess: () => {
+      setOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/eval-agents"] });
+      toast({ title: "Tags saved", description: "New jobs this agent takes carry them; past results keep theirs." });
+    },
+    onError: (error: Error) => toast({ title: "Couldn't save the tags", description: error.message, variant: "destructive" }),
+  });
+  return (
+    <div className="flex flex-wrap items-center gap-1" data-testid={`agent-tags-${agent.id}`}>
+      {agent.linkType && (
+        <Badge variant="outline" className="gap-1 font-mono font-normal" title="Detected by the agent on its host">
+          link:{agent.linkType}
+          <span className="font-sans text-[10px] uppercase tracking-wide text-muted-foreground">detected</span>
+        </Badge>
+      )}
+      {tags.map((t) => (
+        <Badge key={t.key} variant="secondary" className="font-mono font-normal" title="Set by hand">{formatTag(t)}</Badge>
+      ))}
+      {!agent.linkType && tags.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
+      {agent.canEditTags && (
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) setDraft(tags); }}>
+          <DialogTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={`Edit tags of ${agent.name}`} data-testid={`button-edit-agent-tags-${agent.id}`}>
+              <Pencil className="h-3 w-3" />
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Tags for {agent.name}</DialogTitle>
+              <DialogDescription>
+                Describe this agent's network, e.g. isp:starlink or link:wifi. Each job also records the link type and internet provider detected at the time. For isp and link, Mainline uses the detected values; a hand-set one counts on Community and My Evals.
+              </DialogDescription>
+            </DialogHeader>
+            <TagInput value={draft} onChange={setDraft} end="agent" preferredKeys={["isp", "link"]} testId="agent-tags-input" aria-label="Agent tags" />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button onClick={() => save.mutate()} disabled={save.isPending} data-testid="button-save-agent-tags">Save tags</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  );
 }
 
 interface EvalAgentToken {
@@ -73,11 +145,51 @@ function getTierBadge(tier: string) {
   );
 }
 
-function getTrustBadge(trust?: string, tier?: string) {
-  if (tier === "public") return null; // configured, no badge needed
-  if (trust === "trusted") return <Badge variant="outline" className="text-green-600 border-green-600">Verified</Badge>;
-  if (trust === "datacenter") return <Badge variant="outline" className="text-green-600 border-green-600">Verified · datacenter</Badge>;
-  return <Badge variant="outline" className="text-yellow-600 border-yellow-600">Unverified</Badge>;
+/** A badge with its explanation in a tooltip. */
+function HintBadge({ className, hint, testId, children }: { className: string; hint: string; testId: string; children: ReactNode }) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge variant="outline" className={`cursor-default whitespace-nowrap ${className}`} data-testid={testId}>{children}</Badge>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-xs text-xs">{hint}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/**
+ * The location badge (design "Agent badge follows access"): Verified ·
+ * last mile / Verified · datacenter / Verified (access unknown) / Unverified.
+ * The first word is location trust, the second the access class; the tooltip
+ * says why in plain words. Public agents are configured by an admin, so they
+ * carry no location badge — only an access chip when it's known.
+ */
+function getTrustBadge(agent: Pick<EvalAgent, "id" | "locationTrust" | "dispatchTier" | "accessClass" | "accessReason">) {
+  const trust = agent.locationTrust;
+  // A stored trust of `datacenter` is derived from access = datacenter.
+  const access = agent.accessClass ?? (trust === "datacenter" ? "datacenter" : null);
+  const text = access === "lastmile" || access === "datacenter" ? ACCESS_TEXT[access] : undefined;
+  const why = explainSystemReason("access", agent.accessReason);
+  const accessHint = text ? `${text.hint}${why ? ` (${why})` : ""}.` : `${UNKNOWN_ACCESS_TEXT}${why ? ` (${why})` : ""}.`;
+  const testId = `agent-location-badge-${agent.id}`;
+  if (agent.dispatchTier === "public") {
+    if (!text) return null;
+    return <HintBadge className="text-muted-foreground" hint={accessHint} testId={testId}>{text.label.charAt(0).toUpperCase() + text.label.slice(1)}</HintBadge>;
+  }
+  if (trust === "trusted" || trust === "datacenter") {
+    return (
+      <HintBadge className="text-green-600 border-green-600" hint={`Location confirmed from its network address. ${accessHint}`} testId={testId}>
+        {text ? `Verified · ${text.label}` : "Verified"}
+      </HintBadge>
+    );
+  }
+  return (
+    <HintBadge className="text-yellow-600 border-yellow-600" hint="Its location couldn't be confirmed from its network address." testId={testId}>
+      Unverified
+    </HintBadge>
+  );
 }
 
 function getStateBadge(state: string) {
@@ -256,6 +368,7 @@ export default function ConsoleEvalAgents() {
                   <TableHead>Tier</TableHead>
                   <TableHead>State</TableHead>
                   <TableHead>Capabilities</TableHead>
+                  <TableHead>Tags</TableHead>
                   <TableHead>Build</TableHead>
                   <TableHead>Last Seen</TableHead>
                   <TableHead>Registered</TableHead>
@@ -274,7 +387,7 @@ export default function ConsoleEvalAgents() {
                     <TableCell>
                       <div className="flex items-center gap-1.5">
                         {getTierBadge(agent.dispatchTier)}
-                        {getTrustBadge(agent.locationTrust, agent.dispatchTier)}
+                        {getTrustBadge(agent)}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -286,7 +399,7 @@ export default function ConsoleEvalAgents() {
                       {agent.capabilities?.length ? (
                         <div className="flex items-center gap-1">
                           {agent.capabilities.includes("phone") && (
-                            <Badge variant="outline" className="gap-1" title="Its DialF check passes: it can take phone jobs"><Phone className="h-3 w-3" /> Phone</Badge>
+                            <Badge variant="outline" className="gap-1" title={`Its DialF check passes: it can take phone jobs${agent.simCarrier ? `. SIM network: ${agent.simCarrier}` : ""}`}><Phone className="h-3 w-3" /> Phone</Badge>
                           )}
                           {agent.capabilities.includes("analyze") && (
                             <Badge variant="outline" className="gap-1" title="aeval runs on its host: it can analyze uploaded recordings"><AudioLines className="h-3 w-3" /> Analyze</Badge>
@@ -295,6 +408,9 @@ export default function ConsoleEvalAgents() {
                       ) : (
                         <span className="text-xs text-muted-foreground" title="It reports none: no phone jobs, no analyses">None</span>
                       )}
+                    </TableCell>
+                    <TableCell className="min-w-[200px]">
+                      <AgentTagsCell agent={agent} />
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs font-mono">
                       {agent.metadata?.buildTag ? (

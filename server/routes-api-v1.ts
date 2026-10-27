@@ -12,10 +12,12 @@ import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, val
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
 import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, secretGate } from "./auth-session";
 import { regionSiteSequence } from "@shared/regions";
+import { parseTags, effectiveTags, formatTag, type Tag } from "@shared/tags";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
-import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, type ApiMetricsTier } from "./metrics-params";
+import { startFlowLineRefresh, withLineLookupState } from "./number-lookup";
+import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -151,6 +153,12 @@ export function registerApiV1Routes(app: Express): void {
       if (!name) {
         return res.status(400).json({ error: "Name is required" });
       }
+
+      // Hand-set tags (design "Data model"), same parser as the console route.
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
       // Same save-time gate as the console route (v1 previously skipped it —
       // every config rule was bypassable through this endpoint).
       if (config !== undefined && config !== null) {
@@ -199,7 +207,18 @@ export function registerApiV1Routes(app: Express): void {
         config: config || {},
       });
 
-      res.status(201).json({ data: evalFlow });
+      // tags is omitted from InsertEvalFlow (drizzle-zod typing); set via its
+      // own update, same as the console route, only when the caller sent any.
+      const withTags = req.body.tags !== undefined
+        ? await storage.updateEvalFlow(evalFlow.id, { tags: parsedTags.tags })
+        : evalFlow;
+
+      // Same save-time line lookup as the console create — in the
+      // background, never throws. (v1 create always stores `web` today, so
+      // it's a no-op until v1 learns transport; kept so the paths can't drift.)
+      const saved = withTags ?? evalFlow;
+      const line = await startFlowLineRefresh(saved, user.id);
+      res.status(201).json({ data: withLineLookupState(saved, line) });
     } catch (error) {
       console.error("API v1 - Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -265,6 +284,13 @@ export function registerApiV1Routes(app: Express): void {
         if (!v.valid) return res.status(400).json({ error: v.error });
       }
 
+      // Hand-set tags: absent leaves the stored value unchanged (PATCH-style,
+      // even though this is a PUT) — same parser as create.
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
+
       // Visibility check
       if (visibility === "private" && user.plan === "basic") {
         return res.status(403).json({
@@ -277,9 +303,15 @@ export function registerApiV1Routes(app: Express): void {
         description: description ?? evalFlow.description,
         visibility: visibility ?? evalFlow.visibility,
         config: config ?? evalFlow.config,
+        ...(req.body.tags !== undefined ? { tags: parsedTags.tags } : {}),
       });
 
-      res.json({ data: updated });
+      // Phone flow whose dialled number changed (or never looked up): refresh
+      // its line lookup, as the console PATCH does — in the background
+      // (`lineLookupPending: true` on the response), never fails the save; a
+      // changed number that can't be looked up clears the old answer.
+      const line = updated ? await startFlowLineRefresh(updated, user.id) : null;
+      res.json({ data: updated && line ? withLineLookupState(updated, line) : updated });
     } catch (error) {
       console.error("API v1 - Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });
@@ -872,9 +904,13 @@ export function registerApiV1Routes(app: Express): void {
    * mine is the caller's own private evals (the console's My Evals) and needs
    * an API key or a signed-in session. With no parameters a request gets what
    * it always got: mainline, web, all time.
+   *
+   * Network tags (design 2026-10-22 "Analysis"): `tag=key:value` (repeatable,
+   * all must match the effective value on the tier's board) and `groupBy=key`
+   * — or `groupBy=region`, the result's region (reserved: not a tag key).
    */
   async function metricsView(req: Request): Promise<
-    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number }
+    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number; tagFilters: Tag[]; groupBy?: string }
     | { status: number; error: string }
   > {
     const tier = parseMetricsTier(req.query.tier);
@@ -883,6 +919,8 @@ export function registerApiV1Routes(app: Express): void {
     if ("error" in tp) return { status: 400, error: tp.error };
     const win = parseMetricsWindow(req.query.hours);
     if ("error" in win) return { status: 400, error: win.error };
+    const tags = parseMetricsTags(req.query);
+    if ("error" in tags) return { status: 400, error: tags.error };
     let userId: number | undefined;
     if (tier.tier === "mine") {
       const user = await getCurrentUserOrApiKeyUser(req);
@@ -890,11 +928,12 @@ export function registerApiV1Routes(app: Express): void {
       if (!user.isEnabled) return { status: 401, error: "Account is disabled" };
       userId = user.id;
     }
-    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId };
+    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId, tagFilters: tags.tagFilters, groupBy: tags.groupBy };
   }
   /** What the response actually covers, so a client can't misread it. */
-  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number }) => ({
+  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number; tagFilters: Tag[]; groupBy?: string }) => ({
     tier: v.tier, transport: v.transport, hours: v.hoursBack ?? null,
+    tag: v.tagFilters.map(formatTag), groupBy: v.groupBy ?? null,
   });
 
   app.get("/api/v1/metrics/realtime", async (req: Request, res: Response) => {
@@ -915,7 +954,7 @@ export function registerApiV1Routes(app: Express): void {
         limit = n;
       }
       const results = await storage.getTierEvalResults(view.storageTier, limit, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters,
       });
 
       // Transform to API format
@@ -930,6 +969,11 @@ export function registerApiV1Routes(app: Express): void {
         naturalness: r.naturalness,
         noiseReduction: r.noiseReduction,
         timestamp: r.createdAt,
+        // The job's effective tags on this tier's board; with groupBy, that
+        // key's value ("untagged" when it has none) — or with groupBy=region,
+        // the result's region ("unattributed" when it has none).
+        tags: effectiveTags(r.jobTags, view.storageTier),
+        ...(view.groupBy ? { tagValue: groupValue(r, view.storageTier, view.groupBy) } : {}),
       }));
 
       res.json({
@@ -962,68 +1006,94 @@ export function registerApiV1Routes(app: Express): void {
       const view = await metricsView(req);
       if ("error" in view) return res.status(view.status).json({ error: view.error });
       const results = await storage.getTierEvalResults(view.storageTier, 1000, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters,
       });
 
-      // Aggregate by provider and site
-      const providerRegionMap = new Map<string, {
-        providerId: string;
-        siteId: string | null;
+      // Aggregate by provider and site — and, with groupBy, by that tag's
+      // effective value too ("untagged" when a result has none), or with
+      // groupBy=region by the result's region ("unattributed").
+      //
+      // Access columns: unless `tag=access:…` is set, each row also averages
+      // its last-mile and datacenter results separately (`lastMile`,
+      // `datacenter`, each with a `count`), from the job's frozen access tag.
+      const withAccess = wantsAccessColumns(view.tagFilters);
+      type Acc = {
+        count: number;
         responseLatencies: number[];
         interruptLatencies: number[];
         turnSuccessRates: number[];
         networkResiliences: number[];
         naturalnesses: number[];
         noiseReductions: number[];
+      };
+      const emptyAcc = (): Acc => ({
+        count: 0, responseLatencies: [], interruptLatencies: [], turnSuccessRates: [], networkResiliences: [], naturalnesses: [], noiseReductions: [],
+      });
+      const addTo = (acc: Acc, result: (typeof results)[number]) => {
+        acc.count++;
+        // Exclude NA (null) latencies — a non-responsive run must not average in
+        // as a fake-fast 0 ms.
+        if (result.responseLatencyMedian != null) acc.responseLatencies.push(result.responseLatencyMedian);
+        if (result.interruptLatencyMedian != null) acc.interruptLatencies.push(result.interruptLatencyMedian);
+        // TSR includes no-response runs as failed turns (resilience signal).
+        if (result.turnSuccessRate != null) acc.turnSuccessRates.push(result.turnSuccessRate);
+        if (result.networkResilience !== null) acc.networkResiliences.push(result.networkResilience);
+        if (result.naturalness !== null) acc.naturalnesses.push(result.naturalness);
+        if (result.noiseReduction !== null) acc.noiseReductions.push(result.noiseReduction);
+      };
+      const providerRegionMap = new Map<string, {
+        providerId: string;
+        siteId: string | null;
+        tagValue?: string;
+        all: Acc;
+        lastMile: Acc;
+        datacenter: Acc;
       }>();
 
       for (const result of results) {
-        const key = `${result.providerId}-${result.siteId}`;
+        const tagValue = view.groupBy ? groupValue(result, view.storageTier, view.groupBy) : undefined;
+        const key = leaderboardGroupKey(result.providerId, result.siteId, tagValue);
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
             siteId: result.siteId,
-            responseLatencies: [],
-            interruptLatencies: [],
-            turnSuccessRates: [],
-            networkResiliences: [],
-            naturalnesses: [],
-            noiseReductions: [],
+            ...(tagValue === undefined ? {} : { tagValue }),
+            all: emptyAcc(),
+            lastMile: emptyAcc(),
+            datacenter: emptyAcc(),
           });
         }
-
         const entry = providerRegionMap.get(key)!;
-        // Exclude NA (null) latencies — a non-responsive run must not average in
-        // as a fake-fast 0 ms.
-        if (result.responseLatencyMedian != null) entry.responseLatencies.push(result.responseLatencyMedian);
-        if (result.interruptLatencyMedian != null) entry.interruptLatencies.push(result.interruptLatencyMedian);
-        // TSR includes no-response runs as failed turns (resilience signal).
-        if (result.turnSuccessRate != null) entry.turnSuccessRates.push(result.turnSuccessRate);
-        if (result.networkResilience !== null) entry.networkResiliences.push(result.networkResilience);
-        if (result.naturalness !== null) entry.naturalnesses.push(result.naturalness);
-        if (result.noiseReduction !== null) entry.noiseReductions.push(result.noiseReduction);
+        addTo(entry.all, result);
+        const column = withAccess ? accessColumn(result.jobTags, view.storageTier) : undefined;
+        if (column) addTo(entry[column], result);
       }
 
       // Calculate averages and build leaderboard. Latency avg is null (NA) for an
       // empty set (all runs non-responsive) — never 0.
-      const leaderboard = Array.from(providerRegionMap.values()).map((entry) => {
-        const avg = (arr: number[]): number | null => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
-
-        const avgRate = (arr: number[]): number | null => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10000) / 10000 : null;
-        return {
-          provider: entry.providerId,
-          siteId: entry.siteId,
-          ...apiRegionMetadata(entry.siteId, locations),
-          responseLatency: avg(entry.responseLatencies),
-          interruptLatency: avg(entry.interruptLatencies),
-          turnSuccessRate: avgRate(entry.turnSuccessRates),
-          networkResilience: avg(entry.networkResiliences),
-          naturalness: entry.naturalnesses.length > 0
-            ? Math.round((entry.naturalnesses.reduce((a, b) => a + b, 0) / entry.naturalnesses.length) * 10) / 10
-            : null,
-          noiseReduction: avg(entry.noiseReductions),
-        };
+      const avg = (arr: number[]): number | null => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+      const avgRate = (arr: number[]): number | null => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10000) / 10000 : null;
+      const summarize = (acc: Acc) => ({
+        responseLatency: avg(acc.responseLatencies),
+        interruptLatency: avg(acc.interruptLatencies),
+        turnSuccessRate: avgRate(acc.turnSuccessRates),
+        networkResilience: avg(acc.networkResiliences),
+        naturalness: acc.naturalnesses.length > 0
+          ? Math.round((acc.naturalnesses.reduce((a, b) => a + b, 0) / acc.naturalnesses.length) * 10) / 10
+          : null,
+        noiseReduction: avg(acc.noiseReductions),
       });
+      const leaderboard = Array.from(providerRegionMap.values()).map((entry) => ({
+        provider: entry.providerId,
+        siteId: entry.siteId,
+        ...apiRegionMetadata(entry.siteId, locations),
+        ...(entry.tagValue === undefined ? {} : { tagValue: entry.tagValue }),
+        ...summarize(entry.all),
+        ...(withAccess ? {
+          lastMile: { ...summarize(entry.lastMile), count: entry.lastMile.count },
+          datacenter: { ...summarize(entry.datacenter), count: entry.datacenter.count },
+        } : {}),
+      }));
 
       // Sort by response latency (lower is better); NA (null) sinks to the bottom.
       leaderboard.sort((a, b) => {

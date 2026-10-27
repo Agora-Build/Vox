@@ -1,0 +1,9 @@
+{
+  "_comment": "Mobile-carrier ASNs: carrier-NAT address space with no servers, so on its own it counts as last mile (server/access-data.ts). Only ASNs whose registry record names a mobile/wireless network are listed; each entry's `source` is the registry record checked (ARIN RDAP rdap.arin.net/registry/autnum/<asn>, APNIC RDAP rdap.apnic.net/autnum/<asn>) on 2026-10-22, cross-checked against the APNIC Labs per-AS end-user estimates (stats.labs.apnic.net/aspop). Mixed fixed+mobile+datacenter ASNs (e.g. the China Mobile CMNET ASNs, which also carry fixed broadband) are deliberately left out. PeeringDB has no mobile network type (T-Mobile US is listed as Cable/DSL/ISP), so this list can't be derived from it.",
+  "21928": { "carrier": "T-Mobile USA", "country": "US", "source": "ARIN RDAP: AS21928 name T-MOBILE-AS21928, registrant T-Mobile USA, Inc.; APNIC Labs aspop: ~18.9M US users" },
+  "6167": { "carrier": "Verizon Wireless", "country": "US", "source": "ARIN RDAP: AS6167 name CELLCO-PART, registrant Verizon Business (Cellco Partnership is the Verizon Wireless legal entity); APNIC Labs aspop: ~17.9M US users" },
+  "22394": { "carrier": "Verizon Wireless", "country": "US", "source": "ARIN RDAP: AS22394 name CELLCO, registrant Verizon Business (Cellco Partnership is the Verizon Wireless legal entity)" },
+  "20057": { "carrier": "AT&T Mobility", "country": "US", "source": "ARIN RDAP: AS20057 name ATT-MOBILITY-LLC-AS20057, registrant AT&T Enterprises, LLC; APNIC Labs aspop: ~0.6M US users" },
+  "45609": { "carrier": "Bharti Airtel (mobile)", "country": "IN", "source": "APNIC RDAP: AS45609 name BHARTI-MOBILITY-AS-AP, remark 'Bharti Airtel Ltd. AS for GPRS Service'; APNIC Labs aspop: ~152M IN users" },
+  "131445": { "carrier": "AIS (Advanced Wireless Network)", "country": "TH", "source": "APNIC RDAP: AS131445 name AIS3G-2100-AS-AP, remark 'Advance Wireless Network'; APNIC Labs aspop: ~10.2M TH users" }
+}

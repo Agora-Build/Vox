@@ -57,7 +57,7 @@ describe("metrics detail routes", () => {
       await request(app).get(`/api/metrics/realtime/detail?from=${FROM + offset}&to=${FROM + 3600000 - offset}`).expect(200);
     }
     expect(storage.getMetricsDetail).toHaveBeenCalledTimes(1);
-    expect(storage.getMetricsDetail).toHaveBeenCalledWith("mainline", { from: FROM, to: FROM + 3600000 }, undefined, undefined, "web");
+    expect(storage.getMetricsDetail).toHaveBeenCalledWith("mainline", { from: FROM, to: FROM + 3600000 }, undefined, undefined, "web", []);
   });
 
   it("rejects unsupported tiers, transports, and overly broad detail windows", async () => {

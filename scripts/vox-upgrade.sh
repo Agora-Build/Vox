@@ -217,6 +217,130 @@ report_dialf_check() {
     fi
 }
 
+# The host's network link type for VOX_LINK_TYPE (design "Detection" → link):
+# the daemon's own detectLinkType (vox_eval_agentd/link-type.ts), reimplemented
+# here in bash because a container sees its own veth, not the host's NIC — the
+# host must detect and pass its answer in. Same precedence as the daemon: a
+# VOX_LINK_TYPE already in the environment (set in .env, or a test override —
+# this doubles as the test hook: it's the least invasive way to make this
+# deterministic in tests/vox-upgrade-dialf.test.ts without real network
+# access) wins outright and skips detection. An invalid value there is
+# ignored, same as the daemon: falls through to real autodetection below
+# rather than being forwarded as-is. Echoes one of
+# wifi/ethernet/cellular/satellite, or nothing on any failure — never aborts
+# the run (every call is `|| true`-guarded, as elsewhere in this script,
+# because of `set -euo pipefail`).
+# An interface name read from `ip route`/`route` output is still untrusted
+# text: it goes into /sys paths, a grep pattern and an ip/ifconfig argument
+# (where a leading `-` would read as an option). Accept only what real names
+# look like (eth0, wlp3s0, veth1@if5, eth0.100, en0, utun3); anything else
+# means "couldn't tell", exactly like no route at all. Mirrors
+# isValidInterfaceName in vox_eval_agentd/link-type.ts / net-signals.ts.
+valid_iface_name() {
+    case "$1" in
+        ""|.|..|-*) return 1 ;;
+    esac
+    [ "${#1}" -le 32 ] || return 1
+    # Whole-string match (unlike grep -x, which would accept "eth0<newline>x").
+    local LC_ALL=C re='^[A-Za-z0-9._@:-]+$'
+    [[ "$1" =~ $re ]]
+}
+
+host_link_type() {
+    case "${VOX_LINK_TYPE:-}" in
+        wifi|ethernet|cellular|satellite) echo "$VOX_LINK_TYPE"; return 0 ;;
+    esac
+    local os iface driver
+    os=$(uname -s 2>/dev/null || true)
+    if [ "$os" = "Linux" ]; then
+        iface=$( { ip route get 1.1.1.1 2>/dev/null || true; } | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+        valid_iface_name "$iface" || return 0
+        if [ -e "/sys/class/net/$iface/wireless" ]; then
+            echo wifi; return 0
+        fi
+        case "$iface" in
+            wwan*) echo cellular; return 0 ;;
+        esac
+        driver=""
+        if [ -L "/sys/class/net/$iface/device/driver" ]; then
+            driver=$(basename "$(readlink "/sys/class/net/$iface/device/driver" 2>/dev/null || true)")
+        fi
+        case "$driver" in
+            qmi_wwan|cdc_mbim|cdc_ether) echo cellular; return 0 ;;
+        esac
+        echo ethernet
+    elif [ "$os" = "Darwin" ]; then
+        iface=$( { route -n get default 2>/dev/null || true; } | sed -n 's/^ *interface: //p' | head -1)
+        valid_iface_name "$iface" || return 0
+        if { networksetup -listallhardwareports 2>/dev/null || true; } | grep -F -x -B1 "Device: $iface" | grep -q "^Hardware Port: Wi-Fi$"; then
+            echo wifi; return 0
+        fi
+        echo ethernet
+    fi
+    return 0
+}
+
+# The host's own answer for VOX_PUBLIC_IP_ON_IFACE (design "Last mile vs
+# datacenter" → access, Part-2 Task 3): does the default-route interface
+# itself hold a public (non-private) address? Reimplemented here for the same
+# reason as host_link_type above — a container would see its own veth, not
+# the host's NIC. Same precedence/test-hook pattern: VOX_PUBLIC_IP_ON_IFACE
+# already in the environment (set in .env, or a test override — this is what
+# tests/vox-upgrade-dialf.test.ts sets to stay deterministic without real
+# network access) wins outright; anything else there is ignored and real
+# detection runs. Echoes "true"/"false", or nothing if undetermined — never
+# aborts the run.
+host_public_ip_on_iface() {
+    case "${VOX_PUBLIC_IP_ON_IFACE:-}" in
+        true|false) echo "$VOX_PUBLIC_IP_ON_IFACE"; return 0 ;;
+    esac
+    local os iface out
+    os=$(uname -s 2>/dev/null || true)
+    if [ "$os" = "Linux" ]; then
+        iface=$( { ip route get 1.1.1.1 2>/dev/null || true; } | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+        valid_iface_name "$iface" || return 0
+        out=$(ip -o addr show dev "$iface" 2>/dev/null || true)
+    elif [ "$os" = "Darwin" ]; then
+        iface=$( { route -n get default 2>/dev/null || true; } | sed -n 's/^ *interface: //p' | head -1)
+        valid_iface_name "$iface" || return 0
+        out=$(ifconfig "$iface" 2>/dev/null || true)
+    else
+        return 0
+    fi
+    [ -z "$out" ] && return 0
+    # IPv6-only (no IPv4 on the interface): undetermined, nothing echoed.
+    local rc=0
+    host_addr_is_public "$out" || rc=$?
+    case "$rc" in
+        0) echo true ;;
+        1) echo false ;;
+    esac
+    return 0
+}
+
+# Exit 0 if $1 (ip/ifconfig output for one interface) holds at least one
+# public IPv4 address, 1 if it has IPv4 but none public, 2 if it has no IPv4
+# at all — mirrors hasPublicAddress in vox_eval_agentd/net-signals.ts
+# (RFC1918/CGNAT/link-local/loopback excluded). IPv6 is deliberately ignored:
+# dual-stack home ISPs and IPv6 mobile hotspots give every device a global
+# 2000::/3 address, so it says nothing about a home router.
+host_addr_is_public() {
+    local line a b seen=""
+    for line in $(echo "$1" | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}'); do
+        seen=1
+        a=${line%%.*}
+        b=$(echo "$line" | cut -d. -f2)
+        case "$a" in 10|127) continue ;; esac
+        [ "$a" = "172" ] && [ "$b" -ge 16 ] && [ "$b" -le 31 ] && continue
+        [ "$a" = "192" ] && [ "$b" = "168" ] && continue
+        [ "$a" = "100" ] && [ "$b" -ge 64 ] && [ "$b" -le 127 ] && continue
+        [ "$a" = "169" ] && [ "$b" = "254" ] && continue
+        return 0
+    done
+    [ -n "$seen" ] && return 1
+    return 2
+}
+
 # The DialF socket a running container was started with (its VOX_DIALF_SOCKET), or nothing.
 container_dialf_socket() {
     # `|| true`: under set -euo pipefail a failed inspect (container gone
@@ -420,6 +544,21 @@ for name in "${!images[@]}"; do
         if [ -d /dev/snd ]; then
             device_args="--device /dev/snd --security-opt systempaths=unconfined"
         fi
+
+        # Network tags (design "Detection" → link): pass the HOST's own link
+        # type in, since the container only sees its own veth. Not needed for
+        # vox-clash-runner — it doesn't report network tags.
+        link_type=$(host_link_type)
+        [ -n "$link_type" ] && env_args+="-e VOX_LINK_TYPE=$link_type "
+
+        # Network signals (design "Last mile vs datacenter" → access): pass
+        # the HOST's own publicIpOnInterface answer in, for the same reason as
+        # link type above — inside the container the default route is the
+        # veth, not the host's NIC. Unknown → omit the flag (the daemon then
+        # reports `publicIpOnInterface: undefined` on its own container check,
+        # same end result). Not needed for vox-clash-runner.
+        public_ip_on_iface=$(host_public_ip_on_iface)
+        [ -n "$public_ip_on_iface" ] && env_args+="-e VOX_PUBLIC_IP_ON_IFACE=$public_ip_on_iface "
 
         # ------------------------------------------------------------------
         # DialF bridge (Phone vs Agent): dialfd runs on the HOST; the daemon

@@ -8,9 +8,10 @@ import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { settleEndedJobsNow } from "./settle-now";
-import { parseMetricsWindow, parseMetricsTransport } from "./metrics-params";
+import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, groupValue, emptyGroupValue, accessColumn, wantsAccessColumns } from "./metrics-params";
 import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
+import { parseTags, LINK_VALUES, effectiveTags, type TagBoard } from "@shared/tags";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
@@ -27,6 +28,8 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
+import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged, netSignalsPatch } from "./net-signals-update";
+import { noteSimReport } from "./sim-carrier";
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
@@ -45,6 +48,16 @@ import {
   validateMaxmindKeyInput,
   GEOIP_DIR,
 } from "./geoip-refresh";
+import {
+  getTwilioCredentials,
+  saveTwilioCredentials,
+  clearTwilioCredentials,
+  validateTwilioCredentialsInput,
+  maskAccountSid,
+  lookupAndStoreFlowLine,
+  startFlowLineRefresh,
+  withLineLookupState,
+} from "./number-lookup";
 import { promises as fsp } from "fs";
 import path from "path";
 import {
@@ -1249,6 +1262,44 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== NUMBER LOOKUP (line tag) CREDENTIALS ====================
+  // Twilio Lookup credentials for the `line` number lookup (server/number-lookup.ts),
+  // stored encrypted in systemConfig like the MaxMind key. The Auth Token is
+  // never returned or logged: GET reports only whether a pair is configured
+  // and a masked Account SID; PUT's response carries neither.
+
+  app.get("/api/admin/number-lookup/twilio", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const creds = await getTwilioCredentials();
+      res.json({ configured: !!creds, accountSidMasked: creds ? maskAccountSid(creds.accountSid) : null });
+    } catch (error) {
+      console.error("Error reading Twilio lookup credentials:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to read Twilio lookup credentials" });
+    }
+  });
+
+  app.put("/api/admin/number-lookup/twilio", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const validated = validateTwilioCredentialsInput(req.body);
+      if (!validated.ok) return res.status(400).json({ error: validated.error });
+      await saveTwilioCredentials(validated);
+      res.json({ configured: true, accountSidMasked: maskAccountSid(validated.accountSid) });
+    } catch (error) {
+      console.error("Error saving Twilio lookup credentials:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to save Twilio lookup credentials" });
+    }
+  });
+
+  app.delete("/api/admin/number-lookup/twilio", requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      await clearTwilioCredentials();
+      res.json({ deleted: true });
+    } catch (error) {
+      console.error("Error clearing Twilio lookup credentials:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to clear Twilio lookup credentials" });
+    }
+  });
+
   // ==================== USER PROFILE (SELF) ROUTES ====================
 
   // Update own display name (username)
@@ -2232,6 +2283,14 @@ export async function registerRoutes(
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
+
+      // Hand-set tags describing the TARGET under test (design "Data model").
+      // Validated with the one shared parser so the client, Core and the
+      // agent can't disagree on what counts as a valid tag.
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
       const cleanName = String(name).trim();
 
       if (!providerId) {
@@ -2279,7 +2338,19 @@ export async function registerRoutes(
         config: config || {},
       });
 
-      res.json(evalFlow);
+      // tags is omitted from InsertEvalFlow (drizzle-zod typing, see schema.ts)
+      // — set it via its own update, same path as PATCH, when the caller sent any.
+      const withTags = req.body.tags !== undefined
+        ? await storage.updateEvalFlow(evalFlow.id, { tags: parsedTags.tags })
+        : evalFlow;
+
+      // Phone flow: look up the dialled number's line provider (design
+      // "Number lookup") IN THE BACKGROUND — the save never waits for the
+      // provider; `lineLookupPending` tells the console to show "Looking up…"
+      // and refetch. Never throws (the editor's paid-lookup cap applies).
+      const saved = withTags ?? evalFlow;
+      const line = await startFlowLineRefresh(saved, user.id);
+      res.json(withLineLookupState(saved, line));
     } catch (error) {
       console.error("Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -2311,6 +2382,12 @@ export async function registerRoutes(
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
+      // Tags, same validator as create. Absent (`undefined`) leaves the
+      // stored tags unchanged — this is a PATCH, not a replace-all.
+      const parsedTags = parseTags(req.body.tags, { end: "flow" }); // line + custom keys; isp/link belong to the agent, access/sim to Vox
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
       // Steps vocabulary is transport-scoped, so validate the RESULTING pair:
       // a new config against the (possibly changed) transport, and — when only
       // the transport flips — the existing config against the new mode.
@@ -2335,6 +2412,7 @@ export async function registerRoutes(
       if (name && String(name).trim()) updates.name = String(name).trim();
       if (description !== undefined) updates.description = description;
       if (config) updates.config = config;
+      if (req.body.tags !== undefined) updates.tags = parsedTags.tags;
       if (providerId !== undefined) {
         const provider = await storage.getProvider(providerId);
         if (!provider) {
@@ -2363,10 +2441,45 @@ export async function registerRoutes(
       }
 
       const updated = await storage.updateEvalFlow(parseInt(id), updates);
-      res.json(updated);
+      // Phone flow whose dialled number changed (or never looked up): refresh
+      // its line lookup — in the background, never fails the save. A flow
+      // moved away from phone keeps its line_lookup (job snapshots still copy
+      // it): harmless, the claim emits a detected `line` only for jobs whose
+      // stamped transport is phone (server/job-tags.ts).
+      // Started in the background; the response carries the current
+      // lineLookup plus `lineLookupPending` when a lookup is running.
+      const line = updated ? await startFlowLineRefresh(updated, user.id) : null;
+      res.json(updated && line ? withLineLookupState(updated, line) : updated);
     } catch (error) {
       console.error("Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });
+    }
+  });
+
+  // "Look up again" for a phone flow's line provider. Flow editors only (the
+  // PATCH rule — an admin is not a flow editor). Uses the 30-day per-number
+  // cache like a save does, and the same paid-lookup caps (per editor + the
+  // global day); returns { lineLookup } or { skipped: reason }. A skip
+  // (`rate-limited`, `timeout`, ...) leaves the stored lookup untouched.
+  app.post("/api/eval-flows/:id/line-lookup", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const evalFlow = await storage.getEvalFlow(parseInt(req.params.id));
+      if (!evalFlow) return res.status(404).json({ error: "Eval Flow not found" });
+      if (!isOwnerOrOrgManager(user, evalFlow)) {
+        return res.status(403).json({ error: "Only the evalFlow's owner can edit it" });
+      }
+      if (evalFlow.transport !== "phone") {
+        return res.status(400).json({ error: "Line lookup applies to phone eval flows only" });
+      }
+      // A skip stores nothing; `timeout` keeps the stored lookup and finishes
+      // in the background; the write is conditional on the flow still
+      // dialling the looked-up number (server/number-lookup.ts).
+      res.json(await lookupAndStoreFlowLine(evalFlow, user.id));
+    } catch (error) {
+      console.error("Error looking up evalFlow line:", error instanceof Error ? error.name : "error");
+      res.status(500).json({ error: "Failed to look up the line provider" });
     }
   });
 
@@ -4041,10 +4154,69 @@ export async function registerRoutes(
         createdAt: a.createdAt,
         dispatchTier: a.tokenDispatchTier,
         capabilities: a.capabilities ?? [],
+        // Hand-set tags + reported link type (design "Data model"); editable
+        // only by the TOKEN's creator (its operator) — never an admin, same
+        // rule as PATCH /api/eval-agents/:id/tags. Never observedIp — that
+        // stays Core-internal (see the comment on the eval_agents column).
+        tags: a.tags ?? [],
+        linkType: a.linkType ?? null,
+        canEditTags: !!user && user.id === a.tokenCreatedBy,
+        // Access (design "Agent badge follows access"): the class and the
+        // classifier's reason (signal names, never the IP or the agent's raw
+        // netSignals), and the matched SIM carrier slug — never the number.
+        accessClass: a.accessClass ?? null,
+        accessReason: a.accessReason ?? null,
+        simCarrier: a.simCarrier ?? null,
       })));
     } catch (error) {
       console.error("Error fetching eval agents:", error);
       res.status(500).json({ error: "Failed to fetch eval agents" });
+    }
+  });
+
+  // Hand-set tags are a correction/addition to the agent's VANTAGE-POINT
+  // detection (design "Data model"), so only the agent's OPERATOR — the
+  // creator of its token — may set them. Not the agent's own owner field
+  // (there isn't one; eval_agents has no ownerId), not an org manager, and
+  // NOT an admin (permission model: admin powers are user mgmt + provider
+  // config + delete-moderation only, never a super-editor over someone
+  // else's resource).
+  app.patch("/api/eval-agents/:id/tags", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const agent = await storage.getEvalAgent(parseInt(req.params.id));
+      if (!agent) {
+        return res.status(404).json({ error: "Eval agent not found" });
+      }
+
+      const token = await storage.getEvalAgentToken(agent.tokenId);
+      if (!token || token.createdBy !== user.id) {
+        return res.status(403).json({ error: "Only the agent's token creator can edit its tags" });
+      }
+
+      // A tags PATCH has one job: an absent field must never mean "clear".
+      if (req.body?.tags === undefined) {
+        return res.status(400).json({ error: "tags is required — send [] to clear" });
+      }
+      // The agent end: isp/link + custom keys; `line` belongs to the flow and
+      // access/sim are system-only (shared/tags.ts SYSTEM_TAG_KEYS).
+      const parsedTags = parseTags(req.body.tags, { end: "agent" });
+      if ("error" in parsedTags) {
+        return res.status(400).json({ error: parsedTags.error });
+      }
+
+      const updated = await storage.updateEvalAgent(agent.id, { tags: parsedTags.tags });
+      // Minimal shape, not the full row — same "no observedIp, ever" rule as
+      // the public listing applies here too, even though this caller IS the
+      // operator (observed_ip stays Core-internal everywhere, by design).
+      res.json({ id: updated?.id ?? agent.id, tags: updated?.tags ?? parsedTags.tags });
+    } catch (error) {
+      console.error("Error updating eval agent tags:", error);
+      res.status(500).json({ error: "Failed to update eval agent tags" });
     }
   });
 
@@ -4110,6 +4282,24 @@ export async function registerRoutes(
     return Array.from(new Set(raw as string[]));
   };
 
+  // Reported link type (design "Detection" / "Data model"), refreshed each
+  // register/heartbeat like capabilities — but unlike capabilities, an
+  // invalid value is never a 400: it's ignored silently (old/new agents
+  // interoperate; a daemon on a future LINK_VALUES member must not break
+  // today's Core). Returns undefined = field absent, leave the stored value
+  // unchanged; { linkType: null } = explicit clear; { linkType: <value> } =
+  // a recognized value to store. An unrecognized non-null string also
+  // returns undefined (ignored, keep old value) — never a sentinel, since
+  // there's no error case to report.
+  const parseLinkTypeUpdate = (raw: unknown): { linkType: string | null } | undefined => {
+    if (raw === undefined) return undefined;
+    if (raw === null) return { linkType: null };
+    if (typeof raw === "string" && (LINK_VALUES as readonly string[]).includes(raw)) {
+      return { linkType: raw };
+    }
+    return undefined;
+  };
+
   // effectiveDispatchIdentity lives in ./job-wait (shared with the waiting
   // explanation on the job page).
 
@@ -4167,6 +4357,17 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Unknown capability" });
       }
 
+      // Reported link type (design "Detection"): absent on a fresh row just
+      // means null (not reported); on an upsert into an existing agent, only
+      // apply it when the caller actually sent something recognizable.
+      const linkTypeUpdate = parseLinkTypeUpdate(req.body.linkType);
+
+      // Agent-reported network signals (design "Where it's computed and
+      // stored", Part-2 Task 3): parsed strictly, merged with whatever was
+      // already stored (a fresh registration has nothing stored yet, so the
+      // merge is just the parsed update itself).
+      const netSignalsUpdate = parseNetSignalsUpdate(req.body.netSignals);
+
       // Use agent-provided name, or fall back to the token's name
       const agentName = name || evalAgentToken.name;
 
@@ -4179,10 +4380,15 @@ export async function registerRoutes(
       // Upsert: reuse existing agent row for this token instead of creating duplicates on restart
       const existing = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
       let agent;
+      let netSignalsForCheck: typeof netSignalsUpdate | undefined;
       if (existing.length > 0) {
         agent = existing[0];
-        await storage.updateEvalAgent(agent.id, { name: agentName, state: "idle", metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [] });
-        agent = { ...agent, name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [] };
+        netSignalsForCheck = mergeNetSignals(agent.netSignals, netSignalsUpdate) ?? undefined;
+        // netSignals is written only when this registration reported some —
+        // never the stored value written back (netSignalsPatch).
+        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], ...netSignalsPatch(agent.netSignals, netSignalsUpdate), ...(linkTypeUpdate ?? {}) };
+        await storage.updateEvalAgent(agent.id, agentUpdate);
+        agent = { ...agent, ...agentUpdate };
         // A fresh registration means the prior process died; release any jobs it
         // was still running so they re-queue instead of hanging as "running"
         // forever (the heartbeat reaper misses them — this agent looks alive).
@@ -4191,6 +4397,7 @@ export async function registerRoutes(
           console.log(`[eval-agent] Released ${released} orphaned running job(s) from re-registered agent ${agent.id}`);
         }
       } else {
+        netSignalsForCheck = netSignalsUpdate;
         agent = await storage.createEvalAgent({
           name: agentName,
           tokenId: evalAgentToken.id,
@@ -4201,11 +4408,22 @@ export async function registerRoutes(
           metadata: metadata || {},
           currentLeaseId: leaseId,
           capabilities: capabilities ?? [],
+          linkType: linkTypeUpdate?.linkType ?? null,
         });
+        // netSignals is omitted from InsertEvalAgent (drizzle-zod jsonb-$type
+        // limitation, same as tags — see shared/schema.ts); set it via the
+        // correctly-typed update path when a fresh registration reported one.
+        if (netSignalsUpdate !== undefined) {
+          await storage.updateEvalAgent(agent.id, { netSignals: netSignalsUpdate });
+          agent = { ...agent, netSignals: netSignalsUpdate };
+        }
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
       { const ip = clientIp(req); if (ip) void storage.updateEvalAgentObservedIp(agent.id, ip); }
+      // Our SIM (phone agents, design "`sim` is system-only"): matched in the
+      // background — a lookup must never hold registration up.
+      void noteSimReport(agent.id, req.body.sim, capabilities ?? []);
 
       // Zero-trust location: detection is the ONLY region source for
       // non-public agents; registration applies immediately (fresh process).
@@ -4221,10 +4439,12 @@ export async function registerRoutes(
             siteId: agent.siteId ?? null,
             pendingRegion: agent.pendingRegion ?? null,
             pendingRegionCount: agent.pendingRegionCount ?? 0,
+            locationTrust: agent.locationTrust,
           },
           token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
           ip: clientIp(req),
           immediate: true,
+          netSignals: netSignalsForCheck,
         });
       } catch (err) {
         console.error(`[location] register-time location check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err);
@@ -4276,6 +4496,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Unknown capability" });
       }
 
+      // Reported link type (design "Detection"): a LINK_VALUES member updates
+      // it, an unrecognized string is ignored with no error (interop with
+      // older/newer daemons), absent leaves it, explicit null clears it.
+      const hbLinkType = parseLinkTypeUpdate(req.body.linkType);
+
+      // Agent-reported network signals (design "Where it's computed and
+      // stored", Part-2 Task 3): parsed strictly, merged with whatever is
+      // already stored so an unreported field stays sticky.
+      const hbNetSignalsUpdate = parseNetSignalsUpdate(req.body.netSignals);
+
       const agent = await storage.getEvalAgent(agentId);
       if (!agent || agent.tokenId !== evalAgentToken.id) {
         return res.status(403).json({ error: "Agent not found or token mismatch" });
@@ -4296,7 +4526,11 @@ export async function registerRoutes(
       const stale = !agent.locationCheckedAt
         || (Date.now() - new Date(agent.locationCheckedAt).getTime()) > LOCATION_RECHECK_HOURS * 60 * 60 * 1000;
       const pending = agent.pendingRegion != null;
-      if (ipChanged || stale || pending) {
+      // A reported signal change (e.g. cloudMetadata flips false→true) must
+      // not wait for the next scheduled recheck, same reasoning as ipChanged.
+      const signalsChanged = netSignalsChanged(agent.netSignals, hbNetSignalsUpdate);
+      const mergedNetSignals = mergeNetSignals(agent.netSignals, hbNetSignalsUpdate);
+      if (ipChanged || stale || pending || signalsChanged) {
         void runAgentLocationCheck({
           agent: {
             id: agent.id,
@@ -4304,10 +4538,12 @@ export async function registerRoutes(
             siteId: agent.siteId ?? null,
             pendingRegion: agent.pendingRegion ?? null,
             pendingRegionCount: agent.pendingRegionCount ?? 0,
+            locationTrust: agent.locationTrust,
           },
           token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
           ip: callerIp,
           immediate: false,
+          netSignals: mergedNetSignals ?? undefined,
         }).catch((err) => console.error(`[location] heartbeat check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
       }
 
@@ -4321,9 +4557,16 @@ export async function registerRoutes(
       if (hbCapabilities !== undefined) {
         updates.capabilities = hbCapabilities;
       }
+      if (hbLinkType !== undefined) {
+        updates.linkType = hbLinkType.linkType;
+      }
+      Object.assign(updates, netSignalsPatch(agent.netSignals, hbNetSignalsUpdate));
       if (Object.keys(updates).length > 0) {
         await storage.updateEvalAgent(agentId, updates);
       }
+      // Our SIM: recomputed in the background only when the report changed or
+      // the lookup expired (server/sim-carrier.ts) — never delays the beat.
+      void noteSimReport(agent.id, req.body.sim, hbCapabilities ?? agent.capabilities);
 
       res.json({ message: "Heartbeat received" });
     } catch (error) {
@@ -6001,7 +6244,13 @@ export async function registerRoutes(
 
   // Helper to transform DB eval results into the format the dashboard expects.
   // Accepts both raw rows and hourly/daily bucket aggregates (both are MetricSourceRow).
-  async function formatMetricsResults(results: MetricSourceRow[]) {
+  //
+  // Network tags (design 2026-10-22 "Analysis"): every row carries `tags` — its
+  // job's EFFECTIVE tags on `board`, as {key, value} — or null on an hourly/
+  // daily bucket (it averages many jobs). With `groupBy`, every row also
+  // carries `tagValue`: that key's effective value, or "untagged" — or with
+  // groupBy=region, the result's region, or "unattributed".
+  async function formatMetricsResults(results: MetricSourceRow[], board: TagBoard, groupBy?: string) {
     const providerCache = new Map<string, string>();
     const [allProviders, locations] = await Promise.all([
       storage.getAllProviders(),
@@ -6034,6 +6283,10 @@ export async function registerRoutes(
       // EvalFlow identity for the hover tooltip (raw rows only; null on buckets).
       evalFlowId: r.evalFlowId ?? null,
       evalFlowName: r.evalFlowName ?? null,
+      tags: r.jobTags !== undefined ? effectiveTags(r.jobTags, board) : null,
+      ...(groupBy ? {
+        tagValue: r.jobTags !== undefined ? groupValue(r, board, groupBy) : (r.tagValue ?? emptyGroupValue(groupBy)),
+      } : {}),
     }));
   }
 
@@ -6061,12 +6314,14 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `realtime:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `realtime:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMainlineMetrics(win.hoursBack, regionScope.scope, tp.transport);
-      const data = await formatMetricsResults(results);
+      const results = await storage.getMainlineMetrics(win.hoursBack, regionScope.scope, tp.transport, tags);
+      const data = await formatMetricsResults(results, "mainline", tags.groupBy);
       setCache(cacheKey, data);
       res.json(data);
     } catch (error) {
@@ -6083,12 +6338,14 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `community:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `community:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getCommunityMetrics(win.hoursBack, regionScope.scope, tp.transport);
-      const data = await formatMetricsResults(results);
+      const results = await storage.getCommunityMetrics(win.hoursBack, regionScope.scope, tp.transport, tags);
+      const data = await formatMetricsResults(results, "community", tags.groupBy);
       setCache(cacheKey, data);
       res.json(data);
     } catch (error) {
@@ -6109,12 +6366,14 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `my-evals:${user.id}:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack, regionScope.scope, tp.transport);
-      const data = await formatMetricsResults(results);
+      const results = await storage.getMyEvalMetrics(user.id, win.hoursBack, regionScope.scope, tp.transport, tags);
+      const data = await formatMetricsResults(results, "myEvals", tags.groupBy);
       setCache(cacheKey, data);
       res.json(data);
     } catch (error) {
@@ -6148,11 +6407,14 @@ export async function registerRoutes(
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}`;
+      // Tag filters only (no groupBy): a filtered chart's zoom must stay filtered.
+      const tf = parseMetricsTags({ tag: req.query.tag });
+      if ("error" in tf) return res.status(400).json({ error: tf.error });
+      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey({ tagFilters: tf.tagFilters })}`;
       const cached = getCached(key);
       if (cached) return res.json(cached);
-      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport);
-      const data = { ...result, metrics: await formatMetricsResults(result.metrics) };
+      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport, tf.tagFilters);
+      const data = { ...result, metrics: await formatMetricsResults(result.metrics, tier) };
       setCache(key, data);
       res.json(data);
     } catch (error) {
@@ -6202,17 +6464,28 @@ export async function registerRoutes(
       // One transport per view (web by default), like every other metrics view.
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
-      const cacheKey = `leaderboard:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const cacheKey = `leaderboard:${win.hoursBack ?? 'all'}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
 
-      const results = await storage.getMainlineEvalResults(1000, win.hoursBack, regionScope.scope, tp.transport);
+      const results = await storage.getTierEvalResults("mainline", 1000, {
+        hoursBack: win.hoursBack, scope: regionScope.scope, transport: tp.transport, tagFilters: tags.tagFilters,
+      });
       const locations = await storage.getAllRegionLocations();
 
-      // Group results by (provider, site)
-      const providerRegionMap = new Map<string, {
-        providerId: string;
-        siteId: string | null;
+      // Group results by (provider, site) — and, with groupBy, by that tag's
+      // effective mainline value too ("untagged" when a result has none), or
+      // with groupBy=region by the result's region.
+      //
+      // Access columns (design "Last mile vs datacenter" → Analysis): unless
+      // the view is already filtered to one access class, every row also
+      // averages its last-mile and its datacenter results separately, from
+      // each job's frozen `access` tag (unknown / untagged feed neither).
+      const withAccess = wantsAccessColumns(tags.tagFilters);
+      type Acc = {
+        count: number;
         responseLatencies: number[];
         responseLatenciesP95: number[];
         interruptLatencies: number[];
@@ -6221,38 +6494,53 @@ export async function registerRoutes(
         networkResiliences: number[];
         naturalnesses: number[];
         noiseReductions: number[];
+      };
+      const emptyAcc = (): Acc => ({
+        count: 0, responseLatencies: [], responseLatenciesP95: [], interruptLatencies: [], interruptLatenciesP95: [],
+        turnSuccessRates: [], networkResiliences: [], naturalnesses: [], noiseReductions: [],
+      });
+      const addTo = (acc: Acc, result: (typeof results)[number]) => {
+        acc.count++;
+        // Only real (non-NA) latencies enter the averages. A non-responsive run
+        // stores null latency — excluding it keeps a dead agent out of the
+        // ranking instead of averaging it in as a fake-fast 0 ms.
+        if (result.responseLatencyMedian != null) acc.responseLatencies.push(result.responseLatencyMedian);
+        if (result.responseLatencyP95 != null) acc.responseLatenciesP95.push(result.responseLatencyP95);
+        if (result.interruptLatencyMedian != null) acc.interruptLatencies.push(result.interruptLatencyMedian);
+        if (result.interruptLatencyP95 != null) acc.interruptLatenciesP95.push(result.interruptLatencyP95);
+        // TSR INCLUDES no-response runs (a failed turn lowers it) — that's the
+        // point: it's the resilience signal, unlike latency which excludes them.
+        if (result.turnSuccessRate != null) acc.turnSuccessRates.push(result.turnSuccessRate);
+        if (result.networkResilience != null) acc.networkResiliences.push(result.networkResilience);
+        if (result.naturalness != null) acc.naturalnesses.push(result.naturalness);
+        if (result.noiseReduction != null) acc.noiseReductions.push(result.noiseReduction);
+      };
+      const providerRegionMap = new Map<string, {
+        providerId: string;
+        siteId: string | null;
+        tagValue?: string;
+        all: Acc;
+        lastMile: Acc;
+        datacenter: Acc;
       }>();
 
       for (const result of results) {
-        const key = `${result.providerId}-${result.siteId}`;
+        const tagValue = tags.groupBy ? groupValue(result, "mainline", tags.groupBy) : undefined;
+        const key = leaderboardGroupKey(result.providerId, result.siteId, tagValue);
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,
             siteId: result.siteId,
-            responseLatencies: [],
-            responseLatenciesP95: [],
-            interruptLatencies: [],
-            interruptLatenciesP95: [],
-            turnSuccessRates: [],
-            networkResiliences: [],
-            naturalnesses: [],
-            noiseReductions: [],
+            ...(tagValue === undefined ? {} : { tagValue }),
+            all: emptyAcc(),
+            lastMile: emptyAcc(),
+            datacenter: emptyAcc(),
           });
         }
         const group = providerRegionMap.get(key)!;
-        // Only real (non-NA) latencies enter the averages. A non-responsive run
-        // stores null latency — excluding it keeps a dead agent out of the
-        // ranking instead of averaging it in as a fake-fast 0 ms.
-        if (result.responseLatencyMedian != null) group.responseLatencies.push(result.responseLatencyMedian);
-        if (result.responseLatencyP95 != null) group.responseLatenciesP95.push(result.responseLatencyP95);
-        if (result.interruptLatencyMedian != null) group.interruptLatencies.push(result.interruptLatencyMedian);
-        if (result.interruptLatencyP95 != null) group.interruptLatenciesP95.push(result.interruptLatencyP95);
-        // TSR INCLUDES no-response runs (a failed turn lowers it) — that's the
-        // point: it's the resilience signal, unlike latency which excludes them.
-        if (result.turnSuccessRate != null) group.turnSuccessRates.push(result.turnSuccessRate);
-        if (result.networkResilience != null) group.networkResiliences.push(result.networkResilience);
-        if (result.naturalness != null) group.naturalnesses.push(result.naturalness);
-        if (result.noiseReduction != null) group.noiseReductions.push(result.noiseReduction);
+        addTo(group.all, result);
+        const column = withAccess ? accessColumn(result.jobTags, "mainline") : undefined;
+        if (column) addTo(group[column], result);
       }
 
       // Returns null (NA) for an empty set — never 0, which would read as a
@@ -6264,6 +6552,16 @@ export async function registerRoutes(
         const f = 10 ** decimals;
         return Math.round(a * f) / f;
       };
+      const summarize = (acc: Acc) => ({
+        responseLatency: avgRound(acc.responseLatencies),
+        responseLatencyP95: avgRound(acc.responseLatenciesP95),
+        interruptLatency: avgRound(acc.interruptLatencies),
+        interruptLatencyP95: avgRound(acc.interruptLatenciesP95),
+        turnSuccessRate: avgRound(acc.turnSuccessRates, 4),
+        networkResilience: avgRound(acc.networkResiliences),
+        naturalness: avgRound(acc.naturalnesses, 1),
+        noiseReduction: avgRound(acc.noiseReductions),
+      });
 
       // Aggregate metrics per group
       const entries = await Promise.all(
@@ -6274,14 +6572,15 @@ export async function registerRoutes(
             provider: provider?.name || "Unknown",
             siteId: group.siteId,
             ...regionMetadata(group.siteId, locations),
-            responseLatency: avgRound(group.responseLatencies),
-            responseLatencyP95: avgRound(group.responseLatenciesP95),
-            interruptLatency: avgRound(group.interruptLatencies),
-            interruptLatencyP95: avgRound(group.interruptLatenciesP95),
-            turnSuccessRate: avgRound(group.turnSuccessRates, 4),
-            networkResilience: avgRound(group.networkResiliences),
-            naturalness: avgRound(group.naturalnesses, 1),
-            noiseReduction: avgRound(group.noiseReductions),
+            // With groupBy only: the group's value (or "untagged" / "unattributed").
+            ...(group.tagValue === undefined ? {} : { tagValue: group.tagValue }),
+            ...summarize(group.all),
+            // Without an access filter only: the same averages over the row's
+            // last-mile and datacenter results, each with its result count.
+            ...(withAccess ? {
+              lastMile: { ...summarize(group.lastMile), count: group.lastMile.count },
+              datacenter: { ...summarize(group.datacenter), count: group.datacenter.count },
+            } : {}),
           };
         })
       );

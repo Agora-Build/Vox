@@ -1,8 +1,9 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision, bigint, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision, bigint, primaryKey, date } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import crypto from "crypto";
+import type { Tag, JobTag, LineLookup } from "./tags";
 
 // Enums
 export const userPlanEnum = pgEnum("user_plan", ["basic", "premium", "principal", "fellow"]);
@@ -220,14 +221,30 @@ export const evalFlows = pgTable("eval_flows", {
   // evalFlow's agent. Editable on the live row; each job freezes its own copy.
   transport: transportEnum("transport").default("web").notNull(),
   config: jsonb("config").default({}).notNull(),
+  // Hand-set by whoever can edit the flow (design "Data model"). Describes the
+  // TARGET under test (e.g. line:twilio) — a flow runs on many agents, so
+  // vantage-point tags (isp/link) can't live here.
+  tags: jsonb("tags").$type<Tag[]>().default([]).notNull(),
+  // The number lookup's answer for this flow's dialled number (null = never
+  // looked up, or the number is manual-only — a secret, toll-free, or no
+  // credentials configured). The owner's hand-set `tags.line` stays theirs;
+  // this is kept separate so editing tags never clobbers the lookup's record.
+  lineLookup: jsonb("line_lookup").$type<LineLookup>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// tags/lineLookup omitted: drizzle-zod's generic jsonb schema (any[]/Record<string,
+// any>) doesn't carry the $type<Tag[]>()/$type<LineLookup>() cast, so including
+// them here produces an insert-overload mismatch against the typed column. Both
+// start at their DB default (tags '[]', lineLookup null) and are set afterwards
+// through their own edit path, same as evalAgents.tags/linkType below.
 export const insertEvalFlowSchema = createInsertSchema(evalFlows).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  tags: true,
+  lineLookup: true,
 });
 
 export type InsertEvalFlow = z.infer<typeof insertEvalFlowSchema>;
@@ -322,6 +339,42 @@ export const evalAgents = pgTable("eval_agents", {
   // 3 consecutive re-detections. Trust drops apply immediately (no pending).
   pendingRegion: varchar("pending_region", { length: 64 }),
   pendingRegionCount: integer("pending_region_count").default(0).notNull(),
+  // Hand-set by the agent's operator (the token's owner) — a correction or an
+  // extra VANTAGE-POINT tag (e.g. isp:att), on top of whatever is detected.
+  tags: jsonb("tags").$type<Tag[]>().default([]).notNull(),
+  // Reported by the agent on register/heartbeat, refreshed each beat like
+  // `capabilities`. Null = not reported (an older agent, or the host's answer
+  // couldn't be detected).
+  linkType: varchar("link_type", { length: 16 }),
+  // Agent-reported network signals (register/heartbeat `netSignals`,
+  // migration 0059): may only push the access classifier AWAY from lastmile
+  // (cloudMetadata → datacenter, publicIpOnInterface → unknown — see
+  // server/access-class.ts). Persisted (not just passed through on the beat
+  // that reported it) because the full location recheck runs only every
+  // LOCATION_RECHECK_HOURS — storing the latest value here on every beat
+  // means that recheck sees the freshest signal, not a stale one. Each field
+  // independently sticky (server/net-signals-update.ts merges); system-
+  // written only, never trusted raw from a request body beyond its own
+  // boolean fields.
+  netSignals: jsonb("net_signals").$type<{ cloudMetadata?: boolean; publicIpOnInterface?: boolean }>(),
+  // System-only (migration 0058): written only by Core's location check
+  // (server/location.ts → server/access-class.ts), never from a request body.
+  // lastmile | datacenter | unknown; null = never checked.
+  accessClass: varchar("access_class", { length: 16 }),
+  // Classifier version + deciding signals, e.g. "v1: dc-range".
+  accessReason: text("access_reason"),
+  accessCheckedAt: timestamp("access_checked_at"),
+  // System-only: our SIM's carrier slug (phone agents), the reason, and our
+  // own number redacted to its last 4 digits — never the full number.
+  simCarrier: varchar("sim_carrier", { length: 48 }),
+  simReason: text("sim_reason"),
+  simNumberRedacted: varchar("sim_number_redacted", { length: 8 }),
+  // Keyed hash (HMAC-SHA256, server key) of that full number — "is this the
+  // same SIM number?" without storing it. Core-internal. Migration 0060.
+  simNumberHash: varchar("sim_number_hash", { length: 64 }),
+  // Generation of the latest SIM report (server/sim-carrier.ts): negative =
+  // a recompute in flight, positive = settled. Core-internal. Migration 0062.
+  simReportGen: integer("sim_report_gen").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -333,16 +386,75 @@ export const evalAgents = pgTable("eval_agents", {
   tokenCreatedIdx: index("eval_agents_token_created_idx").on(table.tokenId, table.createdAt.desc()),
 }));
 
+// tags omitted for the same reason as evalFlows.tags above (drizzle-zod's
+// generic jsonb schema doesn't carry the $type<Tag[]>() cast); it starts at
+// its DB default ('[]') and is set afterwards through its own edit path.
+// netSignals is the same jsonb-$type situation (no DB default — starts NULL,
+// same as "not reported yet"); register/heartbeat set it via
+// storage.updateEvalAgent (Partial<EvalAgent>, correctly typed) instead of
+// through this insert.
 export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
   lastSeenAt: true,
   lastJobAt: true,
+  tags: true,
+  netSignals: true,
+  // System-only — never set through an insert built from input.
+  accessClass: true,
+  accessReason: true,
+  accessCheckedAt: true,
+  simCarrier: true,
+  simReason: true,
+  simNumberRedacted: true,
+  simNumberHash: true,
+  simReportGen: true,
 });
 
 export type InsertEvalAgent = z.infer<typeof insertEvalAgentSchema>;
 export type EvalAgent = typeof evalAgents.$inferSelect;
+
+// ==================== NUMBER LOOKUPS ====================
+
+// Per-number cache for the `line` number lookup (design "Number lookup"):
+// Core looks up a phone flow's dialled number against Twilio Lookup v2 when
+// the flow is saved and whenever the number changes, then reuses the answer
+// for 30 days (one paid lookup per number per month) — shared across every
+// flow/owner that dials the same number. Keyed by a keyed hash of the E.164
+// number (HMAC-SHA256 with a server key — server/number-lookup.ts
+// `numberHash`), never the number itself (migration 0061).
+export const numberLookups = pgTable("number_lookups", {
+  numberHash: varchar("number_hash", { length: 64 }).primaryKey(),
+  // The lookup service that answered (e.g. "twilio") — a seam, so a second
+  // provider (Telnyx) can be added later without migrating existing rows.
+  provider: varchar("provider", { length: 16 }).notNull(),
+  carrierName: text("carrier_name"),
+  lineType: varchar("line_type", { length: 32 }),
+  // The mapped `line` tag value (shared/tags.ts `lineFromCarrier`); null when
+  // the provider returned no carrier (e.g. toll-free) — stays manual-only.
+  value: varchar("value", { length: 48 }),
+  // Mobile country / network code of the number (Twilio
+  // line_type_intelligence), matched against a SIM operator's codes.
+  mcc: varchar("mcc", { length: 3 }),
+  mnc: varchar("mnc", { length: 3 }),
+  lookedUpAt: timestamp("looked_up_at").defaultNow().notNull(),
+});
+
+export const insertNumberLookupSchema = createInsertSchema(numberLookups);
+
+export type InsertNumberLookup = z.infer<typeof insertNumberLookupSchema>;
+export type NumberLookup = typeof numberLookups.$inferSelect;
+
+// Durable spending caps on paid number lookups (server/paid-lookup-budget.ts):
+// one counter per (scope, subject, UTC calendar day). scope: global |
+// flow-user | sim-agent | sim-user; subject: 'all' / a user id / an agent id.
+export const paidLookupUsage = pgTable("paid_lookup_usage", {
+  scope: varchar("scope", { length: 16 }).notNull(),
+  subject: varchar("subject", { length: 64 }).notNull(),
+  day: date("day", { mode: "string" }).notNull(),
+  count: integer("count").notNull().default(0),
+}, (t) => [primaryKey({ columns: [t.scope, t.subject, t.day] })]);
 
 // ==================== EVAL SCHEDULES ====================
 
@@ -410,7 +522,15 @@ export type RestfulTrigger = {
 // or deleting an evalFlow/eval-set never rewrites a past job's history.
 export type JobSnapshot = {
   provider: { id: string; name: string; platformId: string | null } | null;
-  evalFlow: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null } | null;
+  evalFlow: {
+    name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number; organizationId: number | null;
+    // The flow's hand-set tags and number-lookup answer, frozen at job
+    // creation (design "Freezing at claim" / "Data model") — editing the
+    // flow's tags afterwards never changes a past job's snapshot. Optional so
+    // snapshots built before this field stay valid; treat missing as [] / null.
+    tags?: Tag[];
+    lineLookup?: LineLookup | null;
+  } | null;
   evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
   creatorPlan: string | null;
   // Conversation transport frozen at creation (design 2026-09-21 §3). Absent on
@@ -510,6 +630,11 @@ export const evalJobs = pgTable("eval_jobs", {
   // location trust ('trusted' for public/configured agents). NULL = pre-feature
   // row (grandfathered by the community gate).
   locationTrust: varchar("location_trust", { length: 16 }),
+  // Frozen at claim (design "Freezing at claim"): flow tags, agent tags, and
+  // detected isp/link/line — each tag source kept, so a board's effective-
+  // value rule can change later without rewriting history (shared/tags.ts
+  // `effectiveTags`). Null for jobs claimed before this release (untagged).
+  tags: jsonb("tags").$type<JobTag[]>(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   // Set once marketplace.settle() has resolved for this (terminal) job: its

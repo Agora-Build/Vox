@@ -131,7 +131,55 @@ components:
       scheme: bearer
       description: API key with prefix `vox_live_`
 
+  parameters:
+    TagFilter:
+      name: tag
+      in: query
+      style: form
+      explode: true
+      schema:
+        type: array
+        maxItems: 4
+        items:
+          type: string
+          example: "isp:starlink"
+      description: >
+        Network tag filter, `key:value` (e.g. `line:twilio`, `isp:starlink`, `link:wifi`).
+        Repeat it to require several (all must match), at most 4 per request — a fifth is a
+        400 "At most 4 tag filters per request". Matched against each result's
+        **effective** value for the tier: on `mainline`, `line`/`isp`/`link` use the
+        detected value only (a hand-set-only value counts as untagged), except `line` on a
+        flow without a number lookup, where the flow's value counts; on `community` and
+        `mine`, a hand-set value wins over a detected one. The system-only `access`
+        (`lastmile`/`datacenter`/`unknown`) and `sim` (our phone SIM's carrier, phone jobs)
+        always use the detected value, on every tier (e.g. `access:lastmile` keeps only
+        results measured over a real home, office or mobile connection). `region` is not a
+        tag key — use the region parameters. Results from before network tags match no
+        filter.
+    TagGroupBy:
+      name: groupBy
+      in: query
+      schema:
+        type: string
+        example: isp
+      description: >
+        A tag key to split rows by its effective value (`tagValue` on each row). Results
+        without that key form the `untagged` group — nothing is dropped. `untagged` is a
+        reserved value: no tag may carry it. `groupBy=access` splits by last mile /
+        datacenter / unknown. The reserved key `region` splits by the result's region
+        instead: the location base of its site (e.g. `apac-in-mumbai` for site
+        `apac-in-mumbai-01`), or for an uploaded analysis the region it was recorded in;
+        results with neither form the `unattributed` group.
   schemas:
+    Tag:
+      type: object
+      properties:
+        key:
+          type: string
+          example: isp
+        value:
+          type: string
+          example: starlink
     Error:
       type: object
       required:
@@ -224,6 +272,19 @@ components:
           type: object
           additionalProperties: true
           example: {}
+        tags:
+          type: array
+          description: Hand-set key:value tags describing the target under test — `line` (its phone provider) plus custom keys. `isp`/`link` describe the eval agent and are set on the agent; `access`/`sim` are set only by Vox.
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                example: "isp"
+              value:
+                type: string
+                example: "att"
+          example: [{ key: "line", value: "twilio" }]
         createdAt:
           type: string
           format: date-time
@@ -255,6 +316,22 @@ components:
         config:
           type: object
           additionalProperties: true
+        tags:
+          type: array
+          description: >-
+            Hand-set key:value tags: `line` plus custom keys (e.g. `line:twilio`,
+            `codec:opus`). `isp`/`link` are refused with a 400 — they describe
+            the eval agent and are set on the agent; `access`/`sim` are refused with a
+            400 everywhere — only Vox sets them. Each entry is either "key:value"
+            or {key, value}; the value `untagged` is reserved.
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+          example: [{ key: "line", value: "twilio" }]
 
     EvalFlowUpdate:
       type: object
@@ -269,6 +346,16 @@ components:
         config:
           type: object
           additionalProperties: true
+        tags:
+          type: array
+          description: Hand-set key:value tags, same rule as create (`line` plus custom keys). Omit to leave the stored tags unchanged.
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
 
     EvalSet:
       type: object
@@ -567,6 +654,19 @@ components:
         timestamp:
           type: string
           format: date-time
+        tags:
+          type: array
+          description: The result's effective network tags for the requested tier.
+          items:
+            $ref: '#/components/schemas/Tag'
+        tagValue:
+          type: string
+          description: >
+            Only with `groupBy` — the effective value of that key, or `untagged` for results
+            without it. `untagged` is reserved: no tag may carry it as a value, so it always
+            means "no value". With `groupBy=region`, the result's region, or
+            `unattributed`.
+          example: starlink
 
     LeaderboardEntry:
       type: object
@@ -595,6 +695,57 @@ components:
         noiseReduction:
           type: integer
           example: 90
+        tagValue:
+          type: string
+          description: >
+            Only with `groupBy` — the group's value for that key, or `untagged` for results
+            without it (`untagged` is reserved — no tag may carry it as a value). Each
+            provider × site row is split into one row per value. With `groupBy=region`, the
+            region, or `unattributed`.
+          example: starlink
+        lastMile:
+          allOf:
+            - $ref: '#/components/schemas/LeaderboardAccessColumn'
+          description: >
+            Only when no `access` tag filter is set — the same averages over this row's
+            results measured over a real home, office or mobile connection (`access:lastmile`).
+        datacenter:
+          allOf:
+            - $ref: '#/components/schemas/LeaderboardAccessColumn'
+          description: >
+            Only when no `access` tag filter is set — the same averages over this row's
+            results measured from a datacenter (`access:datacenter`). Results whose access is
+            `unknown` (or untagged) count in the row but in neither column.
+
+    LeaderboardAccessColumn:
+      type: object
+      description: One access class's share of a leaderboard row. Averages are null when it has no results.
+      properties:
+        count:
+          type: integer
+          description: How many of the row's results have this access class.
+          example: 3
+        responseLatency:
+          type: integer
+          nullable: true
+          example: 240
+        interruptLatency:
+          type: integer
+          nullable: true
+          example: 140
+        turnSuccessRate:
+          type: number
+          nullable: true
+          example: 0.95
+        networkResilience:
+          type: integer
+          nullable: true
+        naturalness:
+          type: number
+          nullable: true
+        noiseReduction:
+          type: integer
+          nullable: true
 
 paths:
   /eval-flows:
@@ -1381,6 +1532,8 @@ paths:
             type: integer
             minimum: 1
           description: Only results from the last N hours (omit for all time).
+        - $ref: '#/components/parameters/TagFilter'
+        - $ref: '#/components/parameters/TagGroupBy'
         - name: limit
           in: query
           schema:
@@ -1418,8 +1571,17 @@ paths:
                       hours:
                         type: integer
                         nullable: true
+                      tag:
+                        type: array
+                        description: The tag filters applied, as `key:value` (empty when none).
+                        items:
+                          type: string
+                      groupBy:
+                        type: string
+                        nullable: true
+                        description: The groupBy key, or null.
         '400':
-          description: An invalid tier, transport, hours or limit
+          description: An invalid tier, transport, hours, limit, tag or groupBy
         '401':
           description: "`tier=mine` without an API key"
         '429':
@@ -1461,6 +1623,8 @@ paths:
             type: integer
             minimum: 1
           description: Only results from the last N hours (omit for all time).
+        - $ref: '#/components/parameters/TagFilter'
+        - $ref: '#/components/parameters/TagGroupBy'
         - name: siteId
           in: query
           schema:
@@ -1497,8 +1661,17 @@ paths:
                       hours:
                         type: integer
                         nullable: true
+                      tag:
+                        type: array
+                        description: The tag filters applied, as `key:value` (empty when none).
+                        items:
+                          type: string
+                      groupBy:
+                        type: string
+                        nullable: true
+                        description: The groupBy key, or null.
         '400':
-          description: An invalid tier, transport, hours or limit
+          description: An invalid tier, transport, hours, limit, tag or groupBy
         '401':
           description: "`tier=mine` without an API key"
         '429':

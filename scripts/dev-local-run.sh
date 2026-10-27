@@ -866,7 +866,9 @@ clean_test_data() {
     if [ "${1:-}" != "--yes" ] && [ "${VOX_CLEAN_ASSUME_YES:-}" != "1" ]; then
         log_warn "This DELETES test data from ${DB_URL}:"
         log_warn "  eval flows/sets without a schedule (except Scout's seeded ones), the"
-        log_warn "  projects left empty, non-seed secrets, old jobs, and ALL login sessions."
+        log_warn "  projects left empty, non-seed secrets, old jobs, ALL login sessions, and"
+        log_warn "  eval agents whose token is revoked or a test user's, or that are test fixtures"
+        log_warn "  unseen for a day (never Local-Eval-Agent*, never one a kept job uses)."
         printf "Type 'yes' to continue: "
         local reply=""
         read -r reply
@@ -940,6 +942,101 @@ DELETE FROM plugin_organizations.org_secrets
                          WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%');
 DELETE FROM plugin_organizations.organizations
       WHERE name LIKE 'r2-org-%' OR name LIKE 'abs-org-%';
+
+-- Eval agents: suites register agents and mostly only revoke the token (or
+-- leave it), so the rows pile up — ~1,950 of them were listed on
+-- /console/eval-agents here, and each public one holds a site sequence. An
+-- agent is test leakage when:
+--   * its token is revoked, or
+--   * its token belongs to a test user (@example.com / @test.local), or
+--   * it hasn't been seen for a day AND its name or its token's name is one a
+--     suite creates (the patterns below, taken from tests/ and tests/e2e/).
+-- A developer's own agents never match the last arm: dev-local-run.sh names
+-- its agents and tokens Local-Eval-Agent / Local-Eval-Agent-<REGION>, which
+-- are excluded outright, and any other agent you registered keeps its row,
+-- however long it has been offline.
+--
+-- Fixture patterns (agent name OR token name, LIKE):
+--   api.test.ts: Test-Agent-%, Multi-Region-%, Test Agent %, Concurrent-Agent,
+--     Legacy Agent%, Version Test %, Heartbeat Test %, Job-Flow-Test-Agent,
+--     Job Flow Test Token, complete-test-%, Admin Public/Default/Private Token,
+--     OIP Agent, OIP Token %, agent-A-%, agent-B-%
+--   tier / dispatch / secrets suites: tp-%, t-admin-%, t-team-%, t13-%,
+--     tt-schema-%, tt-mint-%, rt-own-%, r2-agent-%, r2-team-%, SCG %,
+--     Secrets Test %, Secrets Class Withhold %, session-ep-agent-%,
+--     shared-agent-%, runtime-shared-agent-%, reap-%, zt-%
+--   analyze / paid / revoke: analyze-paid-%, analyze-api-agent-%,
+--     cancel-paid-%, e2e-paid-%, revoke-listing-%
+--   network tags / access (part 2): Access Agent, Access Token %,
+--     Net Signals %, ntags-%, ntr-%, e2e-access-%, e2e lastmile %,
+--     e2e datacenter %, e2e unknown %, e2e unverified %
+--
+-- Never one a job still points at (eval_jobs.eval_agent_id, no ON DELETE
+-- action). Note that protection is only as strong as the jobs that survive
+-- THIS run: result-less jobs older than a day were deleted above, so in
+-- practice an agent is kept by a job that produced a result or is under a
+-- day old. Then the tokens left without agents, if revoked or a test user's,
+-- unless a kept job targets them (target_token_id would be nulled, rewriting
+-- that job) or a shared-agents listing names them.
+CREATE TEMP TABLE fixture_agent_names (pattern text);
+INSERT INTO fixture_agent_names VALUES
+  ('Test-Agent-%'), ('Multi-Region-%'), ('Test Agent %'), ('Concurrent-Agent'),
+  ('Legacy Agent%'), ('Version Test %'), ('Heartbeat Test %'), ('Job-Flow-Test-Agent'),
+  ('Job Flow Test Token'), ('complete-test-%'), ('Admin Public Token'), ('Admin Default Token'),
+  ('Admin Private Token'), ('OIP Agent'), ('OIP Token %'), ('agent-A-%'), ('agent-B-%'),
+  ('tp-%'), ('t-admin-%'), ('t-team-%'), ('t13-%'), ('tt-schema-%'), ('tt-mint-%'),
+  ('rt-own-%'), ('r2-agent-%'), ('r2-team-%'), ('SCG %'), ('Secrets Test %'),
+  ('Secrets Class Withhold %'), ('session-ep-agent-%'), ('shared-agent-%'), ('reap-%'), ('zt-%'),
+  ('analyze-paid-%'), ('analyze-api-agent-%'), ('cancel-paid-%'), ('e2e-paid-%'), ('revoke-listing-%'),
+  ('runtime-shared-agent-%'),
+  ('Access Agent'), ('Access Token %'), ('Net Signals %'), ('ntags-%'), ('ntr-%'), ('e2e-access-%'),
+  ('e2e lastmile %'), ('e2e datacenter %'), ('e2e unknown %'), ('e2e unverified %');
+CREATE TEMP TABLE leaked_agents AS
+  SELECT a.id FROM eval_agents a
+    JOIN eval_agent_tokens t ON t.id = a.token_id
+    LEFT JOIN users u ON u.id = t.created_by
+   WHERE (t.is_revoked
+          OR ((u.email LIKE '%@example.com' OR u.email LIKE '%@test.local') AND u.email <> 'stripe-e2e-fixture@test.local')
+          OR (COALESCE(a.last_seen_at, a.created_at) < now() - interval '1 day'
+              AND EXISTS (SELECT 1 FROM fixture_agent_names f WHERE a.name LIKE f.pattern OR t.name LIKE f.pattern)))
+     AND a.name NOT LIKE 'Local-Eval-Agent%'
+     AND t.name NOT LIKE 'Local-Eval-Agent%'
+     AND NOT EXISTS (SELECT 1 FROM eval_jobs j WHERE j.eval_agent_id = a.id);
+DELETE FROM eval_agents WHERE id IN (SELECT id FROM leaked_agents);
+DROP TABLE leaked_agents;
+-- Tokens: revoked or a test user's, or — once no agent uses them — named like
+-- a suite fixture (most suites mint as admin and never revoke). The last arm
+-- matters: 15,171 admin-minted fixture tokens (Multi-Region-NA, Admin Public
+-- Token, ... ~36 per gate run since August) made /console/eval-agents render a
+-- 15k-row token table — ~11 s before anything on the page appeared, so the
+-- E2E badge test's 5 s expectations failed (final-fix #11). Ten minutes of age
+-- keeps a token a suite running right now has minted but not yet registered.
+CREATE TEMP TABLE leaked_tokens AS
+  SELECT t.id,
+         (t.name NOT LIKE 'Local-Eval-Agent%'
+          AND EXISTS (SELECT 1 FROM fixture_agent_names f WHERE t.name LIKE f.pattern)) AS fixture
+    FROM eval_agent_tokens t LEFT JOIN users u ON u.id = t.created_by
+   WHERE (t.is_revoked
+          OR ((u.email LIKE '%@example.com' OR u.email LIKE '%@test.local') AND u.email <> 'stripe-e2e-fixture@test.local')
+          OR (t.created_at < now() - interval '10 minutes'
+              AND t.name NOT LIKE 'Local-Eval-Agent%'
+              AND EXISTS (SELECT 1 FROM fixture_agent_names f WHERE t.name LIKE f.pattern)))
+     AND NOT EXISTS (SELECT 1 FROM eval_agents a WHERE a.token_id = t.id)
+     AND NOT EXISTS (SELECT 1 FROM eval_jobs j WHERE j.target_token_id = t.id);
+DO $$
+BEGIN
+  -- A name inside an untaken IF branch is never planned, so this is safe without the plugin.
+  IF to_regclass('plugin_shared_agents.listings') IS NOT NULL THEN
+    -- A listing keeps its token, unless both are a suite's fixture (nothing
+    -- references a listing row; the shared-agents suites leave ~1,000).
+    DELETE FROM leaked_tokens k WHERE NOT k.fixture
+       AND EXISTS (SELECT 1 FROM plugin_shared_agents.listings l WHERE l.token_id = k.id);
+    DELETE FROM plugin_shared_agents.listings l WHERE l.token_id IN (SELECT id FROM leaked_tokens);
+  END IF;
+END $$;
+DELETE FROM eval_agent_tokens WHERE id IN (SELECT id FROM leaked_tokens);
+DROP TABLE leaked_tokens;
+DROP TABLE fixture_agent_names;
 
 -- Test users (@example.com, @test.local): suites invite a fresh user per run and never
 -- delete it. At ~5,000 of them the unpaginated /console/users page took so
@@ -1606,7 +1703,11 @@ main() {
             echo "  status                 - Show service status"
             echo "  clean-test-data [--yes] - Purge test-suite leakage (incl. orphaned"
             echo "                           recurring schedules) from the dev DB."
-            echo "                           Prompts unless --yes; refuses a non-local DB"
+            echo "                           Prompts unless --yes; refuses a non-local DB."
+            echo "                           Also removes eval agents whose token is revoked"
+            echo "                           or a test user's, and known test-fixture agents"
+            echo "                           unseen for a day — never Local-Eval-Agent*, never"
+            echo "                           your own agents, never one a kept job uses"
             echo "  build-agent            - Build eval agent Docker image"
             echo "  smoke-test             - Run eval agent smoke tests"
             echo "  logs [server|agent]    - Show logs"

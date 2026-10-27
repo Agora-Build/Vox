@@ -43,6 +43,19 @@ const STUB_PS = `#!/bin/bash
 if [ "$*" = "-o uid= -C dialfd" ]; then [ -n "\${PS_DIALF_UID:-}" ] && echo "  $PS_DIALF_UID"; exit 0; fi
 exec /usr/bin/ps "$@"
 `;
+// Shadows the real `ip` (network tags' host_link_type, Linux branch) so
+// autodetection is deterministic here regardless of the test host's actual
+// network: with no route to report, host_link_type always returns nothing
+// unless a test overrides VOX_LINK_TYPE directly (the documented, least-
+// invasive test hook — same precedence host_link_type gives a real .env).
+// A test may set IP_ROUTE_OUT to make `ip route get` report a route (every
+// ip call is logged as "ip <args>"); unset, it reports none.
+const STUB_IP = `#!/bin/bash
+echo "ip $*" >> "$VU_LOG"
+if [ "$1" = "route" ] && [ -n "\${IP_ROUTE_OUT:-}" ]; then echo "$IP_ROUTE_OUT"; exit 0; fi
+if [ "$1" = "-o" ] && [ -n "\${IP_ADDR_OUT:-}" ]; then echo "$IP_ADDR_OUT"; exit 0; fi
+exit 1
+`;
 
 /** Run the real script; returns its output and the docker calls it made. */
 function upgrade(env: Record<string, string>, opts: { runner?: boolean; answers?: string; script?: string } = {}) {
@@ -68,6 +81,7 @@ beforeAll(async () => {
   fs.mkdirSync(path.join(dir, "bin"));
   fs.writeFileSync(path.join(dir, "bin", "docker"), STUB_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "AGENT_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "runner.env"), "RUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
   sock = path.join(dir, "dialfd.sock");
@@ -137,6 +151,77 @@ describe("hosts WITH DialF", () => {
   it("reports what the agent's own DialF check says after launch — e.g. no permission", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", DIALF_SOCKET: sock, PROBE_LINE: "[Daemon] DialF probe: unavailable (no permission to open the dialfd socket x)" });
     expect(r.out).toMatch(/WARNING: DialF check inside the container FAILED: unavailable \(no permission to open the dialfd socket x\)/);
+  });
+});
+
+describe("VOX_LINK_TYPE (network tags — host link detection, design 2026-10-22)", () => {
+  it("a known VOX_LINK_TYPE in the environment is passed to the agent container", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "wifi" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_LINK_TYPE=wifi");
+  });
+
+  it("an invalid VOX_LINK_TYPE is ignored — not forwarded (host_link_type falls through, finds nothing here)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "5g" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
+  });
+
+  it("unset VOX_LINK_TYPE and no real route (stub ip): nothing forwarded, run unaffected", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" });
+    expect(r.status).toBe(0);
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
+  });
+
+  it("not forwarded to vox-clash-runner (it doesn't report network tags)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "wifi" }, { runner: true });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
+  });
+});
+
+describe("VOX_PUBLIC_IP_ON_IFACE (network tags part 2 — host interface detection, design 2026-10-22)", () => {
+  it("a known VOX_PUBLIC_IP_ON_IFACE in the environment is passed to the agent container", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "true" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=true");
+  });
+
+  it("false is passed through too (not just truthy values)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "false" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=false");
+  });
+
+  it("an invalid VOX_PUBLIC_IP_ON_IFACE is ignored — not forwarded (host_public_ip_on_iface falls through, finds nothing here)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "maybe" });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
+  });
+
+  it("unset VOX_PUBLIC_IP_ON_IFACE and no real route (stub ip): nothing forwarded, run unaffected", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" });
+    expect(r.status).toBe(0);
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
+  });
+
+  // The script's own address classifier, run on its own (extracted from the
+  // real script): only IPv4 counts. Dual-stack homes and IPv6 hotspots hold
+  // global 2000::/3 addresses, which say nothing about a home router.
+  const classify = (out: string) => {
+    const fn = fs.readFileSync(SCRIPT, "utf8").match(/^host_addr_is_public\(\) \{[\s\S]*?^\}/m)?.[0];
+    expect(fn).toBeTruthy();
+    return spawnSync("bash", ["-c", `${fn}\nhost_addr_is_public "$1"`, "_", out], { encoding: "utf8" }).status;
+  };
+  it("host_addr_is_public: public IPv4 → 0, private/CGNAT IPv4 → 1", () => {
+    expect(classify("2: eth0    inet 203.0.113.5/24 scope global eth0")).toBe(0);
+    expect(classify("2: eth0    inet 192.168.1.5/24 scope global eth0")).toBe(1);
+    expect(classify("2: eth0    inet 100.90.1.5/10 scope global eth0")).toBe(1);
+  });
+  it("host_addr_is_public: home dual-stack (RFC1918 v4 + global v6) → 1, not public", () => {
+    expect(classify("2: eth0    inet 192.168.1.5/24 scope global eth0\n2: eth0    inet6 2601:646:8a00:1f0::5/128 scope global dynamic")).toBe(1);
+  });
+  it("host_addr_is_public: IPv6-only host → 2 (undetermined), so nothing is forwarded", () => {
+    expect(classify("2: eth0    inet6 2001:db8::1/64 scope global")).toBe(2);
+  });
+
+  it("not forwarded to vox-clash-runner (it doesn't report network tags)", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "true" }, { runner: true });
+    expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
   });
 });
 
@@ -220,5 +305,40 @@ describe("the agent's DialF check names why it can't open the socket", () => {
 
   it("anything else still names the code", () => {
     expect(dialfConnectFailure(Object.assign(new Error("boom"), { code: "EWHAT" }))).toBe("dialfd socket unreachable (EWHAT)");
+  });
+});
+
+describe("interface names from route output are validated before use (PR #258 round 3)", () => {
+  const validIface = (name: string) => {
+    const fn = fs.readFileSync(SCRIPT, "utf8").match(/^valid_iface_name\(\) \{[\s\S]*?^\}/m)?.[0];
+    expect(fn).toBeTruthy();
+    return spawnSync("bash", ["-c", `${fn}\nvalid_iface_name "$1"`, "_", name], { encoding: "utf8" }).status;
+  };
+  it("valid_iface_name: real names pass, metacharacters / traversal / options / overlong fail", () => {
+    for (const ok of ["eth0", "wlp3s0", "veth1@if5", "eth0.100", "eth0:1", "en0", "enp0s31f6"]) expect(validIface(ok)).toBe(0);
+    for (const bad of ["", ".", "..", "-v", "eth0;id", "eth0$(id)", "a/b", "eth0`id`", "a".repeat(33), "eth0\nwlan0"]) expect(validIface(bad)).not.toBe(0);
+  });
+
+  it("a hostile default-route interface name is never passed to ip addr and nothing is forwarded", () => {
+    const r = upgrade({
+      RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new",
+      IP_ROUTE_OUT: "1.1.1.1 via 192.168.1.1 dev eth0;touch$IFS/tmp/pwned src 192.168.1.5",
+      IP_ADDR_OUT: "2: eth0    inet 203.0.113.5/24 scope global eth0",
+    });
+    expect(r.status).toBe(0);
+    expect(r.calls.filter((c) => c.startsWith("ip ")).every((c) => c === "ip route get 1.1.1.1")).toBe(true);
+    const run = r.calls.find((c) => c.startsWith("docker run"));
+    expect(run).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
+    expect(run).not.toContain("VOX_LINK_TYPE");
+  });
+
+  it("a valid name is used (quoted, one argument) and its answer forwarded", () => {
+    const r = upgrade({
+      RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new",
+      IP_ROUTE_OUT: "1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.5",
+      IP_ADDR_OUT: "2: eth0    inet 203.0.113.5/24 scope global eth0",
+    });
+    expect(r.calls).toContain("ip -o addr show dev eth0");
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=true");
   });
 });

@@ -108,6 +108,9 @@ import {
   brokers,
 } from "@shared/schema";
 import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/regions";
+import type { AsnLookupFn } from "./job-tags";
+import type { Tag, JobTag } from "@shared/tags";
+import { groupValueSql, resultRegionSql, tagFilterCondition } from "./tag-sql";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
 const { Pool } = pkg;
@@ -123,6 +126,8 @@ const METRICS_ROW_CEILING = 20000;
 const METRICS_ALL_MAX_DAYS = METRICS_RETENTION_DAYS;
 
 export type MetricTier = "mainline" | "community" | "myEvals";
+/** System-only access columns, written only by the location check (server/location.ts). */
+export type EvalAgentAccessFields = { accessClass: string; accessReason: string; accessCheckedAt: Date };
 export type MetricsMode = "raw" | "bucketHour" | "bucketDay";
 export type RegionQueryScope = {
   siteId?: string;
@@ -150,7 +155,18 @@ export type MetricSourceRow = Pick<EvalResult,
   & { evalFlowId?: number | null; evalFlowName?: string | null }
   // Transport partition the row came from (design 2026-09-21 §11) — a constant
   // per query since transports are never mixed in one view.
-  & { transport?: "web" | "phone" };
+  & { transport?: "web" | "phone" }
+  // Network tags (designs/2026-10-22-network-tags-design.md "Analysis"): raw
+  // rows carry their job's frozen tags (`eval_jobs.tags`, null before the
+  // release) for the route to reduce to effective tags; a bucket has none.
+  // `tagValue` is the bucket's groupBy value — a tag's effective value or
+  // `untagged`, or with groupBy=region the region or `unattributed` — set only
+  // on grouped buckets. `recordingRegion` rides along on raw rows (an
+  // analysis's region) for groupBy=region.
+  & { jobTags?: JobTag[] | null; tagValue?: string | null; recordingRegion?: string | null };
+
+/** The network-tag knobs of a metrics query: AND-ed filters, and an optional groupBy key. */
+export type MetricsTagQuery = { tagFilters?: Tag[]; groupBy?: string };
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -606,6 +622,10 @@ export function buildJobSnapshot(
       isMainline: evalFlow.isMainline,
       ownerId: evalFlow.ownerId,
       organizationId: evalFlow.organizationId ?? null,
+      // Frozen here too (design "Freezing at claim"): editing the flow's
+      // tags/line lookup afterwards must never change a past job's snapshot.
+      tags: evalFlow.tags ?? [],
+      lineLookup: evalFlow.lineLookup ?? null,
     },
     evalSet: evalSet
       ? {
@@ -908,32 +928,46 @@ export class DatabaseStorage {
     return result[0];
   }
 
+  // `locationCheckedAt` and the access fields are optional: a check made while
+  // the VPN/datacenter data is unloaded leaves them as they were, so the next
+  // heartbeat re-checks instead of waiting out LOCATION_RECHECK_HOURS.
   async updateEvalAgentLocation(agentId: number, fields: {
     region: string | null; siteId: string | null; locationTrust: string;
-    locationCheckedAt: Date; locationSource: unknown;
+    locationCheckedAt?: Date; locationSource: unknown;
     pendingRegion: string | null; pendingRegionCount: number;
-  }): Promise<void> {
+  } & Partial<EvalAgentAccessFields>): Promise<void> {
     await db.update(evalAgents).set({
       region: fields.region,
       siteId: fields.siteId,
       locationTrust: fields.locationTrust,
-      locationCheckedAt: fields.locationCheckedAt,
+      ...(fields.locationCheckedAt ? { locationCheckedAt: fields.locationCheckedAt } : {}),
       locationSource: fields.locationSource,
       pendingRegion: fields.pendingRegion,
       pendingRegionCount: fields.pendingRegionCount,
+      ...(fields.accessClass !== undefined ? {
+        accessClass: fields.accessClass,
+        accessReason: fields.accessReason,
+        accessCheckedAt: fields.accessCheckedAt,
+      } : {}),
       updatedAt: new Date(),
     }).where(eq(evalAgents.id, agentId));
   }
 
-  // Public-tier agents: configured identity (region/siteId) is trusted and never
-  // touched here — only the observability fields are recorded.
+  // Public-tier agents: configured identity (region/siteId) is never touched
+  // here — only the observability fields and the access class are recorded
+  // (access is computed for every agent). Optional fields as above.
   async updateEvalAgentLocationObservability(agentId: number, fields: {
-    locationTrust: string; locationCheckedAt: Date; locationSource: unknown;
-  }): Promise<void> {
+    locationTrust: string; locationCheckedAt?: Date; locationSource: unknown;
+  } & Partial<EvalAgentAccessFields>): Promise<void> {
     await db.update(evalAgents).set({
       locationTrust: fields.locationTrust,
-      locationCheckedAt: fields.locationCheckedAt,
+      ...(fields.locationCheckedAt ? { locationCheckedAt: fields.locationCheckedAt } : {}),
       locationSource: fields.locationSource,
+      ...(fields.accessClass !== undefined ? {
+        accessClass: fields.accessClass,
+        accessReason: fields.accessReason,
+        accessCheckedAt: fields.accessCheckedAt,
+      } : {}),
       updatedAt: new Date(),
     }).where(eq(evalAgents.id, agentId));
   }
@@ -1194,6 +1228,16 @@ export class DatabaseStorage {
       // Missing until now: GET /api/eval-agents reported capabilities: [] for
       // every agent, phone-capable or not.
       capabilities: evalAgents.capabilities,
+      // Hand-set tags + reported link type (design "Data model") — the public
+      // listing's canEditTags flag is derived from tokenCreatedBy below.
+      tags: evalAgents.tags,
+      linkType: evalAgents.linkType,
+      // System-only access class + reason (location check) and the matched SIM
+      // carrier slug — for the Agents page badge. Never observedIp, netSignals
+      // or the SIM number.
+      accessClass: evalAgents.accessClass,
+      accessReason: evalAgents.accessReason,
+      simCarrier: evalAgents.simCarrier,
       createdAt: evalAgents.createdAt,
       updatedAt: evalAgents.updatedAt,
       tokenCreatedBy: evalAgentTokens.createdBy,
@@ -1382,7 +1426,14 @@ export class DatabaseStorage {
     jobId: number,
     agentId: number,
     identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean; analyzeCapable?: boolean },
+    // Tests inject the ASN lookup (no mmdb needed); production uses the
+    // shipped ASN database via job-tags' default (server/location.ts lookupAsn).
+    opts: { asnLookup?: AsnLookupFn } = {},
   ): Promise<EvalJob | undefined> {
+    // Loaded lazily: job-tags → location → storage would otherwise be an
+    // import cycle (storage imports no server module at the top). By claim
+    // time every module is initialised, so this resolves from the cache.
+    const { buildJobTags } = await import("./job-tags");
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -1427,6 +1478,30 @@ export class DatabaseStorage {
         await client.query('ROLLBACK');
         return undefined;
       }
+      // Network tags (design "Freezing at claim"): computed in TS — the ASN
+      // lookup is an in-memory mmdb read the SQL can't do — from the job row
+      // just locked above (its FROZEN snapshot, never the live flow) and the
+      // claiming agent's row read on the same transaction, then written by the
+      // claim UPDATE itself. One statement, one commit: a claim can never
+      // land without its tags (no later write a crash could skip).
+      const agentRow = await client.query(
+        `SELECT tags, link_type, observed_ip, access_class, access_reason, sim_carrier, sim_reason FROM eval_agents WHERE id = $1`,
+        [agentId],
+      );
+      const snapshotFlow = (selectResult.rows[0].snapshot as JobSnapshot | null)?.evalFlow ?? null;
+      const jobTags = buildJobTags({
+        job: { kind: selectResult.rows[0].kind, transport: selectResult.rows[0].transport },
+        snapshotFlow,
+        agent: {
+          tags: agentRow.rows[0]?.tags ?? [],
+          linkType: agentRow.rows[0]?.link_type ?? null,
+          observedIp: agentRow.rows[0]?.observed_ip ?? null,
+          accessClass: agentRow.rows[0]?.access_class ?? null,
+          accessReason: agentRow.rows[0]?.access_reason ?? null,
+          simCarrier: agentRow.rows[0]?.sim_carrier ?? null,
+          simReason: agentRow.rows[0]?.sim_reason ?? null,
+        },
+      }, opts.asnLookup);
       // token_dispatch_tier + location_trust frozen, site stamped, in the same
       // atomic update: a pooled job (site_id NULL) records the claiming agent's
       // concrete site, and the job's trust is fixed at the moment it's claimed.
@@ -1441,10 +1516,11 @@ export class DatabaseStorage {
              site_id = CASE WHEN kind = 'analyze' THEN NULL
                             WHEN target_region IS NOT NULL THEN $4
                             ELSE COALESCE(site_id, $4) END,
-             location_trust = $5
+             location_trust = $5,
+             tags = $6::jsonb
          WHERE id = $2
          RETURNING *`,
-        [agentId, jobId, identity.dispatchTier, identity.siteId, identity.locationTrust]
+        [agentId, jobId, identity.dispatchTier, identity.siteId, identity.locationTrust, JSON.stringify(jobTags)]
       );
       await client.query('COMMIT');
       return snakeToCamel(updateResult.rows[0]) as EvalJob;
@@ -2346,13 +2422,17 @@ export class DatabaseStorage {
   private joinCommunity(q: any): any { return this.joinTier(q); }
   private joinMyEvals(q: any): any { return this.joinTier(q); }
 
-  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web") {
+  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = []) {
     const conditions = tier === "mainline" ? this.mainlineConditions(hoursBack, scope)
       : tier === "community" ? this.communityConditions(hoursBack, scope)
       : this.myEvalConditions(userId!, hoursBack, scope);
     // Transport is a hard partition, never mixed (design 2026-09-21 §11): every
     // tier view is scoped to exactly one transport; default web.
     conditions.push(eq(evalJobs.transport, transport));
+    // Network-tag filters, AND-ed, on the job's effective value for this tier's
+    // board (the tier names are the board names). In SQL, so they apply before
+    // any row limit. A job with no tags (NULL) matches no filter.
+    for (const f of tagFilters) conditions.push(tagFilterCondition(evalJobs.tags, tier, f));
     return conditions;
   }
   private applyTierJoins(tier: MetricTier, q: any): any {
@@ -2363,10 +2443,16 @@ export class DatabaseStorage {
 
   // One averaged point per (period, provider) across the selected region scope.
   // Matching the chart dimensions avoids arbitrary site selection and keeps payloads bounded.
-  private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", window?: MetricsWindow): Promise<MetricSourceRow[]> {
+  private async tierBucketed(tier: MetricTier, bucket: "hour" | "day", hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", window?: MetricsWindow, tags: MetricsTagQuery = {}): Promise<MetricSourceRow[]> {
     const period = bucket === "hour"
       ? sql`date_trunc('hour', ${evalResults.createdAt})`
       : sql`date_trunc('day', ${evalResults.createdAt})`;
+    // groupBy on a bucket: one point per (period, provider, group value) — a
+    // tag's effective value, or with groupBy=region the result's region. The
+    // expression is grouped on, so it is the same SQL object in both places.
+    const tagValue = tags.groupBy
+      ? groupValueSql({ tags: evalJobs.tags, siteId: evalResults.siteId, recordingRegion: evalResults.recordingRegion }, tier, tags.groupBy)
+      : null;
     const base = db.select({
       id: sql<number>`min(${evalResults.id})::int`,
       providerId: evalResults.providerId,
@@ -2389,13 +2475,14 @@ export class DatabaseStorage {
       naturalness: sql<number | null>`avg(${evalResults.naturalness})::real`,
       noiseReduction: sql<number | null>`round(avg(${evalResults.noiseReduction}))::int`,
       createdAt: sql<Date>`${period}`,
+      ...(tagValue ? { tagValue: sql<string>`${tagValue}` } : {}),
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
-      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport), ...(window ? [
+      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport, tags.tagFilters), ...(window ? [
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)),
       ] : [])))
-      .groupBy(period, evalResults.providerId)
+      .groupBy(...(tagValue ? [period, evalResults.providerId, tagValue] : [period, evalResults.providerId]))
       .orderBy(desc(period), asc(evalResults.providerId))
       .limit(METRICS_ROW_CEILING + (window ? 1 : 0));
     // The query is partitioned to one transport, so it's a constant per row.
@@ -2404,17 +2491,17 @@ export class DatabaseStorage {
 
   // Applies the windowing policy (see the module-level comment). "All time"
   // always uses daily buckets and is bounded to the retention cap.
-  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
+  private async tierMetrics(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags: MetricsTagQuery = {}): Promise<MetricSourceRow[]> {
     const effectiveHoursBack = hoursBack ?? METRICS_ALL_MAX_DAYS * 24;
     const mode = hoursBack == null ? "bucketDay" : resolveMetricsMode(hoursBack / 24);
 
     if (mode !== "raw") {
       const bucket = mode === "bucketHour" ? "hour" : "day";
-      return this.tierBucketed(tier, bucket, effectiveHoursBack, userId, scope, transport);
+      return this.tierBucketed(tier, bucket, effectiveHoursBack, userId, scope, transport, undefined, tags);
     }
 
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport)))
+      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport, tags.tagFilters)))
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
@@ -2423,28 +2510,29 @@ export class DatabaseStorage {
       ...r.eval_results,
       evalFlowId: r.eval_jobs?.evalFlowId ?? null,
       evalFlowName: (r.eval_jobs?.snapshot as JobSnapshot | null)?.evalFlow?.name ?? null,
+      jobTags: r.eval_jobs?.tags ?? null,
       transport,
     })) as MetricSourceRow[];
   }
 
   // Public metrics entry points used by the realtime dashboard. They own the
   // raw-vs-bucket decision and the row ceiling — callers pass only the window.
-  getMainlineMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("mainline", hoursBack, undefined, scope, transport);
+  getMainlineMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags?: MetricsTagQuery): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("mainline", hoursBack, undefined, scope, transport, tags);
   }
-  getCommunityMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("community", hoursBack, undefined, scope, transport);
+  getCommunityMetrics(hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags?: MetricsTagQuery): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("community", hoursBack, undefined, scope, transport, tags);
   }
-  getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricSourceRow[]> {
-    return this.tierMetrics("myEvals", hoursBack, userId, scope, transport);
+  getMyEvalMetrics(userId: number, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags?: MetricsTagQuery): Promise<MetricSourceRow[]> {
+    return this.tierMetrics("myEvals", hoursBack, userId, scope, transport, tags);
   }
 
-  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
+  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = []): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
     if (tier === "myEvals" && userId == null) throw new Error("My Evals detail requires a user");
     let resolution: MetricsResolution = metricsDetailResolution(window.to - window.from);
     const retentionHours = METRICS_RETENTION_DAYS * 24;
     if (resolution === "raw") {
-      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport),
+      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport, tagFilters),
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)));
       // Probe only IDs so dense windows skip transferring raw chart rows entirely.
@@ -2471,6 +2559,7 @@ export class DatabaseStorage {
           createdAt: evalResults.createdAt,
           evalFlowId: evalJobs.evalFlowId,
           evalFlowName: sql<string | null>`${evalJobs.snapshot}->'evalFlow'->>'name'`,
+          jobTags: evalJobs.tags,
         }).from(evalResults))
           .where(conditions)
           .orderBy(desc(evalResults.createdAt))
@@ -2490,11 +2579,11 @@ export class DatabaseStorage {
       return { from: Math.floor(window.from / unit) * unit, to: Math.ceil(window.to / unit) * unit };
     };
     let actualWindow = align(resolution);
-    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow);
+    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters });
     if (rows.length > METRICS_ROW_CEILING && resolution === "hour") {
       resolution = "day";
       actualWindow = align(resolution);
-      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow);
+      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters });
     }
     return { ...actualWindow, metrics: rows.slice(0, METRICS_ROW_CEILING), resolution, truncated: rows.length > METRICS_ROW_CEILING };
   }
@@ -2510,7 +2599,7 @@ export class DatabaseStorage {
     const conditions = this.tierConditions(tier, effectiveHoursBack, userId);
     // A result's region: where it was measured (its site), or, for an analyzed
     // recording, where its uploader said it was made (recording_region).
-    const region = sql<string | null>`COALESCE(${evalResults.recordingRegion}, regexp_replace(${evalResults.siteId}, '-\\d+$', ''))`;
+    const region = sql<string | null>`${resultRegionSql(evalResults.siteId, evalResults.recordingRegion)}`;
     const rows = await this.applyTierJoins(tier, db
       .select({ baseId: region })
       .from(evalResults))
@@ -2532,15 +2621,17 @@ export class DatabaseStorage {
   async getTierEvalResults(
     tier: MetricTier,
     limit: number,
-    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone" } = {},
-  ): Promise<EvalResult[]> {
+    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone"; tagFilters?: Tag[] } = {},
+  ): Promise<Array<EvalResult & { jobTags: JobTag[] | null }>> {
     // "My evals" without a user would compare owner = NULL and silently match nothing.
     if (tier === "myEvals" && opts.userId == null) throw new Error("getTierEvalResults: myEvals needs a userId");
     return this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web")))
+      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web", opts.tagFilters)))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
-      .then((rows: any[]) => rows.map(r => r.eval_results));
+      // The job's frozen tags ride along (eval_jobs is joined for tiering anyway)
+      // so a caller can reduce them to effective tags or group by one.
+      .then((rows: any[]) => rows.map(r => ({ ...r.eval_results, jobTags: r.eval_jobs?.tags ?? null })));
   }
 
   /**
