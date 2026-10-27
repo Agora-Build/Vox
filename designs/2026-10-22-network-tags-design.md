@@ -84,7 +84,15 @@ Core-internal).
   daemon prefers it. Satellite can't be seen from an interface: it's inferred at
   claim from `isp:starlink` (or any satellite ASN in the map) unless `link` is set otherwise.
   Reported on every heartbeat like `capabilities`; an old agent reports nothing.
-- **`sim`** — manual for now. DialF's `sims.list` returns slot / number / default
+  **`link` is agent-reported, and Core files it as `detected` as received** — Core
+  cannot check it. Mainline trusts it because Mainline agents (public-tier, admin-run)
+  are run by us; a modified community agent could report any value, which is why
+  My Evals and Community let the operator's hand-set value win anyway.
+  Detection runs no shell: commands are argument arrays (`execFileSync`) and an
+  interface name from the OS's own output is checked against
+  `^[A-Za-z0-9._@:-]{1,32}$` (not `.`/`..`) before it is used anywhere — anything
+  else reads as "couldn't tell". `vox-upgrade.sh` validates the same way.
+- **`sim`** — manual for now (superseded: see "`sim` is system-only" below). DialF's `sims.list` returns slot / number / default
   but no operator name; a DialF issue asks for it (Android's per-SIM operator
   name). Once present, the agent reports it like `link`.
 - **`line`** — by number lookup (next section); hand-set on the flow as the fallback and the override.
@@ -96,7 +104,12 @@ step, which we dial to reach the voice agent under test. (Our own SIM is the
 other end: the `sim` tag.)
 
 - **Where:** Core, when a phone flow is saved and whenever its dialled number
-  changes (`server/number-lookup.ts`). Results are cached per number for 30 days
+  changes (`server/number-lookup.ts`). **The save never waits for it:** the save
+  responds first, with the flow's current (possibly old or null) `lineLookup` plus
+  `lineLookupPending: true`, and the lookup runs in the background through the same
+  conditional write (errors logged by name only); the console shows "Looking up the
+  line provider…" and refetches a few times. "Look up again" is an explicit action
+  and still waits for the answer (up to the 10 s timeout). Results are cached per number for 30 days
   (`number_lookups`: keyed hash of the E.164 number — never the number itself —
   provider, carrier name, line type, mapped value, looked-up time) — about one paid lookup per number per month; a cached
   answer is reused across flows and owners.
@@ -335,8 +348,11 @@ direction is safe. Disagreement means `unknown`, never a guess.
   detection come only from the downloaded data. A list line wider than /8 (IPv4) or
   /16 (IPv6) is dropped as invalid (a `0.0.0.0/0` in the VPN list would anonymize
   everyone), and a refresh refuses a download covering more than 5% of the IPv4
-  space (VPN list; 0.07% today) or 20% (datacenter lists; 9.2% today) or larger
-  than 64 MB, keeping the previous copy.
+  space (VPN list; 0.07% today) or 20% (datacenter lists; 9.2% today), an IPv6
+  list covering more than 0.0005% (VPN; 0.00011% today) or 0.005% (datacenter;
+  0.00126% today) of 2000::/3 — the global unicast space; one home ISP's /20 is
+  0.00076% of it, a single /16 0.0122% — or a download larger than 64 MB,
+  keeping the previous copy.
 - Until that data has loaded once, a check that would have read `trusted`/`datacenter`
   is **capped** — and a capped check writes nothing: not the region, not trust, not
   access, not the check time. The stored answer stands (an agent that was Verified
@@ -383,16 +399,24 @@ Agents keep `isp`/`link` (correctable) + custom keys.
 - Stored on the agent (`eval_agents.sim_carrier`, system-only, recomputed when the
   reported number/operator changes or the 30-day lookup cache expires) and frozen
   at claim as a `detected` tag — phone jobs only.
-- **Limit:** both inputs reach Core through the agent. A modified agent could report
-  a different real number plus a matching operator; Core's lookup is of a real number
-  so it can't invent a carrier, but it can't prove which SIM is in the phone.
+- **Limit:** both inputs reach Core through the agent — **the phone side of `sim` is
+  agent-reported**, filed as `detected` once Core's own lookup agrees. A modified
+  agent could report a different real number plus a matching operator; Core's lookup
+  is of a real number so it can't invent a carrier, but it can't prove which SIM is
+  in the phone. Mainline trusts it because Mainline agents are admin-run.
+- A phone agent that stops reporting a valid `sim` (SIM pulled, phone unplugged) has
+  its stored `sim_carrier` cleared (reason `v1: no-sim-report`) — no stale carrier is
+  frozen onto later phone jobs. Agents without the `phone` capability are left alone.
 - **Spending:** for the same reason a token holder could make every heartbeat a paid
   lookup of a fresh number. Core acts on `sim` only from agents whose current
   capabilities include `phone`, allows one uncached lookup per agent per UTC day,
-  5 per token creator across all their agents, and 500 a day overall
-  (`PAID_LOOKUPS_PER_DAY`, shared with flow `line` lookups, which are also capped
-  at 10 per flow editor per day — server/paid-lookup-budget.ts; counters durable
-  in Postgres `paid_lookup_usage`, reserved atomically);
+  5 per token creator across all their agents, and the SIM path's **reserved share of
+  200 a day** (`SIM_LOOKUPS_PER_DAY`). Flow `line` lookups have their own share of
+  300 a day (`FLOW_LOOKUPS_PER_DAY`) plus 10 per flow editor per day — 500 in all
+  (`PAID_LOOKUPS_PER_DAY`, the bill's ceiling). Reserved, not pooled: free accounts'
+  flow edits can never starve our phone agents' SIM checks, nor the reverse
+  (server/paid-lookup-budget.ts; counters durable in Postgres `paid_lookup_usage`,
+  scopes `global-flow` / `global-sim`, reserved atomically);
   past a cap the answer is a
   non-definitive `v1: rate-limited`, handled like `lookup-failed` (a stored answer
   for the same number and code is kept; retried after 10 minutes). Cache hits are
