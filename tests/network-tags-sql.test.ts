@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { effectiveTags, type JobTag, type TagBoard } from "../shared/tags";
 import { db } from "../server/storage";
 import { effectiveTagValueSql, tagFilterCondition, groupValueSql } from "../server/tag-sql";
-import { groupValue } from "../server/metrics-params";
+import { groupValue, leaderboardGroupKey } from "../server/metrics-params";
 
 // The metrics filter runs in SQL (realtime has a LIMIT — filtering after it
 // would be wrong) while grouping runs in JS through `effectiveTags`. Two
@@ -118,5 +118,22 @@ d("groupBy SQL agrees with groupValue", () => {
         }
       }
     }
+  });
+});
+
+describe("leaderboardGroupKey (console + v1 leaderboards)", () => {
+  it("hyphenated values that a \"-\" join made collide are separate groups", () => {
+    // With `${provider}-${site}-${tagValue}` all of these were "a-b-c-d".
+    const keys = [
+      leaderboardGroupKey("a", "b-c", "d"),
+      leaderboardGroupKey("a-b", "c", "d"),
+      leaderboardGroupKey("a", "b", "c-d"),
+      leaderboardGroupKey("a-b-c", "d"),
+    ];
+    expect(new Set(keys).size).toBe(keys.length);
+    // A null site is not the string "null".
+    expect(leaderboardGroupKey("p", null, "x")).not.toBe(leaderboardGroupKey("p", "null", "x"));
+    // The same inputs always give the same group.
+    expect(leaderboardGroupKey("a", "b-c", "d")).toBe(keys[0]);
   });
 });

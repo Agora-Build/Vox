@@ -355,6 +355,12 @@ describe("parseTagFilter", () => {
     expect(parseTagFilter(undefined)).toEqual({ filters: [] });
   });
 
+  it("accepts at most 4 filters per request; a fifth is refused", () => {
+    const four = ["line:twilio", "isp:starlink", "link:wifi", "access:lastmile"];
+    expect(parseTagFilter(four)).toHaveProperty("filters");
+    expect(parseTagFilter([...four, "sim:t-mobile"])).toEqual({ error: "At most 4 tag filters per request" });
+  });
+
   it("rejects invalid tag syntax", () => {
     expect(parseTagFilter("no-colon")).toHaveProperty("error");
     expect(parseTagFilter(["line:twilio", "link:5g"])).toHaveProperty("error");

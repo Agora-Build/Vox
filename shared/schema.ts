@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision, bigint, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision, bigint, primaryKey, date } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -417,9 +417,11 @@ export type EvalAgent = typeof evalAgents.$inferSelect;
 // Core looks up a phone flow's dialled number against Twilio Lookup v2 when
 // the flow is saved and whenever the number changes, then reuses the answer
 // for 30 days (one paid lookup per number per month) — shared across every
-// flow/owner that dials the same number. Keyed by the E.164 number itself.
+// flow/owner that dials the same number. Keyed by a keyed hash of the E.164
+// number (HMAC-SHA256 with a server key — server/number-lookup.ts
+// `numberHash`), never the number itself (migration 0061).
 export const numberLookups = pgTable("number_lookups", {
-  number: varchar("number", { length: 20 }).primaryKey(),
+  numberHash: varchar("number_hash", { length: 64 }).primaryKey(),
   // The lookup service that answered (e.g. "twilio") — a seam, so a second
   // provider (Telnyx) can be added later without migrating existing rows.
   provider: varchar("provider", { length: 16 }).notNull(),
@@ -439,6 +441,16 @@ export const insertNumberLookupSchema = createInsertSchema(numberLookups);
 
 export type InsertNumberLookup = z.infer<typeof insertNumberLookupSchema>;
 export type NumberLookup = typeof numberLookups.$inferSelect;
+
+// Durable spending caps on paid number lookups (server/paid-lookup-budget.ts):
+// one counter per (scope, subject, UTC calendar day). scope: global |
+// flow-user | sim-agent | sim-user; subject: 'all' / a user id / an agent id.
+export const paidLookupUsage = pgTable("paid_lookup_usage", {
+  scope: varchar("scope", { length: 16 }).notNull(),
+  subject: varchar("subject", { length: 64 }).notNull(),
+  day: date("day", { mode: "string" }).notNull(),
+  count: integer("count").notNull().default(0),
+}, (t) => [primaryKey({ columns: [t.scope, t.subject, t.day] })]);
 
 // ==================== EVAL SCHEDULES ====================
 

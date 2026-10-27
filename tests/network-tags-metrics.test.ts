@@ -201,6 +201,7 @@ d("metrics: tag= and groupBy=", () => {
       ["tag=link:carrier-pigeon", /link/],
       ["groupBy=1abc", /groupBy/],
       ["groupBy=isp&groupBy=line", /single key/],
+      ["tag=line:twilio&tag=isp:starlink&tag=link:wifi&tag=access:lastmile&tag=sim:t-mobile", /^At most 4 tag filters per request$/],
     ];
     for (const [qs, msg] of bad) {
       for (const path of ["/api/metrics/realtime", "/api/metrics/community", "/api/metrics/leaderboard", "/api/v1/metrics/realtime", "/api/v1/metrics/leaderboard"]) {

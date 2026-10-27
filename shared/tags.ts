@@ -398,11 +398,15 @@ export function effectiveTags(jobTags: JobTag[] | null | undefined, board: TagBo
 /**
  * Parse the `tag` query parameter (a single string, or repeated → an array)
  * into the list of filters a metrics endpoint must AND-match. Absent → no
- * filters, not an error.
+ * filters, not an error. At most MAX_TAG_FILTERS per request: each filter is
+ * one more JSON predicate per row in the metrics SQL (server/tag-sql.ts), and
+ * no real view needs more than one per tag key in use.
  */
+export const MAX_TAG_FILTERS = 4;
 export function parseTagFilter(raw: unknown): { filters: Tag[] } | { error: string } {
   if (raw == null) return { filters: [] };
   const items = Array.isArray(raw) ? raw : [raw];
+  if (items.length > MAX_TAG_FILTERS) return { error: `At most ${MAX_TAG_FILTERS} tag filters per request` };
   const filters: Tag[] = [];
   for (const item of items) {
     if (typeof item !== "string") return { error: `Invalid tag filter: ${JSON.stringify(item)}` };

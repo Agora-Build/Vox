@@ -17,7 +17,7 @@ import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, ca
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
 import { refreshFlowLineOnSave } from "./number-lookup";
-import { parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
+import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -1052,7 +1052,7 @@ export function registerApiV1Routes(app: Express): void {
 
       for (const result of results) {
         const tagValue = view.groupBy ? groupValue(result, view.storageTier, view.groupBy) : undefined;
-        const key = tagValue === undefined ? `${result.providerId}-${result.siteId}` : `${result.providerId}-${result.siteId}-${tagValue}`;
+        const key = leaderboardGroupKey(result.providerId, result.siteId, tagValue);
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,

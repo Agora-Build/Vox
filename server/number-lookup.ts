@@ -16,14 +16,16 @@
  * - A lookup never fails a save: every path returns a result, never throws.
  * - The Twilio Auth Token is never logged or returned; credentials live
  *   encrypted in `systemConfig`, exactly like the MaxMind key.
- * - Only the last four digits of a number leave `number_lookups`, plus a
- *   keyed hash (`numberHash`) used to tell whether a number changed.
+ * - No full number is stored or logged anywhere: `number_lookups` is keyed by
+ *   the keyed hash of the number (`numberHash`), flows and agents keep the
+ *   last four digits plus that hash. Without a server key there is no hash,
+ *   and nothing is cached.
  * - Paid lookups are capped (server/paid-lookup-budget.ts): per flow editor,
  *   per SIM agent, and one global daily budget shared by both paths.
  */
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { numberLookups, type EvalFlow } from "@shared/schema";
+import { numberLookups, evalFlows, type EvalFlow } from "@shared/schema";
 import { lineFromCarrier, type LineLookup } from "@shared/tags";
 import { walkStepList } from "@shared/steps";
 import { fillJobPlaceholders, jobConfigVars } from "@shared/placeholders";
@@ -45,6 +47,7 @@ export type LineSkipReason =
   | "invalid-number" // the service says the number doesn't exist (404 / valid:false)
   | "no-carrier"     // no carrier for this number (toll-free and similar)
   | "rate-limited"   // over a paid-lookup cap (server/paid-lookup-budget.ts) — non-definitive, keeps what's stored
+  | "timeout"        // still running after LOOKUP_TIMEOUT_MS — non-definitive; it finishes and is stored in the background
   | "failed";        // network, timeout, non-2xx, unreadable answer
 export type LineLookupResult = LineLookup | { skipped: LineSkipReason };
 
@@ -318,25 +321,30 @@ export async function lookupNumber(
 async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: PaidLookupGate | undefined): Promise<NumberLookupResult> {
   let charged = false;
   try {
-    const [cached] = await db.select().from(numberLookups).where(eq(numberLookups.number, e164));
-    if (cached && Date.now() - cached.lookedUpAt.getTime() < CACHE_MAX_AGE_MS) {
-      return { carrierName: cached.carrierName, lineType: cached.lineType, value: cached.value, mcc: cached.mcc, mnc: cached.mnc, lookedUpAt: cached.lookedUpAt };
+    // The cache is keyed by the number's keyed hash, never the number. No
+    // server key → no hash → no cache at all (every lookup goes to the
+    // provider, still capped): storing the plain number is never the fallback.
+    const key = numberHash(e164);
+    if (key) {
+      const [cached] = await db.select().from(numberLookups).where(eq(numberLookups.numberHash, key));
+      if (cached && Date.now() - cached.lookedUpAt.getTime() < CACHE_MAX_AGE_MS) {
+        return { carrierName: cached.carrierName, lineType: cached.lineType, value: cached.value, mcc: cached.mcc, mnc: cached.mnc, lookedUpAt: cached.lookedUpAt };
+      }
     }
     if (gate) {
-      if (!gate.allow()) return { skipped: "rate-limited" };
+      if (!(await gate.allow())) return { skipped: "rate-limited" };
       charged = true;
     }
 
     const answer = await provider.lookup(e164);
     if (answer.kind === "invalid-number") return { skipped: "invalid-number" };
     if (answer.kind === "failed") {
-      if (charged) gate!.refund();
+      if (charged) await gate!.refund().catch(() => {});
       console.warn(`[number-lookup] ${provider.name} lookup for ${redactNumber(e164)} failed: ${answer.reason}`);
       return { skipped: "failed" };
     }
 
     const row = {
-      number: e164,
       provider: provider.name,
       carrierName: answer.carrierName,
       lineType: answer.lineType,
@@ -348,15 +356,17 @@ async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: Pa
       lookedUpAt: new Date(),
     };
     // Idempotent: a second writer for the same number just refreshes the row.
-    await db.insert(numberLookups).values(row).onConflictDoUpdate({
-      target: numberLookups.number,
-      set: { provider: row.provider, carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt },
-    });
+    if (key) {
+      await db.insert(numberLookups).values({ numberHash: key, ...row }).onConflictDoUpdate({
+        target: numberLookups.numberHash,
+        set: { provider: row.provider, carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt },
+      });
+    }
     return { carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt };
   } catch (err) {
     // A thrown error (a DB failure, an unexpected provider throw): refunded —
     // under-counting one call beats blocking the retry for a day.
-    if (charged) gate!.refund();
+    if (charged) await gate!.refund().catch(() => {});
     console.warn(`[number-lookup] lookup failed (${err instanceof Error ? err.name : "error"})`);
     return { skipped: "failed" };
   }
@@ -402,6 +412,79 @@ export async function lookupFlowLine(
 }
 
 /**
+ * What a flow's Setup dials, as a comparable key — the E.164 number, or why
+ * there is none. In memory only (never stored or logged): it lets a write
+ * check "does the flow still dial what was looked up?".
+ */
+function dialKey(config: unknown): string {
+  try {
+    const d = dialledNumber(config);
+    return "number" in d ? `n:${d.number}` : `s:${d.skipped}`;
+  } catch {
+    return "s:error";
+  }
+}
+
+/**
+ * Write a flow's `line_lookup` only if the flow STILL dials what was looked
+ * up. Two saves of different numbers can overlap, and the first one's lookup
+ * can finish last; a plain write would then freeze the old number's answer
+ * onto the flow. So the row is re-read under `SELECT ... FOR UPDATE` inside a
+ * transaction, its current dialled number recomputed (same function as the
+ * lookup used), and the write made only when it matches — a concurrent save
+ * can't change the config between that check and the write. (The check
+ * compares the number itself, in memory; it is equivalent to comparing the
+ * keyed hashes and works without a server key.) A flow that is gone or no
+ * longer phone is not written.
+ *
+ * Returns whether it wrote, and the flow's `line_lookup` as it now stands.
+ */
+export async function writeLineLookupIfCurrent(
+  flowId: number,
+  lookedUpKey: string,
+  value: LineLookup | null,
+): Promise<{ written: boolean; current: LineLookup | null }> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ config: evalFlows.config, transport: evalFlows.transport, lineLookup: evalFlows.lineLookup })
+      .from(evalFlows)
+      .where(eq(evalFlows.id, flowId))
+      .for("update");
+    if (!row) return { written: false, current: null };
+    if (row.transport !== "phone" || dialKey(row.config) !== lookedUpKey) {
+      return { written: false, current: (row.lineLookup as LineLookup | null) ?? null };
+    }
+    await tx.update(evalFlows).set({ lineLookup: value, updatedAt: new Date() }).where(eq(evalFlows.id, flowId));
+    return { written: true, current: value };
+  });
+}
+
+const TIMED_OUT = Symbol("timed-out");
+
+/**
+ * `work`, or TIMED_OUT after `ms`. A timed-out `work` keeps running: whatever
+ * it does next (the conditional write) still happens, in the background.
+ */
+async function withinTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T | typeof TIMED_OUT> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+    timer.unref();
+  });
+  try {
+    const outcome = await Promise.race([work, timeout]);
+    if (outcome === TIMED_OUT) {
+      work.catch((err) => console.warn(`[number-lookup] ${label} failed in the background (${err instanceof Error ? err.name : "error"})`));
+    }
+    return outcome;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type FlowLineOpts = { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number; timeoutMs?: number };
+
+/**
  * Save-time trigger: after a phone flow is created or edited, look its line
  * up when the dialled number differs from the one `line_lookup` describes
  * (compared by `numberHash`, the keyed hash of the full number — a lookup
@@ -415,8 +498,14 @@ export async function lookupFlowLine(
  * number the flow no longer dials, so it's cleared rather than frozen onto
  * future jobs), or undefined when nothing was written. `rate-limited` (the
  * editor or the day is over its paid-lookup cap) is not an answer: the
- * stored lookup is left exactly as it was. Never throws, and gives up after
- * LOOKUP_TIMEOUT_MS so a save is never held longer.
+ * stored lookup is left exactly as it was. Every write is conditional on the
+ * flow still dialling the looked-up number (writeLineLookupIfCurrent), so an
+ * overlapping later save always wins. Never throws.
+ *
+ * Bounded: after LOOKUP_TIMEOUT_MS the save returns undefined (nothing
+ * written yet) — a timeout is NOT a failure and never clears the stored
+ * lookup. The lookup keeps going and stores its result through the same
+ * conditional write when it finishes.
  *
  * A flow whose transport moved away from phone keeps its line_lookup, and
  * buildJobSnapshot still copies it onto that flow's web jobs: harmless, as
@@ -426,11 +515,12 @@ export async function lookupFlowLine(
 export async function refreshFlowLineOnSave(
   flow: Pick<EvalFlow, "id" | "transport" | "config" | "lineLookup">,
   requestedBy: number,
-  opts: { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number } = {},
+  opts: FlowLineOpts = {},
 ): Promise<LineLookup | null | undefined> {
   try {
     if (flow.transport !== "phone") return undefined;
     const dialled = dialledNumber(flow.config);
+    const key = dialKey(flow.config);
     const current = flow.lineLookup ?? null;
     const dialledHash = "number" in dialled ? numberHash(dialled.number) : null;
     const sameNumber = !!dialledHash && !!current?.numberHash && current.numberHash === dialledHash;
@@ -440,21 +530,49 @@ export async function refreshFlowLineOnSave(
     // it — "couldn't ask right now" proves nothing about the number.
     const maybeSameLegacy = !!current && !current.numberHash && "number" in dialled && current.number === redactNumber(dialled.number);
 
-    const result = await Promise.race([
-      lookupFlowLine(flow, requestedBy, opts),
-      new Promise<{ skipped: "failed" }>((resolve) => setTimeout(() => resolve({ skipped: "failed" }), LOOKUP_TIMEOUT_MS).unref()),
-    ]);
-    if ("skipped" in result) {
-      if (result.skipped === "rate-limited") return undefined;
-      if (current === null) return undefined;
-      if (maybeSameLegacy && (result.skipped === "not-configured" || result.skipped === "failed")) return undefined;
-      await storage.updateEvalFlow(flow.id, { lineLookup: null });
-      return null;
-    }
-    await storage.updateEvalFlow(flow.id, { lineLookup: result });
-    return result;
+    const work = (async (): Promise<LineLookup | null | undefined> => {
+      const result = await lookupFlowLine(flow, requestedBy, opts);
+      let next: LineLookup | null;
+      if ("skipped" in result) {
+        if (result.skipped === "rate-limited") return undefined;
+        if (current === null) return undefined;
+        if (maybeSameLegacy && (result.skipped === "not-configured" || result.skipped === "failed")) return undefined;
+        next = null;
+      } else {
+        next = result;
+      }
+      const { written } = await writeLineLookupIfCurrent(flow.id, key, next);
+      return written ? next : undefined;
+    })();
+    const outcome = await withinTimeout(work, opts.timeoutMs ?? LOOKUP_TIMEOUT_MS, `save-time lookup for flow ${flow.id}`);
+    return outcome === TIMED_OUT ? undefined : outcome;
   } catch (err) {
     console.warn(`[number-lookup] save-time lookup for flow ${flow.id} failed (${err instanceof Error ? err.name : "error"})`);
     return undefined;
   }
+}
+
+/**
+ * "Look up again" (POST /api/eval-flows/:id/line-lookup): look the flow's
+ * line up now and store a definitive answer. A skip stores nothing and says
+ * why; `timeout` (still running after LOOKUP_TIMEOUT_MS) leaves the stored
+ * lookup as it is and stores the answer in the background when it arrives.
+ * The write is conditional (writeLineLookupIfCurrent): if the flow was saved
+ * with another number meanwhile, its current `line_lookup` is returned
+ * instead. Throws only on an unexpected database error.
+ */
+export async function lookupAndStoreFlowLine(
+  flow: Pick<EvalFlow, "id" | "config">,
+  requestedBy: number,
+  opts: FlowLineOpts = {},
+): Promise<{ lineLookup: LineLookup | null } | { skipped: LineSkipReason }> {
+  const key = dialKey(flow.config);
+  const work = (async (): Promise<{ lineLookup: LineLookup | null } | { skipped: LineSkipReason }> => {
+    const result = await lookupFlowLine(flow, requestedBy, opts);
+    if ("skipped" in result) return { skipped: result.skipped };
+    const { current } = await writeLineLookupIfCurrent(flow.id, key, result);
+    return { lineLookup: current };
+  })();
+  const outcome = await withinTimeout(work, opts.timeoutMs ?? LOOKUP_TIMEOUT_MS, `lookup for flow ${flow.id}`);
+  return outcome === TIMED_OUT ? { skipped: "timeout" } : outcome;
 }

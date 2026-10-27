@@ -5,7 +5,7 @@ import { TagInput } from "@/components/tag-input";
 import { formatRegion } from "@/lib/utils";
 import { LAST_MILE_HINT, DATACENTER_HINT } from "@/lib/access-text";
 import { accessView, withAccessView, type AccessView } from "@/lib/access-view";
-import { KNOWN_TAG_KEYS, REGION_GROUP_KEY, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
+import { KNOWN_TAG_KEYS, MAX_TAG_FILTERS, REGION_GROUP_KEY, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
 
 /**
  * The network-tag knobs of a metrics view (designs/2026-10-22-network-tags-design.md
@@ -86,6 +86,9 @@ export { accessView, showAccessSplit, withAccessView, type AccessView } from "@/
  */
 export function AccessToggle({ tagFilters, onTagFiltersChange }: { tagFilters: Tag[]; onTagFiltersChange: (tags: Tag[]) => void }) {
   const view = accessView(tagFilters);
+  // With MAX_TAG_FILTERS other filters already set, picking an access class
+  // would add one more than the server accepts.
+  const full = tagFilters.length >= MAX_TAG_FILTERS && !tagFilters.some((t) => t.key === "access");
   // Native title tooltips: a Radix Tooltip trigger would overwrite each
   // item's data-state (on/off), which drives its pressed styling.
   return (
@@ -99,8 +102,8 @@ export function AccessToggle({ tagFilters, onTagFiltersChange }: { tagFilters: T
       data-testid="access-toggle"
     >
       <ToggleGroupItem value="all" data-testid="access-toggle-all" title="Every result">All</ToggleGroupItem>
-      <ToggleGroupItem value="lastmile" data-testid="access-toggle-lastmile" title={LAST_MILE_HINT}>Last mile</ToggleGroupItem>
-      <ToggleGroupItem value="datacenter" data-testid="access-toggle-datacenter" title={DATACENTER_HINT}>Datacenter</ToggleGroupItem>
+      <ToggleGroupItem value="lastmile" data-testid="access-toggle-lastmile" disabled={full} title={LAST_MILE_HINT}>Last mile</ToggleGroupItem>
+      <ToggleGroupItem value="datacenter" data-testid="access-toggle-datacenter" disabled={full} title={DATACENTER_HINT}>Datacenter</ToggleGroupItem>
     </ToggleGroup>
   );
 }
@@ -128,6 +131,7 @@ export function MetricsTagControls({
       <TagInput
         value={tagFilters}
         onChange={onTagFiltersChange}
+        maxTags={MAX_TAG_FILTERS}
         placeholder="Filter by tag, e.g. isp:starlink"
         className="w-full sm:w-[300px]"
         testId="metrics-tag-filter"

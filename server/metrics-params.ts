@@ -118,6 +118,16 @@ export function accessColumn(jobTags: JobTag[] | null | undefined, board: TagBoa
   return access === "lastmile" ? "lastMile" : access === "datacenter" ? "datacenter" : undefined;
 }
 
+/**
+ * A leaderboard row's grouping key: provider × site (× the groupBy value).
+ * JSON, never a "-" join — provider ids, site ids and tag values can all
+ * hold "-", and ("a-b", "c") must never share a row with ("a", "b-c").
+ * Shared by the console and v1 leaderboards.
+ */
+export function leaderboardGroupKey(providerId: string, siteId: string | null, tagValue?: string): string {
+  return JSON.stringify(tagValue === undefined ? [providerId, siteId] : [providerId, siteId, tagValue]);
+}
+
 /** Access columns are added only when the view isn't already filtered to one access class. */
 export function wantsAccessColumns(tagFilters: Tag[]): boolean {
   return !tagFilters.some((t) => t.key === "access");

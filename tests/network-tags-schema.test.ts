@@ -59,8 +59,10 @@ d("network tags: migration 0057", () => {
        WHERE table_name = 'number_lookups'`
     );
     const byName = Object.fromEntries(rows.map((r) => [r.column_name, r]));
-    expect(byName.number?.data_type).toBe("character varying");
-    expect(byName.number?.character_maximum_length).toBe(20);
+    // Keyed by the number's keyed hash (migration 0061) — no plaintext number column.
+    expect(byName.number).toBeUndefined();
+    expect(byName.number_hash?.data_type).toBe("character varying");
+    expect(byName.number_hash?.character_maximum_length).toBe(64);
     expect(byName.provider?.data_type).toBe("character varying");
     expect(byName.provider?.character_maximum_length).toBe(16);
     expect(byName.provider?.is_nullable).toBe("NO");
@@ -77,7 +79,24 @@ d("network tags: migration 0057", () => {
        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
        WHERE i.indrelid = 'number_lookups'::regclass AND i.indisprimary`
     );
-    expect(pk.rows.map((r) => r.attname)).toEqual(["number"]);
+    expect(pk.rows.map((r) => r.attname)).toEqual(["number_hash"]);
+  });
+
+  it("paid_lookup_usage holds the durable paid-lookup counters, one per (scope, subject, day)", async () => {
+    const { rows } = await pool.query(
+      `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'paid_lookup_usage'`
+    );
+    const byName = Object.fromEntries(rows.map((r) => [r.column_name, r]));
+    expect(byName.scope?.data_type).toBe("character varying");
+    expect(byName.subject?.data_type).toBe("character varying");
+    expect(byName.day?.data_type).toBe("date");
+    expect(byName.count?.data_type).toBe("integer");
+    const pk = await pool.query(
+      `SELECT a.attname FROM pg_index i
+       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+       WHERE i.indrelid = 'paid_lookup_usage'::regclass AND i.indisprimary ORDER BY array_position(i.indkey, a.attnum)`
+    );
+    expect(pk.rows.map((r) => r.attname)).toEqual(["scope", "subject", "day"]);
   });
 });
 

@@ -139,12 +139,14 @@ components:
       explode: true
       schema:
         type: array
+        maxItems: 4
         items:
           type: string
           example: "isp:starlink"
       description: >
         Network tag filter, `key:value` (e.g. `line:twilio`, `isp:starlink`, `link:wifi`).
-        Repeat it to require several (all must match). Matched against each result's
+        Repeat it to require several (all must match), at most 4 per request — a fifth is a
+        400 "At most 4 tag filters per request". Matched against each result's
         **effective** value for the tier: on `mainline`, `line`/`isp`/`link` use the
         detected value only (a hand-set-only value counts as untagged), except `line` on a
         flow without a number lookup, where the flow's value counts; on `community` and

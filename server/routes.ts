@@ -8,7 +8,7 @@ import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { settleEndedJobsNow } from "./settle-now";
-import { parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, groupValue, emptyGroupValue, accessColumn, wantsAccessColumns } from "./metrics-params";
+import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, groupValue, emptyGroupValue, accessColumn, wantsAccessColumns } from "./metrics-params";
 import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { parseTags, LINK_VALUES, effectiveTags, type TagBoard } from "@shared/tags";
@@ -54,7 +54,7 @@ import {
   clearTwilioCredentials,
   validateTwilioCredentialsInput,
   maskAccountSid,
-  lookupFlowLine,
+  lookupAndStoreFlowLine,
   refreshFlowLineOnSave,
 } from "./number-lookup";
 import { promises as fsp } from "fs";
@@ -2455,8 +2455,8 @@ export async function registerRoutes(
   // "Look up again" for a phone flow's line provider. Flow editors only (the
   // PATCH rule — an admin is not a flow editor). Uses the 30-day per-number
   // cache like a save does, and the same paid-lookup caps (per editor + the
-  // global day); returns { lineLookup } or { skipped: reason }. A
-  // `rate-limited` skip leaves the stored lookup untouched.
+  // global day); returns { lineLookup } or { skipped: reason }. A skip
+  // (`rate-limited`, `timeout`, ...) leaves the stored lookup untouched.
   app.post("/api/eval-flows/:id/line-lookup", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -2469,10 +2469,10 @@ export async function registerRoutes(
       if (evalFlow.transport !== "phone") {
         return res.status(400).json({ error: "Line lookup applies to phone eval flows only" });
       }
-      const result = await lookupFlowLine(evalFlow, user.id);
-      if ("skipped" in result) return res.json({ skipped: result.skipped });
-      await storage.updateEvalFlow(evalFlow.id, { lineLookup: result });
-      res.json({ lineLookup: result });
+      // A skip stores nothing; `timeout` keeps the stored lookup and finishes
+      // in the background; the write is conditional on the flow still
+      // dialling the looked-up number (server/number-lookup.ts).
+      res.json(await lookupAndStoreFlowLine(evalFlow, user.id));
     } catch (error) {
       console.error("Error looking up evalFlow line:", error instanceof Error ? error.name : "error");
       res.status(500).json({ error: "Failed to look up the line provider" });
@@ -6522,7 +6522,7 @@ export async function registerRoutes(
 
       for (const result of results) {
         const tagValue = tags.groupBy ? groupValue(result, "mainline", tags.groupBy) : undefined;
-        const key = tagValue === undefined ? `${result.providerId}-${result.siteId}` : `${result.providerId}-${result.siteId}-${tagValue}`;
+        const key = leaderboardGroupKey(result.providerId, result.siteId, tagValue);
         if (!providerRegionMap.has(key)) {
           providerRegionMap.set(key, {
             providerId: result.providerId,

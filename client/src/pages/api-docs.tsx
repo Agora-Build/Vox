@@ -264,7 +264,7 @@ curl -H "Authorization: Bearer vox_live_xxxxx" "${base}/metrics/leaderboard?tier
                 <code className="font-mono text-xs">meta</code> says which tier, transport and window it covers.
               </p>
               <p className="text-sm text-muted-foreground">
-                Add <code className="font-mono text-xs">tag=key:value</code> (repeatable) to filter by network
+                Add <code className="font-mono text-xs">tag=key:value</code> (repeatable, up to 4) to filter by network
                 path — line provider, ISP, link type — and <code className="font-mono text-xs">groupBy=key</code>{" "}
                 to split each row by it. <code className="font-mono text-xs">groupBy=region</code> splits by where
                 the result was measured instead of a tag.

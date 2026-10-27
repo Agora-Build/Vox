@@ -19,13 +19,15 @@
  * Rules that must hold:
  * - The full number is never stored on the agent (only `sim_number_redacted`,
  *   "…1234", and `sim_number_hash`, a keyed hash — server/number-lookup.ts
- *   `numberHash`) and never logged; it lives only as the `number_lookups` key.
+ *   `numberHash`) and never logged; `number_lookups` is keyed by that hash too.
  * - Never blocks a heartbeat: routes call `noteSimReport`, fire-and-forget.
  * - Recomputed only when the report changes, the 30-day lookup cache expires,
  *   or a non-definitive answer (lookup off / failed / rate-limited) is due a retry.
- * - Only phone agents' reports count, and the paid lookup is capped (one
- *   uncached number per agent per day, and the global PAID_LOOKUPS_PER_DAY
- *   budget shared with the flow `line` path — server/paid-lookup-budget.ts).
+ * - Only phone agents' reports count, and the paid lookup is capped per UTC
+ *   day, durably in Postgres (server/paid-lookup-budget.ts): one uncached
+ *   number per agent, SIM_USER_LOOKUPS_PER_DAY across all agents of one
+ *   token creator, and the global PAID_LOOKUPS_PER_DAY budget shared with the
+ *   flow `line` path.
  *
  * Limit (from the design): both inputs arrive through the agent; a modified
  * agent could report another real number plus its matching code. The lookup
@@ -35,7 +37,7 @@ import { createHash } from "node:crypto";
 import { normalizeTag, simFromCarrier } from "@shared/tags";
 import { storage } from "./storage";
 import { lookupNumber, redactNumber, numberHash, CACHE_MAX_AGE_MS, MCC_RE, MNC_RE, type NumberLookupProvider } from "./number-lookup";
-import { simLookupGate, resetPaidLookupBudget, type PaidLookupGate } from "./paid-lookup-budget";
+import { simLookupGate, type PaidLookupGate } from "./paid-lookup-budget";
 
 export const SIM_MATCHER_VERSION = "v1";
 /** A non-definitive answer (lookup off / failed / rate-limited) is retried after this long. */
@@ -44,9 +46,10 @@ export const SIM_RETRY_MS = 10 * 60 * 1000;
  * Spending caps on the paid lookup live in server/paid-lookup-budget.ts. Both
  * inputs come from the agent, so any token holder could report a fresh valid
  * number every heartbeat and make each one a paid Twilio call. A real SIM's
- * number doesn't change: one uncached lookup per agent per day
- * (SIM_AGENT_LOOKUPS_PER_DAY), drawn from the global PAID_LOOKUPS_PER_DAY
- * budget shared with flow lookups. Past either cap the answer is a
+ * number doesn't change: one uncached lookup per agent per UTC day
+ * (SIM_AGENT_LOOKUPS_PER_DAY), at most SIM_USER_LOOKUPS_PER_DAY across all of
+ * one user's agent tokens (so minting more agents doesn't multiply it), drawn
+ * from the global PAID_LOOKUPS_PER_DAY budget shared with flow lookups. Past either cap the answer is a
  * non-definitive `rate-limited` (handled like `lookup-failed`). Cache hits
  * (`number_lookups`) are never counted.
  */
@@ -142,10 +145,13 @@ async function computeSimMatchDetailed(
  */
 const memo = new Map<number, { fingerprint: string; dueAt: number }>();
 
-/** Tests only: forget every agent's last computation and the spending caps. */
+/**
+ * Tests only: forget every agent's last computation (what a Core restart
+ * does). The spending caps are durable and NOT reset here —
+ * resetPaidLookupBudget does that.
+ */
 export function resetSimMemo(): void {
   memo.clear();
-  resetPaidLookupBudget();
 }
 
 function fingerprintOf(report: SimReport): string {

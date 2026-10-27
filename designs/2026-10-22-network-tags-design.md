@@ -57,7 +57,7 @@ provider describes the target, so it can't live on the agent.
 | `eval_flows` | `tags jsonb not null default '[]'` | hand-set by whoever can edit the flow (`isOwnerOrOrgManager`) |
 | `eval_agents` | `tags jsonb not null default '[]'` | hand-set by the agent's operator (the token's owner) — a correction or an extra tag |
 | `eval_flows` | `line_lookup jsonb` | the number lookup's answer for the flow's dialled number (value, carrier name, line type, time); null = not looked up |
-| `number_lookups` | table | per-number cache: E.164, provider, carrier name, line type, mapped value, looked-up time |
+| `number_lookups` | table | per-number cache: keyed hash of the E.164, provider, carrier name, line type, mapped value, looked-up time |
 | `eval_agents` | `link_type varchar(16)` | reported by the agent on register/heartbeat; null = not reported (an older agent) |
 | `eval_jobs` | `tags jsonb` | frozen at claim (below); null for jobs claimed before the release |
 
@@ -97,8 +97,8 @@ other end: the `sim` tag.)
 
 - **Where:** Core, when a phone flow is saved and whenever its dialled number
   changes (`server/number-lookup.ts`). Results are cached per number for 30 days
-  (`number_lookups`: E.164 number, provider, carrier name, line type, mapped
-  value, looked-up time) — about one paid lookup per number per month; a cached
+  (`number_lookups`: keyed hash of the E.164 number — never the number itself —
+  provider, carrier name, line type, mapped value, looked-up time) — about one paid lookup per number per month; a cached
   answer is reused across flows and owners.
 - **Which number:** a literal number in `call.dial`, or one filled from the
   flow's own `${config.*}`. **Never a number held in a secret** — sending a
@@ -388,16 +388,18 @@ Agents keep `isp`/`link` (correctable) + custom keys.
   so it can't invent a carrier, but it can't prove which SIM is in the phone.
 - **Spending:** for the same reason a token holder could make every heartbeat a paid
   lookup of a fresh number. Core acts on `sim` only from agents whose current
-  capabilities include `phone`, allows one uncached lookup per agent per 24 h and
-  500 a day overall (`PAID_LOOKUPS_PER_DAY`, shared with flow `line` lookups, which
-  are also capped at 10 per flow editor per 24 h — server/paid-lookup-budget.ts);
+  capabilities include `phone`, allows one uncached lookup per agent per UTC day,
+  5 per token creator across all their agents, and 500 a day overall
+  (`PAID_LOOKUPS_PER_DAY`, shared with flow `line` lookups, which are also capped
+  at 10 per flow editor per day — server/paid-lookup-budget.ts; counters durable
+  in Postgres `paid_lookup_usage`, reserved atomically);
   past a cap the answer is a
   non-definitive `v1: rate-limited`, handled like `lookup-failed` (a stored answer
   for the same number and code is kept; retried after 10 minutes). Cache hits are
   free and never counted; a failed provider call is refunded.
 - Privacy: our number is stored redacted (last 4) on the agent, plus a keyed hash
   (`sim_number_hash`) so "same number" never relies on the last 4; the full number
-  lives only in the `number_lookups` cache key, as for `line`.
+  is stored nowhere — `number_lookups` is keyed by the same keyed hash.
 
 ## Agent badge follows `access` (added 2026-10-22)
 

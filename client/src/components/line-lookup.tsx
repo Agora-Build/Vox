@@ -15,7 +15,7 @@ import type { LineLookup } from "@shared/tags";
 /** Saving a phone flow sends its dialled number to a third party: the form says so. */
 export const LINE_LOOKUP_DISCLOSURE = "The dialled number is checked with Twilio Lookup to identify its line provider. A number stored as a secret is never sent.";
 
-export type LineLookupSkip = "not-configured" | "secret" | "no-number" | "no-carrier" | "invalid-number" | "rate-limited" | "failed";
+export type LineLookupSkip = "not-configured" | "secret" | "no-number" | "no-carrier" | "invalid-number" | "rate-limited" | "timeout" | "failed";
 
 export const LINE_LOOKUP_SKIP_TEXT: Record<LineLookupSkip, string> = {
   "not-configured": "Automatic lookup is off — an admin can turn it on with Twilio Lookup credentials.",
@@ -24,6 +24,7 @@ export const LINE_LOOKUP_SKIP_TEXT: Record<LineLookupSkip, string> = {
   "invalid-number": "No dialable number found in the Setup steps.",
   "no-carrier": "Twilio has no carrier for this number (toll-free and some types). Add a line: tag by hand.",
   "rate-limited": "Automatic lookup is paused — too many lookups today. Try again tomorrow or tag the line provider by hand.",
+  timeout: "The lookup is taking longer than usual — it will finish in the background.",
   failed: "The lookup didn't work this time. Try again.",
 };
 
