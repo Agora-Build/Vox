@@ -185,7 +185,10 @@ function makeDockerenv() {
 }
 
 function execFake(responses: Record<string, string>): PublicIpDeps["exec"] {
-  return (cmd: string) => {
+  // exec is (file, args) with no shell; key the canned answers by the joined
+  // command line for readability.
+  return (file: string, args: readonly string[]) => {
+    const cmd = [file, ...args].join(" ");
     if (!(cmd in responses)) throw new Error(`unexpected exec: ${cmd}`);
     return responses[cmd];
   };
@@ -402,5 +405,65 @@ describe("withNetSignals", () => {
   it("includes both fields when both are detected", () => {
     const body = withNetSignals({ name: "agent-1" }, { cloudMetadata: true, publicIpOnInterface: false });
     expect(body).toEqual({ name: "agent-1", netSignals: { cloudMetadata: true, publicIpOnInterface: false } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Interface names never reach a shell (PR #258 review round 3)
+// ---------------------------------------------------------------------------
+
+describe("detectPublicIpOnInterface — hostile interface names", () => {
+  function recordingExec(responses: Record<string, string>) {
+    const calls: { file: string; args: readonly string[] }[] = [];
+    const exec: PublicIpDeps["exec"] = (file, args) => {
+      calls.push({ file, args });
+      const cmd = [file, ...args].join(" ");
+      if (!(cmd in responses)) throw new Error(`unexpected exec: ${cmd}`);
+      return responses[cmd];
+    };
+    return { exec, calls };
+  }
+
+  it("linux: a default-route interface with shell metacharacters is never used → undefined", () => {
+    // No `/` so a matching /sys entry can exist: only the name check stops it.
+    const evil = "eth0;rm$IFS-rf$IFS~;`reboot`";
+    makeIfaceWithDevice(evil);
+    const { exec, calls } = recordingExec({ "ip route get 1.1.1.1": `1.1.1.1 via 192.168.1.1 dev ${evil} src 192.168.1.5` });
+    const result = detectPublicIpOnInterface(deps({ exec }));
+    expect(result).toBeUndefined();
+    // Only the route lookups ran; the name never became an argument.
+    for (const c of calls) {
+      expect(c.args.join(" ")).not.toContain("rm$IFS");
+      expect(c.args.join(" ")).not.toContain("reboot");
+    }
+    expect(calls.every((c) => c.file === "ip" && c.args.join(" ") === "route get 1.1.1.1")).toBe(true);
+  });
+
+  it("linux: a path-traversal name (`..`) is rejected, not joined into /sys", () => {
+    const { exec, calls } = recordingExec({ "ip route get 1.1.1.1": "1.1.1.1 via 192.168.1.1 dev .. src 192.168.1.5" });
+    expect(detectPublicIpOnInterface(deps({ exec }))).toBeUndefined();
+    expect(calls.some((c) => c.args.includes(".."))).toBe(false);
+  });
+
+  it("darwin: a hostile interface name never reaches ifconfig → undefined", () => {
+    const { exec, calls } = recordingExec({ "route -n get default": "  interface: en0$(touch$IFS/tmp/pwned)\n" });
+    expect(detectPublicIpOnInterface(deps({ platform: "darwin", exec }))).toBeUndefined();
+    expect(calls.map((c) => c.file)).toEqual(["route"]);
+  });
+
+  it("a valid name is passed as ONE argument (argument array, no shell string)", () => {
+    makeIfaceWithDevice("veth1@if5");
+    const { exec, calls } = recordingExec({
+      "ip route get 1.1.1.1": "1.1.1.1 via 192.168.1.1 dev veth1@if5 src 192.168.1.5",
+      "ip -o addr show dev veth1@if5": "2: veth1    inet 203.0.113.7/24 scope global veth1",
+    });
+    expect(detectPublicIpOnInterface(deps({ exec }))).toBe(true);
+    expect(calls.at(-1)).toEqual({ file: "ip", args: ["-o", "addr", "show", "dev", "veth1@if5"] });
+  });
+
+  it("the daemon wires exec to execFileSync (no shell), never execSync", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "vox_eval_agentd", "vox-agentd.ts"), "utf8");
+    expect(src).not.toMatch(/\bexecSync\s*\(/);
+    expect(src.match(/exec: \(file, args\) => execFileSync\(file, args,/g)?.length).toBe(2);
   });
 });

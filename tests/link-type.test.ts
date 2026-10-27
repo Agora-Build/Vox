@@ -45,7 +45,10 @@ function deps(overrides: Partial<DetectLinkTypeDeps> & { exec: DetectLinkTypeDep
 }
 
 function execFake(responses: Record<string, string>): DetectLinkTypeDeps["exec"] {
-  return (cmd: string) => {
+  // exec is (file, args) with no shell; key the canned answers by the joined
+  // command line for readability.
+  return (file: string, args: readonly string[]) => {
+    const cmd = [file, ...args].join(" ");
     if (!(cmd in responses)) throw new Error(`unexpected exec: ${cmd}`);
     return responses[cmd];
   };
@@ -222,8 +225,8 @@ Ethernet Address: 00:11:22:33:44:55
     const result = detectLinkType(
       deps({
         platform: "darwin",
-        exec: (cmd: string) => {
-          if (cmd === "route -n get default") return "  interface: en0\n";
+        exec: (file: string, args: readonly string[]) => {
+          if ([file, ...args].join(" ") === "route -n get default") return "  interface: en0\n";
           throw new Error("networksetup: command not found");
         },
       })
@@ -236,5 +239,52 @@ describe("detectLinkType — unsupported platform", () => {
   it("returns undefined without calling exec", () => {
     const result = detectLinkType(deps({ platform: "win32", exec: throwingExec("must not be called") }));
     expect(result).toBeUndefined();
+  });
+});
+
+describe("detectLinkType — hostile interface names (no shell, validated)", () => {
+  it("linux: metacharacters in the default-route interface → undefined, never used", () => {
+    // A matching sysfs entry exists (wireless), so only the name check stops a "wifi" answer.
+    fs.mkdirSync(path.join(sysRoot, "sys", "class", "net", "wlan0;rm$IFS-rf$IFS~", "wireless"), { recursive: true });
+    const calls: string[] = [];
+    const result = detectLinkType(
+      deps({
+        exec: (file, args) => {
+          calls.push([file, ...args].join(" "));
+          return "1.1.1.1 via 192.168.1.1 dev wlan0;rm$IFS-rf$IFS~ src 192.168.1.5";
+        },
+      })
+    );
+    expect(result).toBeUndefined();
+    expect(calls).toEqual(["ip route get 1.1.1.1"]);
+  });
+
+  it("linux: `../..`-style names are rejected before any /sys lookup", () => {
+    // /sys/class/net/.. is /sys/class: a wireless dir there would make an unvalidated name read as wifi.
+    fs.mkdirSync(path.join(sysRoot, "sys", "class", "wireless"), { recursive: true });
+    const result = detectLinkType(deps({ exec: () => "1.1.1.1 via 10.0.0.1 dev .. src 10.0.0.5" }));
+    expect(result).toBeUndefined();
+  });
+
+  it("darwin: a hostile interface name never reaches networksetup", () => {
+    const calls: string[] = [];
+    const result = detectLinkType(
+      deps({
+        platform: "darwin",
+        exec: (file, args) => {
+          calls.push(file);
+          if (file === "route") return "  interface: en0`reboot`\n";
+          return "Hardware Port: Wi-Fi\nDevice: en0`reboot`\n";
+        },
+      })
+    );
+    expect(result).toBeUndefined();
+    expect(calls).toEqual(["route"]);
+  });
+
+  it("route lookups are argument arrays", () => {
+    const calls: { file: string; args: readonly string[] }[] = [];
+    detectLinkType(deps({ exec: (file, args) => { calls.push({ file, args }); return ""; } }));
+    expect(calls).toEqual([{ file: "ip", args: ["route", "get", "1.1.1.1"] }]);
   });
 });

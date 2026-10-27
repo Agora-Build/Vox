@@ -170,13 +170,24 @@ export interface PublicIpDeps {
   platform: string;
   /** Prefixed before `/sys/class/net/...` and `/.dockerenv` — `""` for the real root, a temp dir in tests. */
   sysRoot: string;
-  /** Runs a shell command and returns its stdout, or throws on failure. */
-  exec: (cmd: string) => string;
+  /** Runs `file` with `args` — NO shell (`execFileSync`) — and returns its stdout, or throws on failure. */
+  exec: (file: string, args: readonly string[]) => string;
+}
+
+/** An interface name comes from the OS's own output, but it still goes into
+ *  an argument list and a /sys path: anything outside this pattern (shell
+ *  metacharacters, `/`, `..`, whitespace) is treated as "couldn't tell".
+ *  Duplicated from ./link-type.ts on purpose (see the header). */
+const IFACE_NAME_RE = /^[A-Za-z0-9._@:-]{1,32}$/;
+
+export function isValidInterfaceName(name: string | undefined): name is string {
+  return name !== undefined && IFACE_NAME_RE.test(name) && name !== "." && name !== "..";
 }
 
 function defaultRouteInterfaceLinux(exec: PublicIpDeps["exec"]): string | undefined {
-  const out = exec("ip route get 1.1.1.1");
-  return out.match(/\bdev\s+(\S+)/)?.[1];
+  const out = exec("ip", ["route", "get", "1.1.1.1"]);
+  const iface = out.match(/\bdev\s+(\S+)/)?.[1];
+  return isValidInterfaceName(iface) ? iface : undefined;
 }
 
 /** Same idea as Part-1's link-type virtual-interface check: a container sees
@@ -225,15 +236,15 @@ function hasPublicAddress(out: string): boolean | undefined {
 function detectLinuxPublicIp(deps: PublicIpDeps): boolean | undefined {
   const iface = defaultRouteInterfaceLinux(deps.exec);
   if (!iface) return undefined;
-  const out = deps.exec(`ip -o addr show dev ${iface}`);
+  const out = deps.exec("ip", ["-o", "addr", "show", "dev", iface]);
   return hasPublicAddress(out);
 }
 
 function detectDarwinPublicIp(deps: PublicIpDeps): boolean | undefined {
-  const routeOut = deps.exec("route -n get default");
+  const routeOut = deps.exec("route", ["-n", "get", "default"]);
   const iface = routeOut.match(/^\s*interface:\s*(\S+)/m)?.[1];
-  if (!iface) return undefined;
-  const out = deps.exec(`ifconfig ${iface}`);
+  if (!isValidInterfaceName(iface)) return undefined;
+  const out = deps.exec("ifconfig", [iface]);
   return hasPublicAddress(out);
 }
 

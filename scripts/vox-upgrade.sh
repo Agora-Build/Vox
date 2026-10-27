@@ -230,6 +230,22 @@ report_dialf_check() {
 # wifi/ethernet/cellular/satellite, or nothing on any failure — never aborts
 # the run (every call is `|| true`-guarded, as elsewhere in this script,
 # because of `set -euo pipefail`).
+# An interface name read from `ip route`/`route` output is still untrusted
+# text: it goes into /sys paths, a grep pattern and an ip/ifconfig argument
+# (where a leading `-` would read as an option). Accept only what real names
+# look like (eth0, wlp3s0, veth1@if5, eth0.100, en0, utun3); anything else
+# means "couldn't tell", exactly like no route at all. Mirrors
+# isValidInterfaceName in vox_eval_agentd/link-type.ts / net-signals.ts.
+valid_iface_name() {
+    case "$1" in
+        ""|.|..|-*) return 1 ;;
+    esac
+    [ "${#1}" -le 32 ] || return 1
+    # Whole-string match (unlike grep -x, which would accept "eth0<newline>x").
+    local LC_ALL=C re='^[A-Za-z0-9._@:-]+$'
+    [[ "$1" =~ $re ]]
+}
+
 host_link_type() {
     case "${VOX_LINK_TYPE:-}" in
         wifi|ethernet|cellular|satellite) echo "$VOX_LINK_TYPE"; return 0 ;;
@@ -238,7 +254,7 @@ host_link_type() {
     os=$(uname -s 2>/dev/null || true)
     if [ "$os" = "Linux" ]; then
         iface=$( { ip route get 1.1.1.1 2>/dev/null || true; } | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
-        [ -z "$iface" ] && return 0
+        valid_iface_name "$iface" || return 0
         if [ -e "/sys/class/net/$iface/wireless" ]; then
             echo wifi; return 0
         fi
@@ -255,8 +271,8 @@ host_link_type() {
         echo ethernet
     elif [ "$os" = "Darwin" ]; then
         iface=$( { route -n get default 2>/dev/null || true; } | sed -n 's/^ *interface: //p' | head -1)
-        [ -z "$iface" ] && return 0
-        if { networksetup -listallhardwareports 2>/dev/null || true; } | grep -B1 "^Device: $iface\$" | grep -q "^Hardware Port: Wi-Fi$"; then
+        valid_iface_name "$iface" || return 0
+        if { networksetup -listallhardwareports 2>/dev/null || true; } | grep -F -x -B1 "Device: $iface" | grep -q "^Hardware Port: Wi-Fi$"; then
             echo wifi; return 0
         fi
         echo ethernet
@@ -282,11 +298,11 @@ host_public_ip_on_iface() {
     os=$(uname -s 2>/dev/null || true)
     if [ "$os" = "Linux" ]; then
         iface=$( { ip route get 1.1.1.1 2>/dev/null || true; } | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
-        [ -z "$iface" ] && return 0
+        valid_iface_name "$iface" || return 0
         out=$(ip -o addr show dev "$iface" 2>/dev/null || true)
     elif [ "$os" = "Darwin" ]; then
         iface=$( { route -n get default 2>/dev/null || true; } | sed -n 's/^ *interface: //p' | head -1)
-        [ -z "$iface" ] && return 0
+        valid_iface_name "$iface" || return 0
         out=$(ifconfig "$iface" 2>/dev/null || true)
     else
         return 0

@@ -6,8 +6,13 @@
  * Injectable (env/platform/sysRoot/exec) so detection never touches the
  * real network stack in tests. The real call from vox-agentd.ts passes
  * `process.env`, `process.platform`, `''` (real root) and a sync `exec`
- * wrapping `execSync` — one `ip route get` (plus, on macOS, one
+ * wrapping `execFileSync` — one `ip route get` (plus, on macOS, one
  * `networksetup`), cheap enough to run on every beat.
+ *
+ * No shell, ever: `exec` takes a program and an argument array
+ * (`execFileSync(file, args)`), and an interface name read from the OS is
+ * checked against `IFACE_NAME_RE` before it is used anywhere (an argument
+ * or a /sys path) — an invalid one means "couldn't tell", i.e. undefined.
  *
  * Precedence (same as every other reported field): `VOX_LINK_TYPE` in the
  * environment — set by vox-upgrade.sh from the HOST's own detection, since
@@ -34,8 +39,17 @@ export interface DetectLinkTypeDeps {
   platform: string;
   /** Prefixed before `/sys/class/net/...` — `""` for the real root, a temp dir in tests. */
   sysRoot: string;
-  /** Runs a shell command and returns its stdout, or throws on failure. */
-  exec: (cmd: string) => string;
+  /** Runs `file` with `args` — NO shell (`execFileSync`) — and returns its stdout, or throws on failure. */
+  exec: (file: string, args: readonly string[]) => string;
+}
+
+/** Linux allows up to 15 bytes, any byte but `/`, NUL and whitespace; real
+ *  names (eth0, wlp3s0, enp0s31f6, wwan0, veth1@if5, en0, utun3, eth0.100,
+ *  eth0:1) all fit this. Anything else is treated as "couldn't tell". */
+const IFACE_NAME_RE = /^[A-Za-z0-9._@:-]{1,32}$/;
+
+export function isValidInterfaceName(name: string | undefined): name is string {
+  return name !== undefined && IFACE_NAME_RE.test(name) && name !== "." && name !== "..";
 }
 
 const CELLULAR_DRIVERS = new Set(["qmi_wwan", "cdc_mbim", "cdc_ether"]);
@@ -58,8 +72,9 @@ export function detectLinkType({ env, platform, sysRoot, exec }: DetectLinkTypeD
 }
 
 function defaultRouteInterface(exec: DetectLinkTypeDeps["exec"]): string | undefined {
-  const out = exec("ip route get 1.1.1.1");
-  return out.match(/\bdev\s+(\S+)/)?.[1];
+  const out = exec("ip", ["route", "get", "1.1.1.1"]);
+  const iface = out.match(/\bdev\s+(\S+)/)?.[1];
+  return isValidInterfaceName(iface) ? iface : undefined;
 }
 
 function detectLinux(sysRoot: string, exec: DetectLinkTypeDeps["exec"]): LinkType | undefined {
@@ -91,11 +106,11 @@ function detectLinux(sysRoot: string, exec: DetectLinkTypeDeps["exec"]): LinkTyp
 }
 
 function detectDarwin(exec: DetectLinkTypeDeps["exec"]): LinkType | undefined {
-  const routeOut = exec("route -n get default");
+  const routeOut = exec("route", ["-n", "get", "default"]);
   const iface = routeOut.match(/^\s*interface:\s*(\S+)/m)?.[1];
-  if (!iface) return undefined;
+  if (!isValidInterfaceName(iface)) return undefined;
 
-  const listing = exec("networksetup -listallhardwareports");
+  const listing = exec("networksetup", ["-listallhardwareports"]);
   return macHardwarePortFor(iface, listing) === "Wi-Fi" ? "wifi" : "ethernet";
 }
 

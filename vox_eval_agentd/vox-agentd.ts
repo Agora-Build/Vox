@@ -25,7 +25,7 @@
  *   node vox-agentd.js  (compiled by esbuild, configured via env vars)
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { createServer, type Server as HttpServer } from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -392,7 +392,8 @@ class VoxEvalAgentDaemon {
       env: process.env,
       platform: process.platform,
       sysRoot: '',
-      exec: (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+      // No shell: program + argument array (interface names come from OS output).
+      exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
     });
   }
 
@@ -408,7 +409,8 @@ class VoxEvalAgentDaemon {
       env: process.env,
       platform: process.platform,
       sysRoot: '',
-      exec: (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+      // No shell: program + argument array (interface names come from OS output).
+      exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
     });
   }
 

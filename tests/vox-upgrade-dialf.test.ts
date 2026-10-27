@@ -48,7 +48,12 @@ exec /usr/bin/ps "$@"
 // network: with no route to report, host_link_type always returns nothing
 // unless a test overrides VOX_LINK_TYPE directly (the documented, least-
 // invasive test hook — same precedence host_link_type gives a real .env).
+// A test may set IP_ROUTE_OUT to make `ip route get` report a route (every
+// ip call is logged as "ip <args>"); unset, it reports none.
 const STUB_IP = `#!/bin/bash
+echo "ip $*" >> "$VU_LOG"
+if [ "$1" = "route" ] && [ -n "\${IP_ROUTE_OUT:-}" ]; then echo "$IP_ROUTE_OUT"; exit 0; fi
+if [ "$1" = "-o" ] && [ -n "\${IP_ADDR_OUT:-}" ]; then echo "$IP_ADDR_OUT"; exit 0; fi
 exit 1
 `;
 
@@ -300,5 +305,40 @@ describe("the agent's DialF check names why it can't open the socket", () => {
 
   it("anything else still names the code", () => {
     expect(dialfConnectFailure(Object.assign(new Error("boom"), { code: "EWHAT" }))).toBe("dialfd socket unreachable (EWHAT)");
+  });
+});
+
+describe("interface names from route output are validated before use (PR #258 round 3)", () => {
+  const validIface = (name: string) => {
+    const fn = fs.readFileSync(SCRIPT, "utf8").match(/^valid_iface_name\(\) \{[\s\S]*?^\}/m)?.[0];
+    expect(fn).toBeTruthy();
+    return spawnSync("bash", ["-c", `${fn}\nvalid_iface_name "$1"`, "_", name], { encoding: "utf8" }).status;
+  };
+  it("valid_iface_name: real names pass, metacharacters / traversal / options / overlong fail", () => {
+    for (const ok of ["eth0", "wlp3s0", "veth1@if5", "eth0.100", "eth0:1", "en0", "enp0s31f6"]) expect(validIface(ok)).toBe(0);
+    for (const bad of ["", ".", "..", "-v", "eth0;id", "eth0$(id)", "a/b", "eth0`id`", "a".repeat(33), "eth0\nwlan0"]) expect(validIface(bad)).not.toBe(0);
+  });
+
+  it("a hostile default-route interface name is never passed to ip addr and nothing is forwarded", () => {
+    const r = upgrade({
+      RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new",
+      IP_ROUTE_OUT: "1.1.1.1 via 192.168.1.1 dev eth0;touch$IFS/tmp/pwned src 192.168.1.5",
+      IP_ADDR_OUT: "2: eth0    inet 203.0.113.5/24 scope global eth0",
+    });
+    expect(r.status).toBe(0);
+    expect(r.calls.filter((c) => c.startsWith("ip ")).every((c) => c === "ip route get 1.1.1.1")).toBe(true);
+    const run = r.calls.find((c) => c.startsWith("docker run"));
+    expect(run).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
+    expect(run).not.toContain("VOX_LINK_TYPE");
+  });
+
+  it("a valid name is used (quoted, one argument) and its answer forwarded", () => {
+    const r = upgrade({
+      RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new",
+      IP_ROUTE_OUT: "1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.5",
+      IP_ADDR_OUT: "2: eth0    inet 203.0.113.5/24 scope global eth0",
+    });
+    expect(r.calls).toContain("ip -o addr show dev eth0");
+    expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=true");
   });
 });
