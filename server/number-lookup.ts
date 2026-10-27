@@ -55,7 +55,11 @@ export type LineLookupResult = LineLookup | { skipped: LineSkipReason };
 export type ProviderAnswer =
   | { kind: "ok"; carrierName: string | null; lineType: string | null; mcc?: string | null; mnc?: string | null }
   | { kind: "invalid-number" }
-  | { kind: "failed"; reason: string };
+  /**
+   * `billed`: whether the provider may have charged for this call. Decides
+   * the paid-lookup refund (lookupOnce): only an unbilled failure is refunded.
+   */
+  | { kind: "failed"; reason: string; billed: boolean };
 
 /** A lookup service. One implementation today (Twilio); a second is additive. */
 export interface NumberLookupProvider {
@@ -82,8 +86,17 @@ export class TwilioLookupProvider implements NumberLookupProvider {
     this.timeoutMs = opts.timeoutMs ?? LOOKUP_TIMEOUT_MS;
   }
 
+  /**
+   * Billing rule (decides the paid-lookup refund): Twilio bills a Lookup
+   * request it answered — any 2xx, and 404 (an invalid number is still a
+   * looked-up number). So a failure is `billed: false` only when no billable
+   * response arrived: a network error or timeout before the response, or any
+   * other non-2xx status (auth, rate limit, server error). Once a 2xx arrived,
+   * a later failure (unreadable body, a timeout while reading it) is billed.
+   */
   async lookup(e164: string): Promise<ProviderAnswer> {
     const url = `${this.baseUrl}/v2/PhoneNumbers/${encodeURIComponent(e164)}?Fields=line_type_intelligence`;
+    let responded = false;
     try {
       const res = await fetch(url, {
         headers: {
@@ -93,7 +106,8 @@ export class TwilioLookupProvider implements NumberLookupProvider {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
       if (res.status === 404) return { kind: "invalid-number" };
-      if (!res.ok) return { kind: "failed", reason: `HTTP ${res.status}` };
+      if (!res.ok) return { kind: "failed", reason: `HTTP ${res.status}`, billed: false };
+      responded = true;
       const body = (await res.json()) as {
         valid?: boolean;
         line_type_intelligence?: {
@@ -114,7 +128,7 @@ export class TwilioLookupProvider implements NumberLookupProvider {
       };
     } catch (err) {
       // The URL holds the number but never a credential (Basic auth header).
-      return { kind: "failed", reason: err instanceof Error ? err.name : "error" };
+      return { kind: "failed", reason: err instanceof Error ? err.name : "error", billed: responded };
     }
   }
 }
@@ -288,8 +302,9 @@ export async function lookupNumber(
     provider?: NumberLookupProvider | null;
     /**
      * Asked right before a PAID provider call (never for a cache hit); a
-     * refusal → `{ skipped: "rate-limited" }` and no call. Refunded when the
-     * provider call fails (server/paid-lookup-budget.ts).
+     * refusal → `{ skipped: "rate-limited" }` and no call. Refunded only when
+     * the provider made no billable call (ProviderAnswer `billed: false`);
+     * see lookupOnce.
      */
     gate?: PaidLookupGate;
   } = {},
@@ -317,9 +332,21 @@ export async function lookupNumber(
   }
 }
 
-/** One cache read + (gated) provider call + idempotent cache upsert. Never throws. */
+/**
+ * One cache read + (gated) provider call + idempotent cache upsert. Never throws.
+ *
+ * Refund rule: the reservation taken from `gate` is refunded ONLY when the
+ * provider says its call was definitively not billed (`failed` with
+ * `billed: false` — no response, or a non-2xx/404 status). Everything else
+ * keeps it: a 2xx/404 answer (Twilio bills those), a billed failure, a
+ * provider that THROWS (we can't tell whether it billed), and any failure
+ * after a successful answer (e.g. the cache upsert) — the money is spent, so
+ * the budget must say so.
+ */
 async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: PaidLookupGate | undefined): Promise<NumberLookupResult> {
   let charged = false;
+  /** Set once the provider returned (whatever it said): later failures never refund. */
+  let providerReturned = false;
   try {
     // The cache is keyed by the number's keyed hash, never the number. No
     // server key → no hash → no cache at all (every lookup goes to the
@@ -337,9 +364,10 @@ async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: Pa
     }
 
     const answer = await provider.lookup(e164);
+    providerReturned = true;
     if (answer.kind === "invalid-number") return { skipped: "invalid-number" };
     if (answer.kind === "failed") {
-      if (charged) await gate!.refund().catch(() => {});
+      if (charged && !answer.billed) await gate!.refund().catch(() => {});
       console.warn(`[number-lookup] ${provider.name} lookup for ${redactNumber(e164)} failed: ${answer.reason}`);
       return { skipped: "failed" };
     }
@@ -364,10 +392,13 @@ async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: Pa
     }
     return { carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt };
   } catch (err) {
-    // A thrown error (a DB failure, an unexpected provider throw): refunded —
-    // under-counting one call beats blocking the retry for a day.
-    if (charged) await gate!.refund().catch(() => {});
-    console.warn(`[number-lookup] lookup failed (${err instanceof Error ? err.name : "error"})`);
+    // Never refunded here: either the provider threw (it may have billed) or
+    // it already answered (billed) and a later step — the cache upsert —
+    // failed. A failure before the reservation (cache read) charged nothing.
+    const name = err instanceof Error ? err.name : "error";
+    console.warn(providerReturned
+      ? `[number-lookup] lookup failed after a billed provider call (${name}); reservation kept`
+      : `[number-lookup] lookup failed (${name})`);
     return { skipped: "failed" };
   }
 }

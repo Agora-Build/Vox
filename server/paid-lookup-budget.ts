@@ -17,8 +17,10 @@
  *
  * Only an UNCACHED lookup is counted — `lookupNumber` asks the gate right
  * before the provider call, never for a `number_lookups` cache hit — and a
- * provider call that failed is refunded (it answered nothing; the retry must
- * not wait a day). Past a cap the answer is the non-definitive
+ * provider call that got no billable response is refunded (network error or
+ * timeout, or a non-2xx other than 404 — the retry must not wait a day). A
+ * 2xx/404 answer stays counted even if a later step fails: Twilio billed it
+ * (server/number-lookup.ts lookupOnce). Past a cap the answer is the non-definitive
  * `rate-limited`: callers keep whatever they had stored.
  *
  * Durable and atomic: the counters live in Postgres (`paid_lookup_usage`,
@@ -71,11 +73,11 @@ export const RETAIN_DAYS = 7;
 
 export type BudgetScope = "global-flow" | "global-sim" | "flow-user" | "sim-agent" | "sim-user";
 
-/** Asked right before a paid provider call; `refund` hands a failed call back. */
+/** Asked right before a paid provider call; `refund` hands an unbilled call back. */
 export interface PaidLookupGate {
   /** Reserve one paid call atomically. False = over a cap (nothing reserved). */
   allow(): Promise<boolean>;
-  /** Return the reservation — the provider call failed. Idempotent; a no-op if nothing was reserved. */
+  /** Return the reservation — the provider call was not billed. Idempotent; a no-op if nothing was reserved. */
   refund(): Promise<void>;
 }
 

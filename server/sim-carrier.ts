@@ -212,7 +212,7 @@ export async function refreshAgentSim(
   // Claimed before the await, so a burst of heartbeats computes once.
   memo.set(agentId, { fingerprint, dueAt: now + SIM_RETRY_MS });
   try {
-    // Refunded inside lookupNumber when the provider call fails.
+    // Refunded inside lookupNumber only when the provider call was not billed.
     const gate = simLookupGate(agentId, { now, shareLimit: opts.shareLimit });
     const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider, gate });
     const definitive = !NON_DEFINITIVE.has(match.simReason);

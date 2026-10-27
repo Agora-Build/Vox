@@ -507,6 +507,81 @@ d("flow-path paid-lookup caps and single-flight (stub Twilio)", () => {
     expect(requests).toHaveLength(FLOW_USER_LOOKUPS_PER_DAY + 1);
   });
 
+  // PR #258 round 4: refunded only when the provider made no billable call.
+  const userCount = async (subject: number, t: number) =>
+    (await pool.query("SELECT count FROM paid_lookup_usage WHERE scope = 'flow-user' AND subject = $1 AND day = $2",
+      [String(subject), new Date(t).toISOString().slice(0, 10)])).rows[0]?.count ?? 0;
+
+  it("a provider 200 followed by a failed cache write keeps the reservation (the call was billed)", async () => {
+    reply = (n) => twilioOk(n, "Telnyx", "nonFixedVoip");
+    const t0 = noonUtc();
+    const who = ownerId + 40_000_000;
+    await pool.query(`CREATE OR REPLACE FUNCTION nl_fail_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'forced cache failure'; END $$ LANGUAGE plpgsql`);
+    await pool.query("CREATE TRIGGER nl_fail BEFORE INSERT OR UPDATE ON number_lookups FOR EACH ROW EXECUTE FUNCTION nl_fail_insert()");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(700)) } }, who, { provider: provider(), now: t0 })).toEqual({ skipped: "failed" });
+    } finally {
+      await pool.query("DROP TRIGGER nl_fail ON number_lookups");
+      await pool.query("DROP FUNCTION nl_fail_insert()");
+    }
+    expect(requests).toHaveLength(1);
+    expect(await userCount(who, t0)).toBe(1);
+    // Logged by error name only — never the number.
+    const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    warn.mockRestore();
+    expect(logged).toMatch(/after a billed provider call/);
+    expect(logged).not.toContain(num(700).slice(1));
+  });
+
+  it("a 404 (invalid number) is billed: the reservation is kept", async () => {
+    reply = () => ({ status: 404, body: {} });
+    const t0 = noonUtc();
+    const who = ownerId + 41_000_000;
+    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(701)) } }, who, { provider: provider(), now: t0 })).toEqual({ skipped: "invalid-number" });
+    expect(await userCount(who, t0)).toBe(1);
+  });
+
+  it("a 2xx with an unreadable body is billed: kept, reported failed", async () => {
+    reply = () => ({ status: 200, body: "not json" as unknown });
+    const t0 = noonUtc();
+    const who = ownerId + 42_000_000;
+    const real = server.listeners("request")[0] as (req: http.IncomingMessage, res: http.ServerResponse) => void;
+    server.removeAllListeners("request");
+    server.on("request", (req, res) => { requests.push({ path: req.url ?? "", auth: undefined }); res.writeHead(200, { "Content-Type": "application/json" }); res.end("{broken"); });
+    try {
+      expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(702)) } }, who, { provider: provider(), now: t0 })).toEqual({ skipped: "failed" });
+    } finally {
+      server.removeAllListeners("request");
+      server.on("request", real);
+    }
+    expect(await userCount(who, t0)).toBe(1);
+  });
+
+  it("a provider 500 or a network error (no response) is refunded", async () => {
+    reply = () => ({ status: 500, body: {} });
+    const t0 = noonUtc();
+    const who = ownerId + 43_000_000;
+    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(703)) } }, who, { provider: provider(), now: t0 })).toEqual({ skipped: "failed" });
+    expect(await userCount(who, t0)).toBe(0);
+    // Nothing listening: the request never gets a response.
+    const dead = http.createServer();
+    await new Promise<void>((r) => dead.listen(0, "127.0.0.1", r));
+    const deadUrl = `http://127.0.0.1:${(dead.address() as AddressInfo).port}`;
+    await new Promise<void>((r) => dead.close(() => r()));
+    const unreachable = new TwilioLookupProvider({ accountSid: SID, authToken: TOKEN, baseUrl: deadUrl });
+    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(704)) } }, who, { provider: unreachable, now: t0 })).toEqual({ skipped: "failed" });
+    expect(await userCount(who, t0)).toBe(0);
+  });
+
+  it("a provider that throws (unknown whether it billed) keeps the reservation", async () => {
+    const t0 = noonUtc();
+    const who = ownerId + 44_000_000;
+    const throwing = { name: "twilio", lookup: async () => { throw new TypeError("boom"); } };
+    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(705)) } }, who, { provider: throwing, now: t0 })).toEqual({ skipped: "failed" });
+    expect(await userCount(who, t0)).toBe(1);
+  });
+
   it(`every flow caller draws from ONE flow share (FLOW_LOOKUPS_PER_DAY = ${FLOW_LOOKUPS_PER_DAY})`, async () => {
     expect(FLOW_LOOKUPS_PER_DAY).toBe(300);
     reply = (n) => twilioOk(n, "Telnyx", "nonFixedVoip");

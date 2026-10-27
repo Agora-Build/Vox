@@ -420,7 +420,10 @@ Agents keep `isp`/`link` (correctable) + custom keys.
   past a cap the answer is a
   non-definitive `v1: rate-limited`, handled like `lookup-failed` (a stored answer
   for the same number and code is kept; retried after 10 minutes). Cache hits are
-  free and never counted; a failed provider call is refunded.
+  free and never counted; a provider call that got no billable response
+  (network error/timeout, or a non-2xx other than 404) is refunded. Twilio
+  bills any 2xx and 404, so those keep the reservation even when a later
+  step (the cache write) fails, and so does a provider that throws.
 - Privacy: our number is stored redacted (last 4) on the agent, plus a keyed hash
   (`sim_number_hash`) so "same number" never relies on the last 4; the full number
   is stored nowhere — `number_lookups` is keyed by the same keyed hash.
