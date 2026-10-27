@@ -126,7 +126,14 @@ export interface LineLookup {
   carrierName: string | null;
   lineType: string | null;
   lookedUpAt: string;
+  /** Redacted display value, "…1234". */
   number: string;
+  /**
+   * Keyed hash (HMAC-SHA256, server key) of the full E.164 number — tells a
+   * changed number apart even when the last four digits match. Absent on
+   * lookups stored before it existed (treated as changed).
+   */
+  numberHash?: string;
 }
 
 /** Which board is reading a job's tags — each has its own effective-value rule. */

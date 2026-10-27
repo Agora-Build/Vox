@@ -9,14 +9,19 @@ import type { AddressInfo } from "node:net";
 // freshly migrated database holds the agents and the lookup cache.
 
 await vi.hoisted(async () => {
+  // The SIM number's keyed hash (numberHash) needs a server key.
+  if (!/^[0-9a-f]{64}$/i.test(process.env.CREDENTIAL_ENCRYPTION_KEY ?? "")) {
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "ab".repeat(32);
+  }
   if (process.env.DATABASE_URL) {
     const { prepareIsolatedCoreDb } = await import("./helpers/isolated-core-db");
     process.env.DATABASE_URL = await prepareIsolatedCoreDb(process.env.DATABASE_URL, "vox_test_sim_carrier");
   }
 });
 import { storage, pool } from "../server/storage";
-import { TwilioLookupProvider, CACHE_MAX_AGE_MS } from "../server/number-lookup";
-import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo, noteSimReport, SIM_LOOKUPS_PER_DAY, SIM_AGENT_LOOKUP_WINDOW_MS, SIM_RETRY_MS } from "../server/sim-carrier";
+import { TwilioLookupProvider, CACHE_MAX_AGE_MS, numberHash, lookupFlowLine } from "../server/number-lookup";
+import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo, noteSimReport, SIM_RETRY_MS } from "../server/sim-carrier";
+import { PAID_LOOKUPS_PER_DAY, PAID_LOOKUP_WINDOW_MS as SIM_AGENT_LOOKUP_WINDOW_MS } from "../server/paid-lookup-budget";
 
 const SID = "AC" + "0123456789abcdef0123456789abcdef";
 
@@ -260,12 +265,12 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later + SIM_RETRY_MS + 1 })).toBe(true);
   });
 
-  it(`the whole SIM path has a daily budget (default SIM_LOOKUPS_PER_DAY = ${SIM_LOOKUPS_PER_DAY}) across agents`, async () => {
-    expect(SIM_LOOKUPS_PER_DAY).toBe(500);
+  it(`the SIM path draws from the global daily budget (default PAID_LOOKUPS_PER_DAY = ${PAID_LOOKUPS_PER_DAY}) across agents`, async () => {
+    expect(PAID_LOOKUPS_PER_DAY).toBe(500);
     codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
     const [a, b, c] = [await mkAgent(), await mkAgent(), await mkAgent()];
     const t0 = Date.now();
-    const opts = { provider: provider(), now: t0, lookupsPerDay: 2 };
+    const opts = { provider: provider(), now: t0, globalLimit: 2 };
     await refreshAgentSim(a.id, { number: "+15550104001", mcc: "310", mnc: "260" }, opts);
     await refreshAgentSim(b.id, { number: "+15550104002", mcc: "310", mnc: "260" }, opts);
     await refreshAgentSim(c.id, { number: "+15550104003", mcc: "310", mnc: "260" }, opts);
@@ -314,5 +319,74 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     expect(requests).toHaveLength(0); // served from the cache
     expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: Date.now() + 12 * 3600 * 1000 })).toBe(false);
     expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: Date.now() + 2 * 24 * 3600 * 1000 })).toBe(true);
+  });
+
+  it("the global budget is shared with flow lookups: flow lookups spend it, a SIM report is then rate-limited", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const t0 = Date.now();
+    const dial = (n: string) => ({ config: { stepsPrefix: `- type: call.dial\n  number: "${n}"\n` } });
+    await lookupFlowLine(dial("+15550107001"), 424242, { provider: provider(), now: t0, globalLimit: 2 });
+    await lookupFlowLine(dial("+15550107002"), 424243, { provider: provider(), now: t0, globalLimit: 2 });
+    expect(requests).toHaveLength(2);
+    expect(await refreshAgentSim(a.id, { number: "+15550107003", mcc: "310", mnc: "260" }, { provider: provider(), now: t0, globalLimit: 2 })).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect((await row(a.id)).sim_reason).toBe("v1: rate-limited");
+  });
+
+  it("stores a keyed hash of the full number (sim_number_hash), never the number", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    await refreshAgentSim(a.id, { number: "+15550108765", mcc: "310", mnc: "260" }, { provider: provider() });
+    const r = await row(a.id);
+    expect(r.sim_number_hash).toBe(numberHash("+15550108765"));
+    expect(r.sim_number_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(r)).not.toContain("5550108765");
+  });
+
+  it("keep-on-failure needs the same FULL number: another number with the same last four digits is not kept", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    expect(await refreshAgentSim(a.id, { number: "+15550304444", mcc: "310", mnc: "260" }, { provider: provider() })).toBe(true);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    codes = () => ({ carrier: null, mcc: null, mnc: null, status: 500 });
+    // Same last four, same code, a day later (so the agent cap allows the call), Twilio failing.
+    expect(await refreshAgentSim(a.id, { number: "+15550404444", mcc: "310", mnc: "260" }, { provider: provider(), now: Date.now() + SIM_AGENT_LOOKUP_WINDOW_MS + 1000 })).toBe(true);
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: lookup-failed", sim_number_redacted: "…4444", sim_number_hash: numberHash("+15550404444") });
+  });
+
+  it("an older row without sim_number_hash is never treated as the same number on failure", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const rep = { number: "+15550305555", mcc: "310", mnc: "260" };
+    await refreshAgentSim(a.id, rep, { provider: provider() });
+    await pool.query("UPDATE eval_agents SET sim_number_hash = NULL WHERE id = $1", [a.id]);
+    await pool.query("UPDATE number_lookups SET looked_up_at = $1 WHERE number = $2", [new Date(Date.now() - CACHE_MAX_AGE_MS - 60_000), rep.number]);
+    codes = () => ({ carrier: null, mcc: null, mnc: null, status: 500 });
+    resetSimMemo();
+    expect(await refreshAgentSim(a.id, rep, { provider: provider() })).toBe(true);
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: lookup-failed" });
+  });
+
+  it("an unchanged report on a heartbeat costs no database query and no lookup", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const sim = { number: "+15550306666", mcc: "310", mnc: "260" };
+    await noteSimReport(a.id, sim, ["phone"], { provider: provider() });
+    expect(requests).toHaveLength(1);
+    const q = vi.spyOn(pool, "query");
+    const c = vi.spyOn(pool, "connect");
+    const g = vi.spyOn(storage, "getEvalAgent");
+    const u = vi.spyOn(storage, "updateEvalAgent");
+    try {
+      for (let i = 0; i < 3; i++) await noteSimReport(a.id, sim, ["phone"], { provider: provider() });
+      expect(q).not.toHaveBeenCalled();
+      expect(c).not.toHaveBeenCalled();
+      expect(g).not.toHaveBeenCalled();
+      expect(u).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+    } finally {
+      q.mockRestore(); c.mockRestore(); g.mockRestore(); u.mockRestore();
+    }
   });
 });

@@ -217,7 +217,7 @@ export function registerApiV1Routes(app: Express): void {
       // throws. (v1 create always stores `web` today, so it's a no-op until
       // v1 learns transport; kept so the two paths can't drift.)
       const saved = withTags ?? evalFlow;
-      const lineLookup = await refreshFlowLineOnSave(saved);
+      const lineLookup = await refreshFlowLineOnSave(saved, user.id);
       res.status(201).json({ data: lineLookup !== undefined ? { ...saved, lineLookup } : saved });
     } catch (error) {
       console.error("API v1 - Error creating evalFlow:", error);
@@ -310,7 +310,7 @@ export function registerApiV1Routes(app: Express): void {
       // its line lookup, as the console PATCH does — bounded, never throws,
       // never fails the save; a changed number that can't be looked up clears
       // the old answer.
-      const lineLookup = updated ? await refreshFlowLineOnSave(updated) : undefined;
+      const lineLookup = updated ? await refreshFlowLineOnSave(updated, user.id) : undefined;
       res.json({ data: updated && lineLookup !== undefined ? { ...updated, lineLookup } : updated });
     } catch (error) {
       console.error("API v1 - Error updating evalFlow:", error);

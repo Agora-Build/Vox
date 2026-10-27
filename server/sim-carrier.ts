@@ -18,12 +18,14 @@
  *
  * Rules that must hold:
  * - The full number is never stored on the agent (only `sim_number_redacted`,
- *   "…1234") and never logged; it lives only as the `number_lookups` key.
+ *   "…1234", and `sim_number_hash`, a keyed hash — server/number-lookup.ts
+ *   `numberHash`) and never logged; it lives only as the `number_lookups` key.
  * - Never blocks a heartbeat: routes call `noteSimReport`, fire-and-forget.
  * - Recomputed only when the report changes, the 30-day lookup cache expires,
  *   or a non-definitive answer (lookup off / failed / rate-limited) is due a retry.
  * - Only phone agents' reports count, and the paid lookup is capped (one
- *   uncached number per agent per day, SIM_LOOKUPS_PER_DAY overall).
+ *   uncached number per agent per day, and the global PAID_LOOKUPS_PER_DAY
+ *   budget shared with the flow `line` path — server/paid-lookup-budget.ts).
  *
  * Limit (from the design): both inputs arrive through the agent; a modified
  * agent could report another real number plus its matching code. The lookup
@@ -32,22 +34,22 @@
 import { createHash } from "node:crypto";
 import { normalizeTag, simFromCarrier } from "@shared/tags";
 import { storage } from "./storage";
-import { lookupNumber, redactNumber, CACHE_MAX_AGE_MS, MCC_RE, MNC_RE, type NumberLookupProvider } from "./number-lookup";
+import { lookupNumber, redactNumber, numberHash, CACHE_MAX_AGE_MS, MCC_RE, MNC_RE, type NumberLookupProvider } from "./number-lookup";
+import { simLookupGate, resetPaidLookupBudget, type PaidLookupGate } from "./paid-lookup-budget";
 
 export const SIM_MATCHER_VERSION = "v1";
 /** A non-definitive answer (lookup off / failed / rate-limited) is retried after this long. */
 export const SIM_RETRY_MS = 10 * 60 * 1000;
 /**
- * Spending caps on the paid lookup. Both inputs come from the agent, so any
- * token holder could report a fresh valid number every heartbeat and make
- * each one a paid Twilio call. A real SIM's number doesn't change: one
- * uncached lookup per agent per day is plenty, and the whole SIM path may
- * spend at most SIM_LOOKUPS_PER_DAY a day. Past either cap the answer is a
+ * Spending caps on the paid lookup live in server/paid-lookup-budget.ts. Both
+ * inputs come from the agent, so any token holder could report a fresh valid
+ * number every heartbeat and make each one a paid Twilio call. A real SIM's
+ * number doesn't change: one uncached lookup per agent per day
+ * (SIM_AGENT_LOOKUPS_PER_DAY), drawn from the global PAID_LOOKUPS_PER_DAY
+ * budget shared with flow lookups. Past either cap the answer is a
  * non-definitive `rate-limited` (handled like `lookup-failed`). Cache hits
- * (`number_lookups`) are never counted. In memory: a Core restart resets them.
+ * (`number_lookups`) are never counted.
  */
-export const SIM_AGENT_LOOKUP_WINDOW_MS = 24 * 60 * 60 * 1000;
-export const SIM_LOOKUPS_PER_DAY = 500;
 
 const E164_RE = /^\+[1-9][0-9]{6,14}$/;
 const MAX_OPERATOR_NAME = 64;
@@ -98,7 +100,7 @@ export async function computeSimMatch(
 /** computeSimMatch plus when the lookup it used was made (undefined: no lookup answer). */
 async function computeSimMatchDetailed(
   report: SimReport,
-  opts: { provider?: NumberLookupProvider | null; allowProviderCall?: () => boolean },
+  opts: { provider?: NumberLookupProvider | null; gate?: PaidLookupGate },
 ): Promise<{ match: SimMatch; lookedUpAt?: Date }> {
   const simNumberRedacted = redactNumber(report.number);
   const none = (why: string, lookedUpAt?: Date) => ({ match: { simCarrier: null, simReason: reason(why), simNumberRedacted }, lookedUpAt });
@@ -143,8 +145,7 @@ const memo = new Map<number, { fingerprint: string; dueAt: number }>();
 /** Tests only: forget every agent's last computation and the spending caps. */
 export function resetSimMemo(): void {
   memo.clear();
-  agentPaidLookupAt.clear();
-  budget = { windowStart: 0, used: 0 };
+  resetPaidLookupBudget();
 }
 
 function fingerprintOf(report: SimReport): string {
@@ -155,59 +156,32 @@ const NON_DEFINITIVE = new Set([reason("lookup-off"), reason("lookup-failed"), r
 /** Non-definitive answers that keep a stored answer for the same report. */
 const KEEPS_STORED = new Set([reason("lookup-failed"), reason("rate-limited")]);
 
-/** When each agent last caused a paid lookup, and the global day's count. */
-const agentPaidLookupAt = new Map<number, number>();
-let budget = { windowStart: 0, used: 0 };
-
-/**
- * The spending gate for one agent at `now`. `allow` reserves the call (so
- * concurrent reports can't both pass); `refund` hands it back when the
- * provider call failed — a failed lookup answers nothing, and the retry after
- * SIM_RETRY_MS must not wait a day.
- */
-function paidLookupGate(agentId: number, now: number, lookupsPerDay: number) {
-  let reserved: { prev: number | undefined } | null = null;
-  return {
-    allow: (): boolean => {
-      const last = agentPaidLookupAt.get(agentId);
-      if (last !== undefined && now - last < SIM_AGENT_LOOKUP_WINDOW_MS) return false;
-      if (now - budget.windowStart >= 24 * 60 * 60 * 1000) budget = { windowStart: now, used: 0 };
-      if (budget.used >= lookupsPerDay) return false;
-      budget.used++;
-      reserved = { prev: last };
-      agentPaidLookupAt.set(agentId, now);
-      return true;
-    },
-    refund: (): void => {
-      if (!reserved) return;
-      if (budget.used > 0) budget.used--;
-      if (reserved.prev === undefined) agentPaidLookupAt.delete(agentId);
-      else agentPaidLookupAt.set(agentId, reserved.prev);
-      reserved = null;
-    },
-  };
-}
-
 /**
  * Whether the agent's stored sim fields were computed for this same report:
- * the redacted number matches and the stored reason names the same phone
+ * the keyed hash of the FULL number matches (never the last four digits —
+ * another number can share them; a row without a hash, from before it
+ * existed, is never "the same") and the stored reason names the same phone
  * code (`sim-match <code>` / `mismatch <code> vs …`). The stored row is the
  * source of truth here, so this also holds after a Core restart.
  */
 function storedIsForReport(
-  stored: { simNumberRedacted: string | null; simReason: string | null } | undefined,
+  stored: { simNumberHash: string | null; simReason: string | null } | undefined,
   report: SimReport,
 ): boolean {
   if (!stored || !report.mcc || !report.mnc) return false;
-  if (stored.simNumberRedacted !== redactNumber(report.number)) return false;
+  const hash = numberHash(report.number);
+  if (!hash || !stored.simNumberHash || stored.simNumberHash !== hash) return false;
   const code = `${report.mcc}-${report.mnc}`;
   return stored.simReason === reason(`sim-match ${code}`) || (stored.simReason ?? "").startsWith(reason(`mismatch ${code} vs `));
 }
 
 /**
  * Recompute and store an agent's sim fields when due. Returns whether it
- * recomputed. `now` and `lookupsPerDay` exist for tests (expiry / retry
- * without waiting; the daily budget without 500 lookups).
+ * recomputed. `now` and `globalLimit` exist for tests (expiry / retry
+ * without waiting; the global daily budget without 500 lookups).
+ *
+ * An unchanged report inside its due time returns before ANY database read
+ * (the in-memory memo below) — a phone agent's heartbeat costs no query.
  *
  * A transient lookup failure never wipes a definitive answer for the same
  * number and code: phone jobs claimed before the retry would otherwise
@@ -218,7 +192,7 @@ function storedIsForReport(
 export async function refreshAgentSim(
   agentId: number,
   report: SimReport,
-  opts: { provider?: NumberLookupProvider | null; now?: number; lookupsPerDay?: number } = {},
+  opts: { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number } = {},
 ): Promise<boolean> {
   const now = opts.now ?? Date.now();
   const fingerprint = fingerprintOf(report);
@@ -227,9 +201,9 @@ export async function refreshAgentSim(
   // Claimed before the await, so a burst of heartbeats computes once.
   memo.set(agentId, { fingerprint, dueAt: now + SIM_RETRY_MS });
   try {
-    const gate = paidLookupGate(agentId, now, opts.lookupsPerDay ?? SIM_LOOKUPS_PER_DAY);
-    const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider, allowProviderCall: gate.allow });
-    if (match.simReason === reason("lookup-failed")) gate.refund();
+    // Refunded inside lookupNumber when the provider call fails.
+    const gate = simLookupGate(agentId, { now, globalLimit: opts.globalLimit });
+    const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider, gate });
     const definitive = !NON_DEFINITIVE.has(match.simReason);
     const dueAt = !definitive
       ? now + SIM_RETRY_MS
@@ -242,6 +216,7 @@ export async function refreshAgentSim(
       simCarrier: match.simCarrier,
       simReason: match.simReason,
       simNumberRedacted: match.simNumberRedacted,
+      simNumberHash: numberHash(report.number),
     });
     return true;
   } catch (err) {

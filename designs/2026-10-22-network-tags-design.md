@@ -389,12 +389,15 @@ Agents keep `isp`/`link` (correctable) + custom keys.
 - **Spending:** for the same reason a token holder could make every heartbeat a paid
   lookup of a fresh number. Core acts on `sim` only from agents whose current
   capabilities include `phone`, allows one uncached lookup per agent per 24 h and
-  500 a day overall (`SIM_LOOKUPS_PER_DAY`); past a cap the answer is a
+  500 a day overall (`PAID_LOOKUPS_PER_DAY`, shared with flow `line` lookups, which
+  are also capped at 10 per flow editor per 24 h — server/paid-lookup-budget.ts);
+  past a cap the answer is a
   non-definitive `v1: rate-limited`, handled like `lookup-failed` (a stored answer
   for the same number and code is kept; retried after 10 minutes). Cache hits are
   free and never counted; a failed provider call is refunded.
-- Privacy: our number is stored redacted (last 4) on the agent; the full number lives
-  only in the `number_lookups` cache key, as for `line`.
+- Privacy: our number is stored redacted (last 4) on the agent, plus a keyed hash
+  (`sim_number_hash`) so "same number" never relies on the last 4; the full number
+  lives only in the `number_lookups` cache key, as for `line`.
 
 ## Agent badge follows `access` (added 2026-10-22)
 

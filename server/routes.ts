@@ -28,7 +28,7 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged } from "./net-signals-update";
+import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged, netSignalsPatch } from "./net-signals-update";
 import { noteSimReport } from "./sim-carrier";
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
@@ -2347,7 +2347,7 @@ export async function registerRoutes(
       // "Number lookup"). Bounded and never throws — the save already
       // committed and must not turn into an error because of the lookup.
       const saved = withTags ?? evalFlow;
-      const lineLookup = await refreshFlowLineOnSave(saved);
+      const lineLookup = await refreshFlowLineOnSave(saved, user.id); // the editor's paid-lookup cap
       res.json(lineLookup !== undefined ? { ...saved, lineLookup } : saved);
     } catch (error) {
       console.error("Error creating evalFlow:", error);
@@ -2444,7 +2444,7 @@ export async function registerRoutes(
       // moved away from phone keeps its line_lookup (job snapshots still copy
       // it): harmless, the claim emits a detected `line` only for jobs whose
       // stamped transport is phone (server/job-tags.ts).
-      const lineLookup = updated ? await refreshFlowLineOnSave(updated) : undefined;
+      const lineLookup = updated ? await refreshFlowLineOnSave(updated, user.id) : undefined;
       res.json(updated && lineLookup !== undefined ? { ...updated, lineLookup } : updated);
     } catch (error) {
       console.error("Error updating evalFlow:", error);
@@ -2454,7 +2454,9 @@ export async function registerRoutes(
 
   // "Look up again" for a phone flow's line provider. Flow editors only (the
   // PATCH rule — an admin is not a flow editor). Uses the 30-day per-number
-  // cache like a save does; returns { lineLookup } or { skipped: reason }.
+  // cache like a save does, and the same paid-lookup caps (per editor + the
+  // global day); returns { lineLookup } or { skipped: reason }. A
+  // `rate-limited` skip leaves the stored lookup untouched.
   app.post("/api/eval-flows/:id/line-lookup", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -2467,7 +2469,7 @@ export async function registerRoutes(
       if (evalFlow.transport !== "phone") {
         return res.status(400).json({ error: "Line lookup applies to phone eval flows only" });
       }
-      const result = await lookupFlowLine(evalFlow);
+      const result = await lookupFlowLine(evalFlow, user.id);
       if ("skipped" in result) return res.json({ skipped: result.skipped });
       await storage.updateEvalFlow(evalFlow.id, { lineLookup: result });
       res.json({ lineLookup: result });
@@ -4377,9 +4379,10 @@ export async function registerRoutes(
       let netSignalsForCheck: typeof netSignalsUpdate | undefined;
       if (existing.length > 0) {
         agent = existing[0];
-        const mergedNetSignals = mergeNetSignals(agent.netSignals, netSignalsUpdate);
-        netSignalsForCheck = mergedNetSignals ?? undefined;
-        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], netSignals: mergedNetSignals, ...(linkTypeUpdate ?? {}) };
+        netSignalsForCheck = mergeNetSignals(agent.netSignals, netSignalsUpdate) ?? undefined;
+        // netSignals is written only when this registration reported some —
+        // never the stored value written back (netSignalsPatch).
+        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], ...netSignalsPatch(agent.netSignals, netSignalsUpdate), ...(linkTypeUpdate ?? {}) };
         await storage.updateEvalAgent(agent.id, agentUpdate);
         agent = { ...agent, ...agentUpdate };
         // A fresh registration means the prior process died; release any jobs it
@@ -4553,9 +4556,7 @@ export async function registerRoutes(
       if (hbLinkType !== undefined) {
         updates.linkType = hbLinkType.linkType;
       }
-      if (hbNetSignalsUpdate !== undefined) {
-        updates.netSignals = mergedNetSignals;
-      }
+      Object.assign(updates, netSignalsPatch(agent.netSignals, hbNetSignalsUpdate));
       if (Object.keys(updates).length > 0) {
         await storage.updateEvalAgent(agentId, updates);
       }

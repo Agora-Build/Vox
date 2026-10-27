@@ -11,7 +11,7 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, hashToken } from "../server/storage";
 import { evalAgents, evalAgentTokens } from "../shared/schema";
-import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged } from "../server/net-signals-update";
+import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged, netSignalsPatch } from "../server/net-signals-update";
 import { runAgentLocationCheck, accessSignalsFrom, type DetectionDeps, type GeoLookup } from "../server/location";
 import { createAccessData, parseCidrList, networkClassOf } from "../server/access-data";
 import { BASE_NA } from "./helpers/regions";
@@ -90,6 +90,19 @@ describe("netSignalsChanged", () => {
 
   it("ignores fields the update doesn't mention — no false positive from an unrelated stored field", () => {
     expect(netSignalsChanged({ cloudMetadata: true, publicIpOnInterface: true }, { cloudMetadata: true })).toBe(false);
+  });
+});
+
+describe("netSignalsPatch (the row update's netSignals part — register and heartbeat)", () => {
+  it("nothing reported → no netSignals key at all: the stored value is never written back", () => {
+    expect(netSignalsPatch({ cloudMetadata: true }, undefined)).toEqual({});
+    expect("netSignals" in netSignalsPatch({ cloudMetadata: true }, undefined)).toBe(false);
+    expect(netSignalsPatch(null, undefined)).toEqual({});
+  });
+
+  it("something reported → the merged value", () => {
+    expect(netSignalsPatch({ cloudMetadata: true }, { publicIpOnInterface: false }))
+      .toEqual({ netSignals: { cloudMetadata: true, publicIpOnInterface: false } });
   });
 });
 

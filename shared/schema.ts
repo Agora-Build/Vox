@@ -369,6 +369,9 @@ export const evalAgents = pgTable("eval_agents", {
   simCarrier: varchar("sim_carrier", { length: 48 }),
   simReason: text("sim_reason"),
   simNumberRedacted: varchar("sim_number_redacted", { length: 8 }),
+  // Keyed hash (HMAC-SHA256, server key) of that full number — "is this the
+  // same SIM number?" without storing it. Core-internal. Migration 0060.
+  simNumberHash: varchar("sim_number_hash", { length: 64 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -402,6 +405,7 @@ export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   simCarrier: true,
   simReason: true,
   simNumberRedacted: true,
+  simNumberHash: true,
 });
 
 export type InsertEvalAgent = z.infer<typeof insertEvalAgentSchema>;

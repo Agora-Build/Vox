@@ -71,3 +71,16 @@ export function netSignalsChanged(
   const prior = stored ?? {};
   return (Object.keys(update) as Array<keyof AgentNetSignals>).some((k) => prior[k] !== update[k]);
 }
+
+/**
+ * The `netSignals` part of an agent row update: `{}` when nothing was
+ * reported (no write — the stored value is never written back, which would
+ * be a pointless write and could race a concurrent beat's real update),
+ * else the merged value.
+ */
+export function netSignalsPatch(
+  stored: AgentNetSignals | null | undefined,
+  update: AgentNetSignals | undefined,
+): { netSignals?: AgentNetSignals | null } {
+  return update === undefined ? {} : { netSignals: mergeNetSignals(stored, update) };
+}

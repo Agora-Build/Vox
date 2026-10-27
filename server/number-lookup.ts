@@ -16,14 +16,19 @@
  * - A lookup never fails a save: every path returns a result, never throws.
  * - The Twilio Auth Token is never logged or returned; credentials live
  *   encrypted in `systemConfig`, exactly like the MaxMind key.
- * - Only the last four digits of a number leave `number_lookups`.
+ * - Only the last four digits of a number leave `number_lookups`, plus a
+ *   keyed hash (`numberHash`) used to tell whether a number changed.
+ * - Paid lookups are capped (server/paid-lookup-budget.ts): per flow editor,
+ *   per SIM agent, and one global daily budget shared by both paths.
  */
+import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { numberLookups, type EvalFlow } from "@shared/schema";
 import { lineFromCarrier, type LineLookup } from "@shared/tags";
 import { walkStepList } from "@shared/steps";
 import { fillJobPlaceholders, jobConfigVars } from "@shared/placeholders";
 import { db, storage, encryptValue, decryptValue, isEncryptionConfigured, parseStepsScript } from "./storage";
+import { flowLookupGate, type PaidLookupGate } from "./paid-lookup-budget";
 
 export const LOOKUP_TIMEOUT_MS = 10_000;
 export const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -39,6 +44,7 @@ export type LineSkipReason =
   | "no-number"      // no call.dial, or its number doesn't resolve to E.164
   | "invalid-number" // the service says the number doesn't exist (404 / valid:false)
   | "no-carrier"     // no carrier for this number (toll-free and similar)
+  | "rate-limited"   // over a paid-lookup cap (server/paid-lookup-budget.ts) — non-definitive, keeps what's stored
   | "failed";        // network, timeout, non-2xx, unreadable answer
 export type LineLookupResult = LineLookup | { skipped: LineSkipReason };
 
@@ -183,6 +189,26 @@ export function redactNumber(e164: string): string {
   return `…${e164.replace(/[^0-9]/g, "").slice(-4)}`;
 }
 
+const NUMBER_HASH_LABEL = "vox/number-hash/v1";
+
+/**
+ * A keyed hash of the full E.164 number (hex HMAC-SHA256), stored next to the
+ * redacted display value so "is this the same number?" compares the whole
+ * number, not its last four digits — without storing the number. Keyed with a
+ * server secret (CREDENTIAL_ENCRYPTION_KEY, else SESSION_SECRET) through a
+ * fixed label, so the low-entropy number space can't be brute-forced from a
+ * leaked row. Null when the server has neither secret: every comparison then
+ * counts as "changed", and the cache-first lookup keeps that cheap. Rotating
+ * the key does the same, once.
+ */
+export function numberHash(e164: string): string | null {
+  const keyHex = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  const base = keyHex && /^[0-9a-f]{64}$/i.test(keyHex) ? Buffer.from(keyHex, "hex") : process.env.SESSION_SECRET || null;
+  if (!base) return null;
+  const key = createHmac("sha256", base).update(NUMBER_HASH_LABEL).digest();
+  return createHmac("sha256", key).update(e164).digest("hex");
+}
+
 /**
  * The E.164 number a flow's Setup dials, filled from the flow's OWN config
  * only — or why there isn't one we may send. Uses the same filling function
@@ -236,37 +262,75 @@ export interface NumberAnswer {
 export type NumberLookupResult = NumberAnswer | { skipped: "not-configured" | "invalid-number" | "failed" | "rate-limited" };
 
 /**
+ * In-flight lookups by number (single-flight): concurrent callers for the
+ * same E.164 share ONE cache read + provider call instead of each missing the
+ * cache and each paying. Removed when settled.
+ */
+const inflight = new Map<string, Promise<NumberLookupResult>>();
+
+/**
  * Look one E.164 number up — cache-first (`number_lookups`, CACHE_MAX_AGE_MS),
  * else the provider, writing the answer back. Shared by the flow `line` path
  * and our own SIM's number (server/sim-carrier.ts): same provider, cache and
  * credentials. Never throws; never logs the full number.
  * `provider` undefined = the configured one (null when no credentials).
+ *
+ * A caller that joins another's in-flight lookup gets its answer and is not
+ * charged; if that answer was `rate-limited` (the OTHER caller's cap), it
+ * tries again under its own gate.
  */
 export async function lookupNumber(
   e164: string,
   opts: {
     provider?: NumberLookupProvider | null;
     /**
-     * Asked right before a PAID provider call (never for a cache hit); false
-     * → `{ skipped: "rate-limited" }` and no call. The SIM path uses it to
-     * cap what an agent's reports can spend (server/sim-carrier.ts).
+     * Asked right before a PAID provider call (never for a cache hit); a
+     * refusal → `{ skipped: "rate-limited" }` and no call. Refunded when the
+     * provider call fails (server/paid-lookup-budget.ts).
      */
-    allowProviderCall?: () => boolean;
+    gate?: PaidLookupGate;
   } = {},
 ): Promise<NumberLookupResult> {
   try {
     const provider = opts.provider !== undefined ? opts.provider : await defaultLookupProvider();
     if (!provider) return { skipped: "not-configured" };
 
+    for (;;) {
+      const pending = inflight.get(e164);
+      if (!pending) break;
+      const shared = await pending;
+      if (!("skipped" in shared && shared.skipped === "rate-limited")) return shared;
+    }
+    const run = lookupOnce(e164, provider, opts.gate);
+    inflight.set(e164, run);
+    try {
+      return await run;
+    } finally {
+      if (inflight.get(e164) === run) inflight.delete(e164);
+    }
+  } catch (err) {
+    console.warn(`[number-lookup] lookup failed (${err instanceof Error ? err.name : "error"})`);
+    return { skipped: "failed" };
+  }
+}
+
+/** One cache read + (gated) provider call + idempotent cache upsert. Never throws. */
+async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: PaidLookupGate | undefined): Promise<NumberLookupResult> {
+  let charged = false;
+  try {
     const [cached] = await db.select().from(numberLookups).where(eq(numberLookups.number, e164));
     if (cached && Date.now() - cached.lookedUpAt.getTime() < CACHE_MAX_AGE_MS) {
       return { carrierName: cached.carrierName, lineType: cached.lineType, value: cached.value, mcc: cached.mcc, mnc: cached.mnc, lookedUpAt: cached.lookedUpAt };
     }
-    if (opts.allowProviderCall && !opts.allowProviderCall()) return { skipped: "rate-limited" };
+    if (gate) {
+      if (!gate.allow()) return { skipped: "rate-limited" };
+      charged = true;
+    }
 
     const answer = await provider.lookup(e164);
     if (answer.kind === "invalid-number") return { skipped: "invalid-number" };
     if (answer.kind === "failed") {
+      if (charged) gate!.refund();
       console.warn(`[number-lookup] ${provider.name} lookup for ${redactNumber(e164)} failed: ${answer.reason}`);
       return { skipped: "failed" };
     }
@@ -283,12 +347,16 @@ export async function lookupNumber(
       mnc: answer.mnc ?? null,
       lookedUpAt: new Date(),
     };
+    // Idempotent: a second writer for the same number just refreshes the row.
     await db.insert(numberLookups).values(row).onConflictDoUpdate({
       target: numberLookups.number,
       set: { provider: row.provider, carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt },
     });
     return { carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt };
   } catch (err) {
+    // A thrown error (a DB failure, an unexpected provider throw): refunded —
+    // under-counting one call beats blocking the retry for a day.
+    if (charged) gate!.refund();
     console.warn(`[number-lookup] lookup failed (${err instanceof Error ? err.name : "error"})`);
     return { skipped: "failed" };
   }
@@ -296,12 +364,17 @@ export async function lookupNumber(
 
 /**
  * Look up the line provider behind a flow's dialled number. Never throws.
+ * `requestedBy` is the flow editor making the request: their uncached
+ * lookups are capped (FLOW_USER_LOOKUPS_PER_DAY) and drawn from the global
+ * paid-lookup budget (server/paid-lookup-budget.ts).
  * `provider` undefined = the configured one (null when no credentials);
- * tests inject a TwilioLookupProvider pointed at a stub.
+ * tests inject a TwilioLookupProvider pointed at a stub. `now`/`globalLimit`
+ * are for tests.
  */
 export async function lookupFlowLine(
   flow: { config: unknown },
-  opts: { provider?: NumberLookupProvider | null } = {},
+  requestedBy: number,
+  opts: { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number } = {},
 ): Promise<LineLookupResult> {
   let dialled: ReturnType<typeof dialledNumber>;
   try {
@@ -311,29 +384,39 @@ export async function lookupFlowLine(
   }
   if ("skipped" in dialled) return dialled;
   const e164 = dialled.number;
-  const answer = await lookupNumber(e164, opts);
-  // No gate is passed here, so "rate-limited" can't happen; mapped for the type.
-  if ("skipped" in answer) return answer.skipped === "rate-limited" ? { skipped: "failed" } : { skipped: answer.skipped };
+  const answer = await lookupNumber(e164, {
+    provider: opts.provider,
+    gate: flowLookupGate(requestedBy, { now: opts.now, globalLimit: opts.globalLimit }),
+  });
+  if ("skipped" in answer) return { skipped: answer.skipped };
   if (!answer.value) return { skipped: "no-carrier" };
+  const hash = numberHash(e164);
   return {
     value: answer.value,
     carrierName: answer.carrierName,
     lineType: answer.lineType,
     lookedUpAt: answer.lookedUpAt.toISOString(),
     number: redactNumber(e164),
+    ...(hash ? { numberHash: hash } : {}),
   };
 }
 
 /**
  * Save-time trigger: after a phone flow is created or edited, look its line
- * up when the dialled number differs from the one `line_lookup` describes (by
- * its redacted last four digits) or there is no lookup yet.
+ * up when the dialled number differs from the one `line_lookup` describes
+ * (compared by `numberHash`, the keyed hash of the full number — a lookup
+ * without one, from before it existed, counts as changed; the re-lookup is
+ * cache-first, so normally free) or there is no lookup yet. For such an older
+ * lookup whose last four digits still match, a non-answer (lookup off /
+ * failed) keeps it rather than clearing it.
  *
  * Returns the flow's new `lineLookup` when it changed (an object, or null
  * when a CHANGED number can't be looked up — the old answer described a
  * number the flow no longer dials, so it's cleared rather than frozen onto
- * future jobs), or undefined when nothing was written. Never throws, and
- * gives up after LOOKUP_TIMEOUT_MS so a save is never held longer.
+ * future jobs), or undefined when nothing was written. `rate-limited` (the
+ * editor or the day is over its paid-lookup cap) is not an answer: the
+ * stored lookup is left exactly as it was. Never throws, and gives up after
+ * LOOKUP_TIMEOUT_MS so a save is never held longer.
  *
  * A flow whose transport moved away from phone keeps its line_lookup, and
  * buildJobSnapshot still copies it onto that flow's web jobs: harmless, as
@@ -342,21 +425,29 @@ export async function lookupFlowLine(
  */
 export async function refreshFlowLineOnSave(
   flow: Pick<EvalFlow, "id" | "transport" | "config" | "lineLookup">,
-  opts: { provider?: NumberLookupProvider | null } = {},
+  requestedBy: number,
+  opts: { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number } = {},
 ): Promise<LineLookup | null | undefined> {
   try {
     if (flow.transport !== "phone") return undefined;
     const dialled = dialledNumber(flow.config);
     const current = flow.lineLookup ?? null;
-    const sameNumber = "number" in dialled && current?.number === redactNumber(dialled.number);
+    const dialledHash = "number" in dialled ? numberHash(dialled.number) : null;
+    const sameNumber = !!dialledHash && !!current?.numberHash && current.numberHash === dialledHash;
     if (sameNumber) return undefined;
+    // A lookup stored before numberHash existed, whose last four digits still
+    // match: re-looked up (cache-first), but only a definitive answer replaces
+    // it — "couldn't ask right now" proves nothing about the number.
+    const maybeSameLegacy = !!current && !current.numberHash && "number" in dialled && current.number === redactNumber(dialled.number);
 
     const result = await Promise.race([
-      lookupFlowLine(flow, opts),
+      lookupFlowLine(flow, requestedBy, opts),
       new Promise<{ skipped: "failed" }>((resolve) => setTimeout(() => resolve({ skipped: "failed" }), LOOKUP_TIMEOUT_MS).unref()),
     ]);
     if ("skipped" in result) {
+      if (result.skipped === "rate-limited") return undefined;
       if (current === null) return undefined;
+      if (maybeSameLegacy && (result.skipped === "not-configured" || result.skipped === "failed")) return undefined;
       await storage.updateEvalFlow(flow.id, { lineLookup: null });
       return null;
     }
