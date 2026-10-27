@@ -22,7 +22,7 @@ import type { EvalFlow, Provider, EvalJob, EvalSet } from "@shared/schema";
 type EvalFlowType = EvalFlow & { ownerName?: string | null; missingSecrets?: string[] | null };
 import { formatSmartTimestamp, formatSite, formatRegion } from "@/lib/utils";
 import { formatTag } from "@shared/tags";
-import { describeLineLookup } from "@/components/line-lookup";
+import { describeLineLookup, useLineLookupPending, LINE_LOOKUP_PENDING_TEXT } from "@/components/line-lookup";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import {
   type RunTargetAgents,
@@ -69,6 +69,9 @@ export default function ConsoleEvalFlowDetail() {
     queryKey: [`/api/eval-flows/${evalFlowId}`],
     enabled: evalFlowId > 0,
   });
+  // A save of this flow started a background line lookup (server says
+  // `lineLookupPending`): show it as running until the refetches land.
+  const lineLookupPending = useLineLookupPending(evalFlowId);
 
   const { data: providers } = useQuery<Provider[]>({
     queryKey: ["/api/providers"],
@@ -501,7 +504,9 @@ export default function ConsoleEvalFlowDetail() {
               </div>
               {evalFlow.transport === "phone" && (
                 <p className="mt-1 text-xs text-muted-foreground" data-testid="eval-flow-line-lookup">
-                  {evalFlow.lineLookup
+                  {lineLookupPending
+                    ? LINE_LOOKUP_PENDING_TEXT
+                    : evalFlow.lineLookup
                     ? <>Line provider: {describeLineLookup(evalFlow.lineLookup)}</>
                     : "Line provider: not looked up. Edit the flow to look it up or add a line: tag."}
                 </p>

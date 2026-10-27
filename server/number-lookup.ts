@@ -21,7 +21,7 @@
  *   last four digits plus that hash. Without a server key there is no hash,
  *   and nothing is cached.
  * - Paid lookups are capped (server/paid-lookup-budget.ts): per flow editor,
- *   per SIM agent, and one global daily budget shared by both paths.
+ *   per SIM agent, and a reserved daily share per path (flow 300, SIM 200).
  */
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -375,16 +375,16 @@ async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: Pa
 /**
  * Look up the line provider behind a flow's dialled number. Never throws.
  * `requestedBy` is the flow editor making the request: their uncached
- * lookups are capped (FLOW_USER_LOOKUPS_PER_DAY) and drawn from the global
- * paid-lookup budget (server/paid-lookup-budget.ts).
+ * lookups are capped (FLOW_USER_LOOKUPS_PER_DAY) and drawn from the flow
+ * path's daily share (FLOW_LOOKUPS_PER_DAY, server/paid-lookup-budget.ts).
  * `provider` undefined = the configured one (null when no credentials);
- * tests inject a TwilioLookupProvider pointed at a stub. `now`/`globalLimit`
+ * tests inject a TwilioLookupProvider pointed at a stub. `now`/`shareLimit`
  * are for tests.
  */
 export async function lookupFlowLine(
   flow: { config: unknown },
   requestedBy: number,
-  opts: { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number } = {},
+  opts: { provider?: NumberLookupProvider | null; now?: number; shareLimit?: number } = {},
 ): Promise<LineLookupResult> {
   let dialled: ReturnType<typeof dialledNumber>;
   try {
@@ -396,7 +396,7 @@ export async function lookupFlowLine(
   const e164 = dialled.number;
   const answer = await lookupNumber(e164, {
     provider: opts.provider,
-    gate: flowLookupGate(requestedBy, { now: opts.now, globalLimit: opts.globalLimit }),
+    gate: flowLookupGate(requestedBy, { now: opts.now, shareLimit: opts.shareLimit }),
   });
   if ("skipped" in answer) return { skipped: answer.skipped };
   if (!answer.value) return { skipped: "no-carrier" };
@@ -482,7 +482,7 @@ async function withinTimeout<T>(work: Promise<T>, ms: number, label: string): Pr
   }
 }
 
-type FlowLineOpts = { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number; timeoutMs?: number };
+type FlowLineOpts = { provider?: NumberLookupProvider | null; now?: number; shareLimit?: number; timeoutMs?: number };
 
 /**
  * Save-time trigger: after a phone flow is created or edited, look its line
@@ -502,10 +502,12 @@ type FlowLineOpts = { provider?: NumberLookupProvider | null; now?: number; glob
  * flow still dialling the looked-up number (writeLineLookupIfCurrent), so an
  * overlapping later save always wins. Never throws.
  *
- * Bounded: after LOOKUP_TIMEOUT_MS the save returns undefined (nothing
- * written yet) — a timeout is NOT a failure and never clears the stored
- * lookup. The lookup keeps going and stores its result through the same
- * conditional write when it finishes.
+ * Bounded: after LOOKUP_TIMEOUT_MS it returns undefined (nothing written
+ * yet) — a timeout is NOT a failure and never clears the stored lookup. The
+ * lookup keeps going and stores its result through the same conditional
+ * write when it finishes. (The save ROUTES don't wait at all: they use
+ * startFlowLineRefresh below; this awaiting form is the decision + write
+ * both share, exercised directly by tests.)
  *
  * A flow whose transport moved away from phone keeps its line_lookup, and
  * buildJobSnapshot still copies it onto that flow's web jobs: harmless, as
@@ -518,19 +520,44 @@ export async function refreshFlowLineOnSave(
   opts: FlowLineOpts = {},
 ): Promise<LineLookup | null | undefined> {
   try {
-    if (flow.transport !== "phone") return undefined;
-    const dialled = dialledNumber(flow.config);
-    const key = dialKey(flow.config);
-    const current = flow.lineLookup ?? null;
-    const dialledHash = "number" in dialled ? numberHash(dialled.number) : null;
-    const sameNumber = !!dialledHash && !!current?.numberHash && current.numberHash === dialledHash;
-    if (sameNumber) return undefined;
-    // A lookup stored before numberHash existed, whose last four digits still
-    // match: re-looked up (cache-first), but only a definitive answer replaces
-    // it — "couldn't ask right now" proves nothing about the number.
-    const maybeSameLegacy = !!current && !current.numberHash && "number" in dialled && current.number === redactNumber(dialled.number);
+    const plan = planFlowLineRefresh(flow, requestedBy, opts);
+    if (!plan) return undefined;
+    const outcome = await withinTimeout(plan.run(), opts.timeoutMs ?? LOOKUP_TIMEOUT_MS, `save-time lookup for flow ${flow.id}`);
+    return outcome === TIMED_OUT ? undefined : outcome;
+  } catch (err) {
+    console.warn(`[number-lookup] save-time lookup for flow ${flow.id} failed (${err instanceof Error ? err.name : "error"})`);
+    return undefined;
+  }
+}
 
-    const work = (async (): Promise<LineLookup | null | undefined> => {
+/**
+ * The save-time decision shared by refreshFlowLineOnSave and
+ * startFlowLineRefresh: null when nothing needs doing (not phone, or the
+ * stored lookup already describes the dialled number); otherwise `run`
+ * performs the lookup + conditional write, and `hasNumber` says whether a
+ * real number is dialled (i.e. a provider lookup may happen — without one,
+ * `run` only clears a stale answer, a quick database write).
+ */
+function planFlowLineRefresh(
+  flow: Pick<EvalFlow, "id" | "transport" | "config" | "lineLookup">,
+  requestedBy: number,
+  opts: FlowLineOpts,
+): { hasNumber: boolean; run: () => Promise<LineLookup | null | undefined> } | null {
+  if (flow.transport !== "phone") return null;
+  const dialled = dialledNumber(flow.config);
+  const key = dialKey(flow.config);
+  const current = flow.lineLookup ?? null;
+  const dialledHash = "number" in dialled ? numberHash(dialled.number) : null;
+  const sameNumber = !!dialledHash && !!current?.numberHash && current.numberHash === dialledHash;
+  if (sameNumber) return null;
+  // A lookup stored before numberHash existed, whose last four digits still
+  // match: re-looked up (cache-first), but only a definitive answer replaces
+  // it — "couldn't ask right now" proves nothing about the number.
+  const maybeSameLegacy = !!current && !current.numberHash && "number" in dialled && current.number === redactNumber(dialled.number);
+
+  return {
+    hasNumber: "number" in dialled,
+    run: async (): Promise<LineLookup | null | undefined> => {
       const result = await lookupFlowLine(flow, requestedBy, opts);
       let next: LineLookup | null;
       if ("skipped" in result) {
@@ -543,13 +570,61 @@ export async function refreshFlowLineOnSave(
       }
       const { written } = await writeLineLookupIfCurrent(flow.id, key, next);
       return written ? next : undefined;
-    })();
-    const outcome = await withinTimeout(work, opts.timeoutMs ?? LOOKUP_TIMEOUT_MS, `save-time lookup for flow ${flow.id}`);
-    return outcome === TIMED_OUT ? undefined : outcome;
-  } catch (err) {
+    },
+  };
+}
+
+/** A saved flow as the save routes return it: an awaited `lineLookup`
+ *  (no-number clear) replaces the stored one; a background lookup adds
+ *  `lineLookupPending: true` next to the current (possibly old or null) one. */
+export function withLineLookupState<T extends object>(
+  flow: T,
+  line: { pending: boolean; lineLookup?: LineLookup | null },
+): T & { lineLookup?: LineLookup | null; lineLookupPending?: true } {
+  return {
+    ...flow,
+    ...(line.lineLookup !== undefined ? { lineLookup: line.lineLookup } : {}),
+    ...(line.pending ? { lineLookupPending: true as const } : {}),
+  };
+}
+
+/**
+ * What the save routes (console + v1 create/PATCH) use: the save never waits
+ * for the provider. When the flow dials a number its stored lookup doesn't
+ * describe, the lookup runs in the BACKGROUND (fire-and-forget, errors logged
+ * by name only — never the number) through the same conditional write, and
+ * `pending: true` tells the caller to say so (`lineLookupPending` on the
+ * response; the console shows "Looking up the line provider…" and refetches).
+ * Without a dialled number there is no provider call — only clearing a stale
+ * answer — so that is awaited and returned as `lineLookup` like before.
+ * `done` (always resolves) exists for tests. Never throws.
+ */
+export async function startFlowLineRefresh(
+  flow: Pick<EvalFlow, "id" | "transport" | "config" | "lineLookup">,
+  requestedBy: number,
+  opts: FlowLineOpts = {},
+): Promise<{ pending: boolean; lineLookup?: LineLookup | null; done: Promise<void> }> {
+  const logFail = (err: unknown) =>
     console.warn(`[number-lookup] save-time lookup for flow ${flow.id} failed (${err instanceof Error ? err.name : "error"})`);
-    return undefined;
+  let plan: ReturnType<typeof planFlowLineRefresh>;
+  try {
+    plan = planFlowLineRefresh(flow, requestedBy, opts);
+  } catch (err) {
+    logFail(err);
+    return { pending: false, done: Promise.resolve() };
   }
+  if (!plan) return { pending: false, done: Promise.resolve() };
+  if (!plan.hasNumber) {
+    try {
+      const lineLookup = await plan.run();
+      return { pending: false, ...(lineLookup !== undefined ? { lineLookup } : {}), done: Promise.resolve() };
+    } catch (err) {
+      logFail(err);
+      return { pending: false, done: Promise.resolve() };
+    }
+  }
+  const done = plan.run().then(() => undefined, logFail);
+  return { pending: true, done };
 }
 
 /**

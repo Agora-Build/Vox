@@ -21,7 +21,7 @@ import { load as loadYaml } from "js-yaml";
 import type { EvalFlow as EvalFlowType, Provider, Project } from "@shared/schema";
 import type { Tag } from "@shared/tags";
 import { TagInput } from "@/components/tag-input";
-import { LineLookupPanel, LINE_LOOKUP_DISCLOSURE } from "@/components/line-lookup";
+import { LineLookupPanel, LINE_LOOKUP_DISCLOSURE, LINE_LOOKUP_PENDING_TEXT, trackLineLookupPending } from "@/components/line-lookup";
 
 // missingSecrets (#130): set by the server only on flows the caller can fix;
 // null = couldn't be checked (organizations unavailable).
@@ -155,7 +155,8 @@ export default function ConsoleEvalFlows() {
       });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      trackLineLookupPending(saved);
       setCreateOpen(false);
       setName("");
       setDescription("");
@@ -167,7 +168,7 @@ export default function ConsoleEvalFlows() {
       setTags([]);
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
-      toast({ title: "Eval Flow created" });
+      toast({ title: "Eval Flow created", ...(saved?.lineLookupPending ? { description: LINE_LOOKUP_PENDING_TEXT } : {}) });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to create Eval Flow", description: error.message, variant: "destructive" });
@@ -193,12 +194,13 @@ export default function ConsoleEvalFlows() {
       const res = await apiRequest("PATCH", `/api/eval-flows/${editEvalFlow.id}`, body);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      trackLineLookupPending(saved);
       setEditOpen(false);
       setEditEvalFlow(null);
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
-      toast({ title: "Eval Flow updated" });
+      toast({ title: "Eval Flow updated", ...(saved?.lineLookupPending ? { description: LINE_LOOKUP_PENDING_TEXT } : {}) });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update Eval Flow", description: error.message, variant: "destructive" });

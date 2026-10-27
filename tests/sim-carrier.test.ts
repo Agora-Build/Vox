@@ -20,8 +20,8 @@ await vi.hoisted(async () => {
 });
 import { storage, pool } from "../server/storage";
 import { TwilioLookupProvider, CACHE_MAX_AGE_MS, numberHash, lookupFlowLine } from "../server/number-lookup";
-import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo, noteSimReport, SIM_RETRY_MS } from "../server/sim-carrier";
-import { PAID_LOOKUPS_PER_DAY, SIM_USER_LOOKUPS_PER_DAY, resetPaidLookupBudget } from "../server/paid-lookup-budget";
+import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo, noteSimReport, SIM_RETRY_MS, NO_SIM_REPORT_REASON } from "../server/sim-carrier";
+import { PAID_LOOKUPS_PER_DAY, SIM_LOOKUPS_PER_DAY, FLOW_LOOKUPS_PER_DAY, SIM_USER_LOOKUPS_PER_DAY, resetPaidLookupBudget, flowLookupGate } from "../server/paid-lookup-budget";
 
 /** One day later is always the next UTC day (the caps' unit). */
 const SIM_AGENT_LOOKUP_WINDOW_MS = 24 * 3600_000;
@@ -156,6 +156,52 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
   const mkAgent = () => storage.createEvalAgent({ tokenId, name: `sim-a-${Date.now()}-${Math.random()}`, siteId: "na-us-ashburn-01", state: "idle", metadata: {} } as any);
   const row = async (id: number) => (await pool.query(`SELECT * FROM eval_agents WHERE id = $1`, [id])).rows[0];
 
+  it("a phone agent that stops sending a valid sim report has its stored carrier cleared (v1: no-sim-report)", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    await noteSimReport(a.id, { number: "+15550111001", mcc: "310", mnc: "260" }, ["phone"], { provider: provider() });
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    for (const raw of [undefined, null, { number: "not-e164" }]) {
+      await noteSimReport(a.id, raw, ["phone"], { provider: provider() });
+      expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: NO_SIM_REPORT_REASON, sim_number_redacted: null, sim_number_hash: null });
+    }
+    expect(NO_SIM_REPORT_REASON).toBe("v1: no-sim-report");
+    // A report coming back recomputes (not stuck on the cleared memo).
+    await noteSimReport(a.id, { number: "+15550111001", mcc: "310", mnc: "260" }, ["phone"], { provider: provider() });
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+  });
+
+  it("no-report beats after the first clear cost no query at all (memo), and a restart costs one no-op statement", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    await noteSimReport(a.id, { number: "+15550111002", mcc: "310", mnc: "260" }, ["phone"], { provider: provider() });
+    await noteSimReport(a.id, undefined, ["phone"]);
+    const q = vi.spyOn(pool, "query");
+    try {
+      for (let i = 0; i < 5; i++) await noteSimReport(a.id, undefined, ["phone"]);
+      expect(q).not.toHaveBeenCalled();
+      // After a restart (memo gone): one conditional UPDATE that matches no row.
+      resetSimMemo();
+      const before = (await pool.query(`SELECT xmin FROM eval_agents WHERE id = $1`, [a.id])).rows[0].xmin;
+      q.mockClear();
+      await noteSimReport(a.id, undefined, ["phone"]);
+      await noteSimReport(a.id, undefined, ["phone"]);
+      expect(q).toHaveBeenCalledTimes(1);
+      const after = (await pool.query(`SELECT xmin FROM eval_agents WHERE id = $1`, [a.id])).rows[0].xmin;
+      expect(after).toBe(before); // the row was not rewritten
+    } finally {
+      q.mockRestore();
+    }
+  });
+
+  it("an agent WITHOUT the phone capability keeps its stored sim when it sends no report", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    await noteSimReport(a.id, { number: "+15550111003", mcc: "310", mnc: "260" }, ["phone"], { provider: provider() });
+    for (const caps of [[], ["analyze"], undefined]) await noteSimReport(a.id, undefined, caps);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+  });
+
   it("writes carrier, reason and the redacted number — the full number appears nowhere on the agent row", async () => {
     codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
     const a = await mkAgent();
@@ -276,12 +322,14 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: later + SIM_RETRY_MS + 1 })).toBe(true);
   });
 
-  it(`the SIM path draws from the global daily budget (default PAID_LOOKUPS_PER_DAY = ${PAID_LOOKUPS_PER_DAY}) across agents`, async () => {
+  it(`the SIM path draws from its own daily share (SIM_LOOKUPS_PER_DAY = ${SIM_LOOKUPS_PER_DAY}) across agents`, async () => {
+    expect(SIM_LOOKUPS_PER_DAY).toBe(200);
+    expect(FLOW_LOOKUPS_PER_DAY).toBe(300);
     expect(PAID_LOOKUPS_PER_DAY).toBe(500);
     codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
     const [a, b, c] = [await mkAgent(), await mkAgent(), await mkAgent()];
     const t0 = noonUtc();
-    const opts = { provider: provider(), now: t0, globalLimit: 2 };
+    const opts = { provider: provider(), now: t0, shareLimit: 2 };
     await refreshAgentSim(a.id, { number: "+15550104001", mcc: "310", mnc: "260" }, opts);
     await refreshAgentSim(b.id, { number: "+15550104002", mcc: "310", mnc: "260" }, opts);
     await refreshAgentSim(c.id, { number: "+15550104003", mcc: "310", mnc: "260" }, opts);
@@ -332,17 +380,34 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: Date.now() + 2 * 24 * 3600 * 1000 })).toBe(true);
   });
 
-  it("the global budget is shared with flow lookups: flow lookups spend it, a SIM report is then rate-limited", async () => {
+  it("the shares are reserved: flow lookups exhausting the flow share never block a SIM check", async () => {
     codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
     const a = await mkAgent();
     const t0 = noonUtc();
     const dial = (n: string) => ({ config: { stepsPrefix: `- type: call.dial\n  number: "${n}"\n` } });
-    await lookupFlowLine(dial("+15550107001"), 424242, { provider: provider(), now: t0, globalLimit: 2 });
-    await lookupFlowLine(dial("+15550107002"), 424243, { provider: provider(), now: t0, globalLimit: 2 });
+    await lookupFlowLine(dial("+15550107001"), 424242, { provider: provider(), now: t0, shareLimit: 2 });
+    await lookupFlowLine(dial("+15550107002"), 424243, { provider: provider(), now: t0, shareLimit: 2 });
     expect(requests).toHaveLength(2);
-    expect(await refreshAgentSim(a.id, { number: "+15550107003", mcc: "310", mnc: "260" }, { provider: provider(), now: t0, globalLimit: 2 })).toBe(true);
-    expect(requests).toHaveLength(2);
-    expect((await row(a.id)).sim_reason).toBe("v1: rate-limited");
+    // The flow share is spent for every flow caller…
+    expect(await flowLookupGate(424244, { now: t0, shareLimit: 2 }).allow()).toBe(false);
+    // …yet the SIM check (default SIM share) still gets its paid lookup.
+    expect(await refreshAgentSim(a.id, { number: "+15550107003", mcc: "310", mnc: "260" }, { provider: provider(), now: t0 })).toBe(true);
+    expect(requests).toHaveLength(3);
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    // Each path counts in its own row.
+    const usage = (await pool.query(`SELECT scope, count FROM paid_lookup_usage WHERE subject = 'all' ORDER BY scope`)).rows;
+    expect(usage).toEqual([{ scope: "global-flow", count: 2 }, { scope: "global-sim", count: 1 }]);
+  });
+
+  it("…and the other way round: a spent SIM share never blocks a flow lookup", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const [a, b] = [await mkAgent(), await mkAgent()];
+    const t0 = noonUtc();
+    await refreshAgentSim(a.id, { number: "+15550108001", mcc: "310", mnc: "260" }, { provider: provider(), now: t0, shareLimit: 1 });
+    await refreshAgentSim(b.id, { number: "+15550108002", mcc: "310", mnc: "260" }, { provider: provider(), now: t0, shareLimit: 1 });
+    expect((await row(b.id)).sim_reason).toBe("v1: rate-limited");
+    const dial = (n: string) => ({ config: { stepsPrefix: `- type: call.dial\n  number: "${n}"\n` } });
+    expect(await lookupFlowLine(dial("+15550108003"), 424245, { provider: provider(), now: t0 })).toMatchObject({ value: expect.any(String) });
   });
 
   it(`one user's agents share SIM_USER_LOOKUPS_PER_DAY (${SIM_USER_LOOKUPS_PER_DAY}) uncached lookups a day, across all their tokens`, async () => {

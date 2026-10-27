@@ -55,7 +55,8 @@ import {
   validateTwilioCredentialsInput,
   maskAccountSid,
   lookupAndStoreFlowLine,
-  refreshFlowLineOnSave,
+  startFlowLineRefresh,
+  withLineLookupState,
 } from "./number-lookup";
 import { promises as fsp } from "fs";
 import path from "path";
@@ -2344,11 +2345,12 @@ export async function registerRoutes(
         : evalFlow;
 
       // Phone flow: look up the dialled number's line provider (design
-      // "Number lookup"). Bounded and never throws — the save already
-      // committed and must not turn into an error because of the lookup.
+      // "Number lookup") IN THE BACKGROUND — the save never waits for the
+      // provider; `lineLookupPending` tells the console to show "Looking up…"
+      // and refetch. Never throws (the editor's paid-lookup cap applies).
       const saved = withTags ?? evalFlow;
-      const lineLookup = await refreshFlowLineOnSave(saved, user.id); // the editor's paid-lookup cap
-      res.json(lineLookup !== undefined ? { ...saved, lineLookup } : saved);
+      const line = await startFlowLineRefresh(saved, user.id);
+      res.json(withLineLookupState(saved, line));
     } catch (error) {
       console.error("Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -2440,12 +2442,14 @@ export async function registerRoutes(
 
       const updated = await storage.updateEvalFlow(parseInt(id), updates);
       // Phone flow whose dialled number changed (or never looked up): refresh
-      // its line lookup — bounded, never throws, never fails the save. A flow
+      // its line lookup — in the background, never fails the save. A flow
       // moved away from phone keeps its line_lookup (job snapshots still copy
       // it): harmless, the claim emits a detected `line` only for jobs whose
       // stamped transport is phone (server/job-tags.ts).
-      const lineLookup = updated ? await refreshFlowLineOnSave(updated, user.id) : undefined;
-      res.json(updated && lineLookup !== undefined ? { ...updated, lineLookup } : updated);
+      // Started in the background; the response carries the current
+      // lineLookup plus `lineLookupPending` when a lookup is running.
+      const line = updated ? await startFlowLineRefresh(updated, user.id) : null;
+      res.json(updated && line ? withLineLookupState(updated, line) : updated);
     } catch (error) {
       console.error("Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });

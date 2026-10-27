@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Loader2, RefreshCw } from "lucide-react";
@@ -27,6 +27,49 @@ export const LINE_LOOKUP_SKIP_TEXT: Record<LineLookupSkip, string> = {
   timeout: "The lookup is taking longer than usual — it will finish in the background.",
   failed: "The lookup didn't work this time. Try again.",
 };
+
+// ---- background lookup after a save ------------------------------------------
+//
+// Saving a phone flow never waits for Twilio: the server starts the lookup in
+// the background and answers `lineLookupPending: true`. The console then says
+// "Looking up the line provider…" for that flow and refetches the flow
+// queries a few times; the lookup (cache-first) normally lands within seconds.
+
+export const LINE_LOOKUP_PENDING_TEXT = "Looking up the line provider…";
+/** When to refetch after a save started a lookup (ms) — the server's own timeout is 10 s. */
+const PENDING_REFETCH_MS = [1500, 4000, 11000];
+
+const pendingFlows = new Set<number>();
+const listeners = new Set<() => void>();
+const notify = () => listeners.forEach((l) => l());
+
+function refetchFlowQueries(flowId: number) {
+  queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
+  queryClient.invalidateQueries({ queryKey: [`/api/eval-flows/${flowId}`] });
+}
+
+/** Call with a save response: when it says a lookup is running, show it as pending and refetch until it lands. */
+export function trackLineLookupPending(saved: { id?: number; lineLookupPending?: boolean } | null | undefined): void {
+  const flowId = saved?.id;
+  if (!saved?.lineLookupPending || typeof flowId !== "number") return;
+  pendingFlows.add(flowId);
+  notify();
+  PENDING_REFETCH_MS.forEach((ms, i) => {
+    setTimeout(() => {
+      if (i === PENDING_REFETCH_MS.length - 1) { pendingFlows.delete(flowId); notify(); }
+      refetchFlowQueries(flowId);
+    }, ms);
+  });
+}
+
+/** Whether a save of this flow started a lookup that may still be running. */
+export function useLineLookupPending(flowId: number | undefined): boolean {
+  return useSyncExternalStore(
+    (l) => { listeners.add(l); return () => { listeners.delete(l); }; },
+    () => flowId !== undefined && pendingFlows.has(flowId),
+  );
+}
 
 /** Twilio's line types, in words. Unknown ones show as they came. */
 function lineTypeText(lineType: string | null): string | null {
@@ -57,6 +100,7 @@ export function LineLookupPanel({ flowId, lineLookup, canLookUp }: { flowId: num
   const [answer, setAnswer] = useState<LineLookup | null>(lineLookup ?? null);
   const [skip, setSkip] = useState<LineLookupSkip | null>(null);
   useEffect(() => { setAnswer(lineLookup ?? null); setSkip(null); }, [flowId, lineLookup]);
+  const pending = useLineLookupPending(flowId);
 
   const lookup = useMutation({
     mutationFn: async () => {
@@ -81,7 +125,9 @@ export function LineLookupPanel({ flowId, lineLookup, canLookUp }: { flowId: num
     <div className="space-y-1.5 rounded-md border bg-muted/30 px-3 py-2 text-sm" data-testid="line-lookup">
       <div className="flex items-center justify-between gap-3">
         <span data-testid="line-lookup-answer">
-          {answer ? (
+          {pending ? (
+            <span className="text-muted-foreground" data-testid="line-lookup-pending">{LINE_LOOKUP_PENDING_TEXT}</span>
+          ) : answer ? (
             <>Line provider: <span className="font-medium">{describeLineLookup(answer)}</span></>
           ) : (
             <span className="text-muted-foreground">Line provider: not looked up yet</span>

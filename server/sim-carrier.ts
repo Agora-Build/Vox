@@ -23,11 +23,16 @@
  * - Never blocks a heartbeat: routes call `noteSimReport`, fire-and-forget.
  * - Recomputed only when the report changes, the 30-day lookup cache expires,
  *   or a non-definitive answer (lookup off / failed / rate-limited) is due a retry.
+ * - A phone agent that stops sending a valid report (SIM removed, phone
+ *   unplugged, DialF without a SIM) has its sim fields cleared — `sim_carrier`
+ *   NULL, reason `v1: no-sim-report` — rather than keeping the last carrier
+ *   forever. Agents without the phone capability are left alone (`sim` is
+ *   only frozen onto phone jobs).
  * - Only phone agents' reports count, and the paid lookup is capped per UTC
  *   day, durably in Postgres (server/paid-lookup-budget.ts): one uncached
  *   number per agent, SIM_USER_LOOKUPS_PER_DAY across all agents of one
- *   token creator, and the global PAID_LOOKUPS_PER_DAY budget shared with the
- *   flow `line` path.
+ *   token creator, and the SIM path's own daily share (SIM_LOOKUPS_PER_DAY,
+ *   reserved: flow `line` lookups can't spend it).
  *
  * Limit (from the design): both inputs arrive through the agent; a modified
  * agent could report another real number plus its matching code. The lookup
@@ -35,7 +40,7 @@
  */
 import { createHash } from "node:crypto";
 import { normalizeTag, simFromCarrier } from "@shared/tags";
-import { storage } from "./storage";
+import { storage, pool } from "./storage";
 import { lookupNumber, redactNumber, numberHash, CACHE_MAX_AGE_MS, MCC_RE, MNC_RE, type NumberLookupProvider } from "./number-lookup";
 import { simLookupGate, type PaidLookupGate } from "./paid-lookup-budget";
 
@@ -49,7 +54,7 @@ export const SIM_RETRY_MS = 10 * 60 * 1000;
  * number doesn't change: one uncached lookup per agent per UTC day
  * (SIM_AGENT_LOOKUPS_PER_DAY), at most SIM_USER_LOOKUPS_PER_DAY across all of
  * one user's agent tokens (so minting more agents doesn't multiply it), drawn
- * from the global PAID_LOOKUPS_PER_DAY budget shared with flow lookups. Past either cap the answer is a
+ * from the SIM path's reserved SIM_LOOKUPS_PER_DAY share. Past any cap the answer is a
  * non-definitive `rate-limited` (handled like `lookup-failed`). Cache hits
  * (`number_lookups`) are never counted.
  */
@@ -183,8 +188,8 @@ function storedIsForReport(
 
 /**
  * Recompute and store an agent's sim fields when due. Returns whether it
- * recomputed. `now` and `globalLimit` exist for tests (expiry / retry
- * without waiting; the global daily budget without 500 lookups).
+ * recomputed. `now` and `shareLimit` exist for tests (expiry / retry
+ * without waiting; the SIM share without 200 lookups).
  *
  * An unchanged report inside its due time returns before ANY database read
  * (the in-memory memo below) — a phone agent's heartbeat costs no query.
@@ -198,7 +203,7 @@ function storedIsForReport(
 export async function refreshAgentSim(
   agentId: number,
   report: SimReport,
-  opts: { provider?: NumberLookupProvider | null; now?: number; globalLimit?: number } = {},
+  opts: { provider?: NumberLookupProvider | null; now?: number; shareLimit?: number } = {},
 ): Promise<boolean> {
   const now = opts.now ?? Date.now();
   const fingerprint = fingerprintOf(report);
@@ -208,7 +213,7 @@ export async function refreshAgentSim(
   memo.set(agentId, { fingerprint, dueAt: now + SIM_RETRY_MS });
   try {
     // Refunded inside lookupNumber when the provider call fails.
-    const gate = simLookupGate(agentId, { now, globalLimit: opts.globalLimit });
+    const gate = simLookupGate(agentId, { now, shareLimit: opts.shareLimit });
     const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider, gate });
     const definitive = !NON_DEFINITIVE.has(match.simReason);
     const dueAt = !definitive
@@ -231,12 +236,41 @@ export async function refreshAgentSim(
   }
 }
 
+/** Memo fingerprint for "this agent's fields were cleared for no report". */
+const NO_REPORT = "no-sim-report";
+export const NO_SIM_REPORT_REASON = reason(NO_REPORT);
+
+/**
+ * A phone agent sent no valid `sim`: clear its sim fields (carrier NULL,
+ * reason `v1: no-sim-report`, number fields NULL). Returns whether it
+ * attempted a write. The memo makes the unchanged case free — after the first
+ * clear, every following no-report beat returns before any query — and the
+ * UPDATE itself is conditional (`IS DISTINCT FROM`), so after a Core restart
+ * an agent already cleared costs one no-op statement, never a row rewrite.
+ */
+export async function clearAgentSim(agentId: number): Promise<boolean> {
+  if (memo.get(agentId)?.fingerprint === NO_REPORT) return false;
+  memo.set(agentId, { fingerprint: NO_REPORT, dueAt: Number.POSITIVE_INFINITY });
+  try {
+    await pool.query(
+      `UPDATE eval_agents SET sim_carrier = NULL, sim_reason = $2, sim_number_redacted = NULL, sim_number_hash = NULL
+       WHERE id = $1 AND sim_reason IS DISTINCT FROM $2`,
+      [agentId, NO_SIM_REPORT_REASON],
+    );
+    return true;
+  } catch (err) {
+    memo.delete(agentId);
+    throw err;
+  }
+}
+
 /**
  * Route entry point (register/heartbeat): parse the body's `sim` and, when it
  * is a report from an agent whose current capabilities include `phone` (only
  * a phone agent has a SIM — anyone else's report is ignored, never looked
- * up), refresh in the background. Never blocks, never throws, never logs the
- * number. The returned promise (always resolved) exists for tests; routes
+ * up), refresh in the background. A phone agent with NO valid report has its
+ * stored sim cleared (clearAgentSim). Never blocks, never throws, never logs
+ * the number. The returned promise (always resolved) exists for tests; routes
  * don't wait on it.
  */
 export function noteSimReport(
@@ -247,8 +281,8 @@ export function noteSimReport(
 ): Promise<void> {
   if (!Array.isArray(capabilities) || !capabilities.includes("phone")) return Promise.resolve();
   const report = parseSimReport(raw);
-  if (!report) return Promise.resolve();
-  return refreshAgentSim(agentId, report, opts).then(() => undefined, (err) =>
+  const work = report ? refreshAgentSim(agentId, report, opts) : clearAgentSim(agentId);
+  return work.then(() => undefined, (err) =>
     console.error(`[sim] agent ${agentId}: sim check failed (${err instanceof Error ? err.name : "error"})`),
   );
 }

@@ -7,9 +7,13 @@
  *   - our own SIM's number, reported by a phone agent on register/heartbeat
  *     (any token holder can report a fresh number per beat, and can mint
  *     more tokens/agents).
- * So each path has per-caller rules, and both draw from ONE global daily
- * budget (PAID_LOOKUPS_PER_DAY): flow edits can't starve SIM checks of more
- * than that, nor the other way round, and the bill has a ceiling.
+ * So each path has per-caller rules, and each draws from its OWN reserved
+ * share of the global daily budget: flow lookups FLOW_LOOKUPS_PER_DAY (300),
+ * SIM checks SIM_LOOKUPS_PER_DAY (200), PAID_LOOKUPS_PER_DAY (500) in all.
+ * Reserved, not pooled: free accounts' flow edits (anyone can sign up and
+ * type numbers) can spend at most the flow share, and can never starve the
+ * SIM checks our own phone agents depend on — nor the other way round. The
+ * bill's ceiling is the sum.
  *
  * Only an UNCACHED lookup is counted — `lookupNumber` asks the gate right
  * before the provider call, never for a `number_lookups` cache hit — and a
@@ -24,8 +28,9 @@
  * RETURNING count` — no row back means that cap is full and the whole
  * reservation rolls back. Concurrent requests and several Core processes
  * can't both pass, and a restart doesn't hand out a fresh day. Rows are
- * always taken in the same order (per-caller rows, then global), so two
- * reservations can't deadlock.
+ * always taken in the same order (per-caller rows, then the path's global
+ * share — scope `global-flow` or `global-sim`), so two reservations can't
+ * deadlock.
  *
  * Days are UTC calendar days (`day` = the UTC date of the reservation): every
  * cap resets at 00:00 UTC. Rows older than RETAIN_DAYS are deleted
@@ -34,8 +39,20 @@
  */
 import { pool } from "./storage";
 
-/** All paid lookups, flow + SIM together, per UTC day. */
-export const PAID_LOOKUPS_PER_DAY = 500;
+/**
+ * The flow path's reserved share per UTC day (all users' save / "Look up
+ * again" lookups together). The larger share: many editors, any of whom may
+ * be on a free account.
+ */
+export const FLOW_LOOKUPS_PER_DAY = 300;
+/**
+ * The SIM path's reserved share per UTC day (all agents together). A real
+ * SIM's number doesn't change, so a fleet uses a handful a day; 200 leaves
+ * wide headroom and flow lookups can't touch it.
+ */
+export const SIM_LOOKUPS_PER_DAY = 200;
+/** All paid lookups, flow + SIM together, per UTC day — the bill's ceiling (the two shares' sum). */
+export const PAID_LOOKUPS_PER_DAY = FLOW_LOOKUPS_PER_DAY + SIM_LOOKUPS_PER_DAY;
 /**
  * Uncached lookups one user's flow edits may cause per UTC day. A real flow's
  * agent number rarely changes; 10 covers setting up several flows in a day.
@@ -52,7 +69,7 @@ export const SIM_USER_LOOKUPS_PER_DAY = 5;
 /** How many days of counters are kept (only today's are read). */
 export const RETAIN_DAYS = 7;
 
-export type BudgetScope = "global" | "flow-user" | "sim-agent" | "sim-user";
+export type BudgetScope = "global-flow" | "global-sim" | "flow-user" | "sim-agent" | "sim-user";
 
 /** Asked right before a paid provider call; `refund` hands a failed call back. */
 export interface PaidLookupGate {
@@ -79,7 +96,11 @@ export async function resetPaidLookupBudget(): Promise<void> {
  * costs no query). `slots` returning null = can't attribute the call →
  * refused.
  */
-function paidLookupGate(slots: () => Promise<Slot[] | null>, now: number, globalLimit: number): PaidLookupGate {
+function paidLookupGate(
+  slots: () => Promise<Slot[] | null>,
+  now: number,
+  share: { scope: "global-flow" | "global-sim"; limit: number },
+): PaidLookupGate {
   const day = utcDay(now);
   let reserved: Slot[] | null = null;
   return {
@@ -87,7 +108,7 @@ function paidLookupGate(slots: () => Promise<Slot[] | null>, now: number, global
       if (reserved) return true;
       const own = await slots();
       if (!own) return false;
-      const all: Slot[] = [...own, { scope: "global", subject: "all", limit: globalLimit }];
+      const all: Slot[] = [...own, { scope: share.scope, subject: "all", limit: share.limit }];
       if (all.some((s) => s.limit <= 0)) return false;
       const client = await pool.connect();
       try {
@@ -135,21 +156,21 @@ function paidLookupGate(slots: () => Promise<Slot[] | null>, now: number, global
   };
 }
 
-/** The gate for a flow editor's lookup (save / "Look up again"). `now`/`globalLimit` exist for tests. */
-export function flowLookupGate(userId: number, opts: { now?: number; globalLimit?: number } = {}): PaidLookupGate {
+/** The gate for a flow editor's lookup (save / "Look up again"): per user, and the flow share. `now`/`shareLimit` exist for tests. */
+export function flowLookupGate(userId: number, opts: { now?: number; shareLimit?: number } = {}): PaidLookupGate {
   return paidLookupGate(
     async () => [{ scope: "flow-user", subject: String(userId), limit: FLOW_USER_LOOKUPS_PER_DAY }],
     opts.now ?? Date.now(),
-    opts.globalLimit ?? PAID_LOOKUPS_PER_DAY,
+    { scope: "global-flow", limit: opts.shareLimit ?? FLOW_LOOKUPS_PER_DAY },
   );
 }
 
 /**
  * The gate for an agent's SIM report: per agent, per user (the creator of the
- * agent's token, across all their tokens), and the global day. An agent that
- * can't be found is refused. `now`/`globalLimit` exist for tests.
+ * agent's token, across all their tokens), and the SIM share. An agent that
+ * can't be found is refused. `now`/`shareLimit` exist for tests.
  */
-export function simLookupGate(agentId: number, opts: { now?: number; globalLimit?: number } = {}): PaidLookupGate {
+export function simLookupGate(agentId: number, opts: { now?: number; shareLimit?: number } = {}): PaidLookupGate {
   return paidLookupGate(
     async () => {
       const r = await pool.query<{ created_by: number }>(
@@ -164,6 +185,6 @@ export function simLookupGate(agentId: number, opts: { now?: number; globalLimit
       ];
     },
     opts.now ?? Date.now(),
-    opts.globalLimit ?? PAID_LOOKUPS_PER_DAY,
+    { scope: "global-sim", limit: opts.shareLimit ?? SIM_LOOKUPS_PER_DAY },
   );
 }

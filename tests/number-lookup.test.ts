@@ -24,6 +24,8 @@ import {
   lookupFlowLine,
   lookupNumber,
   refreshFlowLineOnSave,
+  startFlowLineRefresh,
+  withLineLookupState,
   lookupAndStoreFlowLine,
   dialledNumber,
   toE164,
@@ -37,7 +39,7 @@ import {
   defaultLookupProvider,
   CACHE_MAX_AGE_MS,
 } from "../server/number-lookup";
-import { resetPaidLookupBudget, flowLookupGate, FLOW_USER_LOOKUPS_PER_DAY, PAID_LOOKUPS_PER_DAY } from "../server/paid-lookup-budget";
+import { resetPaidLookupBudget, flowLookupGate, FLOW_USER_LOOKUPS_PER_DAY, FLOW_LOOKUPS_PER_DAY } from "../server/paid-lookup-budget";
 import type { EvalFlow } from "../shared/schema";
 
 const SID = "AC" + "0123456789abcdef0123456789abcdef";
@@ -505,16 +507,16 @@ d("flow-path paid-lookup caps and single-flight (stub Twilio)", () => {
     expect(requests).toHaveLength(FLOW_USER_LOOKUPS_PER_DAY + 1);
   });
 
-  it(`every caller draws from ONE global daily budget (PAID_LOOKUPS_PER_DAY = ${PAID_LOOKUPS_PER_DAY})`, async () => {
-    expect(PAID_LOOKUPS_PER_DAY).toBe(500);
+  it(`every flow caller draws from ONE flow share (FLOW_LOOKUPS_PER_DAY = ${FLOW_LOOKUPS_PER_DAY})`, async () => {
+    expect(FLOW_LOOKUPS_PER_DAY).toBe(300);
     reply = (n) => twilioOk(n, "Telnyx", "nonFixedVoip");
     const t0 = noonUtc();
-    const globalLimit = 2;
-    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(400)) } }, ownerId, { provider: provider(), now: t0, globalLimit })).toMatchObject({ value: "telnyx" });
-    expect(await lookupNumber(num(401), { provider: provider(), gate: flowLookupGate(ownerId + 7, { now: t0, globalLimit }) })).toMatchObject({ value: "telnyx" });
-    // The budget is spent — for every caller (the SIM path is covered in sim-carrier.test.ts).
-    expect(await lookupNumber(num(402), { provider: provider(), gate: flowLookupGate(ownerId + 8, { now: t0, globalLimit }) })).toEqual({ skipped: "rate-limited" });
-    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(403)) } }, ownerId + 5, { provider: provider(), now: t0, globalLimit })).toEqual({ skipped: "rate-limited" });
+    const shareLimit = 2;
+    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(400)) } }, ownerId, { provider: provider(), now: t0, shareLimit })).toMatchObject({ value: "telnyx" });
+    expect(await lookupNumber(num(401), { provider: provider(), gate: flowLookupGate(ownerId + 7, { now: t0, shareLimit }) })).toMatchObject({ value: "telnyx" });
+    // The flow share is spent — for every flow caller (the SIM share is separate: sim-carrier.test.ts).
+    expect(await lookupNumber(num(402), { provider: provider(), gate: flowLookupGate(ownerId + 8, { now: t0, shareLimit }) })).toEqual({ skipped: "rate-limited" });
+    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(403)) } }, ownerId + 5, { provider: provider(), now: t0, shareLimit })).toEqual({ skipped: "rate-limited" });
     expect(requests).toHaveLength(2);
   });
 
@@ -560,7 +562,7 @@ d("paid-lookup budget is durable and atomic (Postgres, UTC days)", () => {
     const day = new Date(t0).toISOString().slice(0, 10);
     for (let i = 0; i < FLOW_USER_LOOKUPS_PER_DAY; i++) expect(await flowLookupGate(USER, { now: t0 }).allow()).toBe(true);
     expect(await count("flow-user", String(USER), day)).toBe(FLOW_USER_LOOKUPS_PER_DAY);
-    expect(await count("global", "all", day)).toBe(FLOW_USER_LOOKUPS_PER_DAY);
+    expect(await count("global-flow", "all", day)).toBe(FLOW_USER_LOOKUPS_PER_DAY);
     // A new module instance (what a Core restart is) is still refused.
     vi.resetModules();
     const fresh = await import("../server/paid-lookup-budget");
@@ -576,14 +578,14 @@ d("paid-lookup budget is durable and atomic (Postgres, UTC days)", () => {
     const results = await Promise.all(Array.from({ length: 25 }, () => flowLookupGate(USER, { now: t0 }).allow()));
     expect(results.filter(Boolean)).toHaveLength(FLOW_USER_LOOKUPS_PER_DAY);
     // A refused reservation takes nothing from the global day either (the transaction rolled back).
-    expect(await count("global", "all", new Date(t0).toISOString().slice(0, 10))).toBe(FLOW_USER_LOOKUPS_PER_DAY);
+    expect(await count("global-flow", "all", new Date(t0).toISOString().slice(0, 10))).toBe(FLOW_USER_LOOKUPS_PER_DAY);
   });
 
-  it("the global cap refuses without charging the caller's own row", async () => {
+  it("the flow share refuses without charging the caller's own row", async () => {
     const t0 = noonUtc();
     const day = new Date(t0).toISOString().slice(0, 10);
-    expect(await flowLookupGate(USER, { now: t0, globalLimit: 1 }).allow()).toBe(true);
-    expect(await flowLookupGate(USER + 1, { now: t0, globalLimit: 1 }).allow()).toBe(false);
+    expect(await flowLookupGate(USER, { now: t0, shareLimit: 1 }).allow()).toBe(true);
+    expect(await flowLookupGate(USER + 1, { now: t0, shareLimit: 1 }).allow()).toBe(false);
     expect(await count("flow-user", String(USER + 1), day)).toBeNull();
   });
 
@@ -608,7 +610,7 @@ d("paid-lookup budget is durable and atomic (Postgres, UTC days)", () => {
     await pool.query("UPDATE paid_lookup_usage SET count = 0");
     await h.refund();
     expect(await count("flow-user", String(USER), day)).toBe(0);
-    expect(await count("global", "all", day)).toBe(0);
+    expect(await count("global-flow", "all", day)).toBe(0);
   });
 });
 
@@ -710,6 +712,67 @@ d("line_lookup writes are conditional on the flow still dialling that number; a 
     expect((await storage.getEvalFlow(flow.id))!.lineLookup).toEqual(before);
     await sleep(500);
     expect((await storage.getEvalFlow(flow.id))!.lineLookup).toMatchObject({ value: "bandwidth", numberHash: numberHash(NEW) });
+  });
+
+  it("saves don't wait for the provider: startFlowLineRefresh returns at once with pending, the lookup lands in the background", async () => {
+    const OLD = "+15550909111", NEW = "+15550909222";
+    reply = (n) => twilioOk(n, n === OLD ? "Telnyx" : "Bandwidth/13", "nonFixedVoip");
+    const flow = await mkFlow(dial(OLD));
+    await refreshFlowLineOnSave(flow, ownerId, { provider: provider() });
+    const before = (await storage.getEvalFlow(flow.id))!.lineLookup;
+    expect(before).toMatchObject({ value: "telnyx" });
+
+    delayMs = 2000; // a slow provider — far past what a save may wait
+    const changed = (await storage.updateEvalFlow(flow.id, { config: { stepsPrefix: dial(NEW), stepsSuffix: "- type: call.hangup\n" } }))!;
+    const t0 = Date.now();
+    const line = await startFlowLineRefresh(changed, ownerId, { provider: provider() });
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(line.pending).toBe(true);
+    expect(line.lineLookup).toBeUndefined();
+    // The response carries the current (old) lookup plus the pending flag.
+    expect(withLineLookupState(changed, line)).toMatchObject({ lineLookup: before, lineLookupPending: true });
+    expect((await storage.getEvalFlow(flow.id))!.lineLookup).toEqual(before);
+    await line.done;
+    expect((await storage.getEvalFlow(flow.id))!.lineLookup).toMatchObject({ value: "bandwidth", numberHash: numberHash(NEW) });
+  });
+
+  it("startFlowLineRefresh: nothing pending when the stored lookup already describes the number, or the flow isn't phone", async () => {
+    const N = "+15550909333";
+    reply = (n) => twilioOk(n, "Telnyx", "nonFixedVoip");
+    const flow = await mkFlow(dial(N));
+    await refreshFlowLineOnSave(flow, ownerId, { provider: provider() });
+    const fresh = (await storage.getEvalFlow(flow.id))!;
+    expect(await startFlowLineRefresh(fresh, ownerId, { provider: provider() })).toMatchObject({ pending: false });
+    expect(await startFlowLineRefresh({ ...fresh, transport: "web" }, ownerId, { provider: provider() })).toMatchObject({ pending: false });
+    expect(withLineLookupState(fresh, { pending: false })).not.toHaveProperty("lineLookupPending");
+  });
+
+  it("startFlowLineRefresh: no dialled number → no provider call, a stale answer is cleared before the response", async () => {
+    reply = (n) => twilioOk(n, "Telnyx", "nonFixedVoip");
+    const flow = await mkFlow(dial("+15550909444"));
+    await refreshFlowLineOnSave(flow, ownerId, { provider: provider() });
+    const noNumber = (await storage.updateEvalFlow(flow.id, { config: { stepsPrefix: "- type: call.wait_answered\n", stepsSuffix: "- type: call.hangup\n" } }))!;
+    requests.length = 0;
+    const line = await startFlowLineRefresh(noNumber, ownerId, { provider: provider() });
+    expect(line).toMatchObject({ pending: false, lineLookup: null });
+    expect(requests).toHaveLength(0);
+    expect((await storage.getEvalFlow(flow.id))!.lineLookup).toBeNull();
+  });
+
+  it("a background lookup that throws is logged by error name only, never rejects", async () => {
+    const flow = await mkFlow(dial("+15550909555"));
+    const boom = { lookup: async () => { const e = new Error("+15550909555 exploded"); e.name = "BoomError"; throw e; } } as any;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const line = await startFlowLineRefresh(flow, ownerId, { provider: boom });
+      expect(line.pending).toBe(true);
+      await expect(line.done).resolves.toBeUndefined();
+      const logged = [...warn.mock.calls, ...err.mock.calls].flat().join(" ");
+      expect(logged).not.toContain("5550909555");
+    } finally {
+      warn.mockRestore(); err.mockRestore();
+    }
   });
 
   it("'Look up again' past the timeout says `timeout`, keeps the stored lookup, and stores the answer when it arrives", async () => {

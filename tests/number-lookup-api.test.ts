@@ -128,7 +128,10 @@ d("number lookup API", () => {
     });
     expect(created.status).toBe(200);
     flowIds.push(created.body.id);
+    // The save never waits for the lookup: it answers with the current
+    // lineLookup (none yet) and says a lookup was started.
     expect(created.body.lineLookup).toBeNull();
+    expect(created.body.lineLookupPending).toBe(true);
 
     const patched = await jsonFetch(`${BASE_URL}/api/eval-flows/${created.body.id}`, {
       method: "PATCH", cookie: users[0].cookie,
@@ -136,6 +139,16 @@ d("number lookup API", () => {
     });
     expect(patched.status).toBe(200);
     expect(patched.body.lineLookup).toBeNull();
+    expect(patched.body.lineLookupPending).toBe(true);
+    // A save that changes nothing about the number starts no lookup… except
+    // that "no lookup yet" always retries; a web flow never does.
+    const web = await jsonFetch(`${BASE_URL}/api/eval-flows`, {
+      method: "POST", cookie: users[0].cookie,
+      body: JSON.stringify({ name: `nlapi-web-${stamp}`, providerId, visibility: "public", transport: "web", config: {} }),
+    });
+    expect(web.status).toBe(200);
+    flowIds.push(web.body.id);
+    expect(web.body).not.toHaveProperty("lineLookupPending");
   });
 
   it("v1 PUT that changes the dialled number refreshes the lookup — a stale answer is cleared (finding 3)", async () => {
@@ -166,8 +179,15 @@ d("number lookup API", () => {
       body: JSON.stringify({ config: { stepsPrefix: '- type: call.dial\n  number: "+1 (555) 010-9876"\n', stepsSuffix: "- type: call.hangup\n" } }),
     });
     expect(put.status).toBe(200);
-    expect(put.body.data.lineLookup).toBeNull();
-    expect((await storage.getEvalFlow(created.body.id))!.lineLookup).toBeNull();
+    // Answered before the lookup: the current (stale) answer + pending…
+    expect(put.body.data.lineLookupPending).toBe(true);
+    // …and the background lookup then clears it.
+    let after: unknown = stale;
+    for (let i = 0; i < 50 && after !== null; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      after = (await storage.getEvalFlow(created.body.id))!.lineLookup;
+    }
+    expect(after).toBeNull();
   });
 
   it("Look up again: editors only, reports why it was skipped", async () => {

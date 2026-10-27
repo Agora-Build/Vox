@@ -100,6 +100,35 @@ test.describe("network tags", () => {
     }
   });
 
+  test("saving a phone flow doesn't wait for the line lookup: it says one is running", async ({ page }) => {
+    test.setTimeout(60_000);
+    const name = `e2e-phone-lookup-${Date.now()}`;
+    let flowId: number | undefined;
+    try {
+      await page.goto("/console/eval-flows");
+      await page.getByTestId("button-create-eval-flow").click();
+      await page.getByTestId("input-eval-flow-name").fill(name);
+      await selectOption(page, "select-eval-flow-provider", "Custom");
+      await selectOption(page, "select-eval-flow-transport", "Phone vs Agent");
+      await page.getByTestId("textarea-eval-flow-steps-prefix").fill('- type: call.dial\n  number: "+1 (555) 010-4242"\n');
+      await page.getByTestId("textarea-eval-flow-steps-suffix").fill("- type: call.hangup\n");
+      const saved = page.waitForResponse((r) => r.url().endsWith("/api/eval-flows") && r.request().method() === "POST");
+      await page.getByTestId("button-submit-eval-flow").click();
+      const body = await (await saved).json();
+      flowId = body.id;
+      expect(body.lineLookupPending).toBe(true);
+      await expect(page.getByText("Looking up the line provider…").first()).toBeVisible();
+
+      // The flow's page (client-side navigation: the pending state lives in
+      // the page) says so too while the refetches run, then settles.
+      await page.getByTestId(`row-eval-flow-${flowId}`).click();
+      await expect(page.getByTestId("eval-flow-line-lookup")).toHaveText("Looking up the line provider…");
+      await expect(page.getByTestId("eval-flow-line-lookup")).toContainText("Line provider:", { timeout: 20_000 });
+    } finally {
+      if (flowId) await page.request.delete(`/api/eval-flows/${flowId}`);
+    }
+  });
+
   test("filter and group the leaderboard by a tag", async ({ page }) => {
     test.skip(!process.env.DATABASE_URL, "needs the dev DB");
     test.setTimeout(60_000);

@@ -369,17 +369,28 @@ d("network tags: hand-set tags and link type through the API", () => {
       expect(a?.simNumberRedacted).toBe(`…${number.slice(-4)}`);
       expect(JSON.stringify(a)).not.toContain(number.slice(1));
 
-      // Junk never 400s and never writes.
-      await pool.query(`UPDATE eval_agents SET sim_reason = 'sentinel' WHERE id = $1`, [agentId]);
-      for (const sim of ["+15550000000", { number: "not-a-number", mcc: "310", mnc: "260" }, [1, 2], 42]) {
+      // Junk never 400s and is never looked up or stored: from a phone agent
+      // it counts as "no valid report" and clears the stored sim
+      // (v1: no-sim-report) — no stale carrier survives a pulled SIM.
+      await pool.query(`UPDATE eval_agents SET sim_reason = 'sentinel', sim_carrier = 'att' WHERE id = $1`, [agentId]);
+      for (const sim of ["+15550000000", { number: "not-a-number", mcc: "310", mnc: "260" }, [1, 2], 42, undefined]) {
         const r = await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
           method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
           body: JSON.stringify({ agentId, leaseId, state: "idle", capabilities: ["phone"], sim }),
         });
         expect(r.status).toBe(200);
       }
+      const cleared = await waitFor((x) => x.simReason === "v1: no-sim-report");
+      expect(cleared).toMatchObject({ simReason: "v1: no-sim-report", simCarrier: null, simNumberRedacted: null });
+      // An agent without the phone capability: left alone.
+      await pool.query(`UPDATE eval_agents SET sim_reason = 'sentinel', sim_carrier = 'att' WHERE id = $1`, [agentId]);
+      await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+        method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },
+        body: JSON.stringify({ agentId, leaseId, state: "idle", capabilities: [], sim: 42 }),
+      });
       await new Promise((r) => setTimeout(r, 500));
-      expect((await storage.getEvalAgent(agentId))?.simReason).toBe("sentinel");
+      expect(await storage.getEvalAgent(agentId)).toMatchObject({ simReason: "sentinel", simCarrier: "att" });
+      await pool.query(`UPDATE eval_agents SET sim_reason = NULL, sim_carrier = NULL WHERE id = $1`, [agentId]);
       // Back to no capabilities, as the rest of this file expects.
       await jsonFetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
         method: "POST", headers: { Authorization: `Bearer ${tokenValue}` },

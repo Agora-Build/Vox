@@ -16,7 +16,7 @@ import { parseTags, effectiveTags, formatTag, type Tag } from "@shared/tags";
 import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
-import { refreshFlowLineOnSave } from "./number-lookup";
+import { startFlowLineRefresh, withLineLookupState } from "./number-lookup";
 import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
@@ -213,12 +213,12 @@ export function registerApiV1Routes(app: Express): void {
         ? await storage.updateEvalFlow(evalFlow.id, { tags: parsedTags.tags })
         : evalFlow;
 
-      // Same save-time line lookup as the console create — bounded, never
-      // throws. (v1 create always stores `web` today, so it's a no-op until
-      // v1 learns transport; kept so the two paths can't drift.)
+      // Same save-time line lookup as the console create — in the
+      // background, never throws. (v1 create always stores `web` today, so
+      // it's a no-op until v1 learns transport; kept so the paths can't drift.)
       const saved = withTags ?? evalFlow;
-      const lineLookup = await refreshFlowLineOnSave(saved, user.id);
-      res.status(201).json({ data: lineLookup !== undefined ? { ...saved, lineLookup } : saved });
+      const line = await startFlowLineRefresh(saved, user.id);
+      res.status(201).json({ data: withLineLookupState(saved, line) });
     } catch (error) {
       console.error("API v1 - Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -307,11 +307,11 @@ export function registerApiV1Routes(app: Express): void {
       });
 
       // Phone flow whose dialled number changed (or never looked up): refresh
-      // its line lookup, as the console PATCH does — bounded, never throws,
-      // never fails the save; a changed number that can't be looked up clears
-      // the old answer.
-      const lineLookup = updated ? await refreshFlowLineOnSave(updated, user.id) : undefined;
-      res.json({ data: updated && lineLookup !== undefined ? { ...updated, lineLookup } : updated });
+      // its line lookup, as the console PATCH does — in the background
+      // (`lineLookupPending: true` on the response), never fails the save; a
+      // changed number that can't be looked up clears the old answer.
+      const line = updated ? await startFlowLineRefresh(updated, user.id) : null;
+      res.json({ data: updated && line ? withLineLookupState(updated, line) : updated });
     } catch (error) {
       console.error("API v1 - Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });
