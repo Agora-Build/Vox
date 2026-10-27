@@ -407,6 +407,11 @@ Agents keep `isp`/`link` (correctable) + custom keys.
 - A phone agent that stops reporting a valid `sim` (SIM pulled, phone unplugged) has
   its stored `sim_carrier` cleared (reason `v1: no-sim-report`) — no stale carrier is
   frozen onto later phone jobs. Agents without the `phone` capability are left alone.
+- Overlapping reports: the newest wins, whichever lookup finishes last. Each recompute
+  or clear takes the next `eval_agents.sim_report_gen` when it starts (negative while
+  a recompute is in flight), and a recompute writes only if its generation is still
+  the latest, checked under `SELECT … FOR UPDATE` — so it holds across Core processes
+  (migration 0062).
 - **Spending:** for the same reason a token holder could make every heartbeat a paid
   lookup of a fresh number. Core acts on `sim` only from agents whose current
   capabilities include `phone`, allows one uncached lookup per agent per UTC day,

@@ -21,6 +21,10 @@
  *   "…1234", and `sim_number_hash`, a keyed hash — server/number-lookup.ts
  *   `numberHash`) and never logged; `number_lookups` is keyed by that hash too.
  * - Never blocks a heartbeat: routes call `noteSimReport`, fire-and-forget.
+ * - Of two overlapping reports the NEWER one wins, whichever lookup finishes
+ *   last: each recompute or clear takes the next `sim_report_gen` when it
+ *   starts, and a recompute writes only if its generation is still the row's
+ *   latest (checked under the row lock) — so it holds across Core processes.
  * - Recomputed only when the report changes, the 30-day lookup cache expires,
  *   or a non-definitive answer (lookup off / failed / rate-limited) is due a retry.
  * - A phone agent that stops sending a valid report (SIM removed, phone
@@ -40,7 +44,7 @@
  */
 import { createHash } from "node:crypto";
 import { normalizeTag, simFromCarrier } from "@shared/tags";
-import { storage, pool } from "./storage";
+import { pool } from "./storage";
 import { lookupNumber, redactNumber, numberHash, CACHE_MAX_AGE_MS, MCC_RE, MNC_RE, type NumberLookupProvider } from "./number-lookup";
 import { simLookupGate, type PaidLookupGate } from "./paid-lookup-budget";
 
@@ -148,7 +152,8 @@ async function computeSimMatchDetailed(
  * In memory: after a Core restart every agent recomputes once — cheap, since
  * the lookup itself is cached in `number_lookups`.
  */
-const memo = new Map<number, { fingerprint: string; dueAt: number }>();
+interface MemoEntry { fingerprint: string; dueAt: number }
+const memo = new Map<number, MemoEntry>();
 
 /**
  * Tests only: forget every agent's last computation (what a Core restart
@@ -188,7 +193,8 @@ function storedIsForReport(
 
 /**
  * Recompute and store an agent's sim fields when due. Returns whether it
- * recomputed. `now` and `shareLimit` exist for tests (expiry / retry
+ * recomputed and stored (false: not due, no such agent, or superseded by a
+ * newer report / clear that started while this one was looking up). `now` and `shareLimit` exist for tests (expiry / retry
  * without waiting; the SIM share without 200 lookups).
  *
  * An unchanged report inside its due time returns before ANY database read
@@ -209,9 +215,14 @@ export async function refreshAgentSim(
   const fingerprint = fingerprintOf(report);
   const prev = memo.get(agentId);
   if (prev && prev.fingerprint === fingerprint && now < prev.dueAt) return false;
-  // Claimed before the await, so a burst of heartbeats computes once.
-  memo.set(agentId, { fingerprint, dueAt: now + SIM_RETRY_MS });
+  // Claimed before the await, so a burst of heartbeats computes once. The
+  // claim object doubles as this process's generation: a newer report (or a
+  // clear) replaces it, and this refresh then leaves the memo alone.
+  const claim: MemoEntry = { fingerprint, dueAt: now + SIM_RETRY_MS };
+  memo.set(agentId, claim);
   try {
+    const gen = await beginSimReport(agentId);
+    if (gen === undefined) return false; // no such agent
     // Refunded inside lookupNumber only when the provider call was not billed.
     const gate = simLookupGate(agentId, { now, shareLimit: opts.shareLimit });
     const { match, lookedUpAt } = await computeSimMatchDetailed(report, { provider: opts.provider, gate });
@@ -219,20 +230,75 @@ export async function refreshAgentSim(
     const dueAt = !definitive
       ? now + SIM_RETRY_MS
       : (lookedUpAt ? lookedUpAt.getTime() : now) + CACHE_MAX_AGE_MS;
-    memo.set(agentId, { fingerprint, dueAt });
-    if (KEEPS_STORED.has(match.simReason) && storedIsForReport(await storage.getEvalAgent(agentId), report)) {
-      return true; // keep the stored answer; the retry is scheduled above
+    if (!(await settleSimReport(agentId, gen, report, match))) {
+      // Superseded by a newer report or a clear (here or in another process):
+      // its result stands; this one is dropped.
+      if (memo.get(agentId) === claim) memo.delete(agentId);
+      return false;
     }
-    await storage.updateEvalAgent(agentId, {
-      simCarrier: match.simCarrier,
-      simReason: match.simReason,
-      simNumberRedacted: match.simNumberRedacted,
-      simNumberHash: numberHash(report.number),
-    });
+    if (memo.get(agentId) === claim) memo.set(agentId, { fingerprint, dueAt });
     return true;
   } catch (err) {
-    memo.delete(agentId);
+    if (memo.get(agentId) === claim) memo.delete(agentId);
     throw err;
+  }
+}
+
+/**
+ * Start a recompute: take the agent's next SIM report generation and mark it
+ * in flight (stored negated). Returns the generation, or undefined when the
+ * agent row doesn't exist. One statement, only on a recompute — never on an
+ * unchanged heartbeat.
+ */
+async function beginSimReport(agentId: number): Promise<number | undefined> {
+  const r = await pool.query<{ gen: number }>(
+    `UPDATE eval_agents SET sim_report_gen = -(abs(sim_report_gen) + 1) WHERE id = $1 RETURNING -sim_report_gen AS gen`,
+    [agentId],
+  );
+  return r.rows[0]?.gen;
+}
+
+/**
+ * Finish a recompute, the same way the flow path writes `line_lookup`
+ * (writeLineLookupIfCurrent): re-read the row `FOR UPDATE` and write only if
+ * this recompute's generation is still the latest (`sim_report_gen = -gen`).
+ * A newer report or a clear has moved it on — then nothing is written and
+ * this returns false. Otherwise the generation is settled (`+gen`) and the
+ * fields written — except that a transient failure (KEEPS_STORED) keeps a
+ * stored answer computed for this same report.
+ */
+async function settleSimReport(agentId: number, gen: number, report: SimReport, match: SimMatch): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ sim_report_gen: number; sim_number_hash: string | null; sim_reason: string | null }>(
+      `SELECT sim_report_gen, sim_number_hash, sim_reason FROM eval_agents WHERE id = $1 FOR UPDATE`,
+      [agentId],
+    );
+    const row = rows[0];
+    if (!row || row.sim_report_gen !== -gen) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    const keep = KEEPS_STORED.has(match.simReason)
+      && storedIsForReport({ simNumberHash: row.sim_number_hash, simReason: row.sim_reason }, report);
+    if (keep) {
+      // Keep the stored answer; the retry is scheduled by the caller's memo.
+      await client.query(`UPDATE eval_agents SET sim_report_gen = $2 WHERE id = $1`, [agentId, gen]);
+    } else {
+      await client.query(
+        `UPDATE eval_agents SET sim_carrier = $2, sim_reason = $3, sim_number_redacted = $4, sim_number_hash = $5,
+           sim_report_gen = $6, updated_at = now() WHERE id = $1`,
+        [agentId, match.simCarrier, match.simReason, match.simNumberRedacted, numberHash(report.number), gen],
+      );
+    }
+    await client.query("COMMIT");
+    return true;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
@@ -250,16 +316,21 @@ export const NO_SIM_REPORT_REASON = reason(NO_REPORT);
  */
 export async function clearAgentSim(agentId: number): Promise<boolean> {
   if (memo.get(agentId)?.fingerprint === NO_REPORT) return false;
-  memo.set(agentId, { fingerprint: NO_REPORT, dueAt: Number.POSITIVE_INFINITY });
+  const claim: MemoEntry = { fingerprint: NO_REPORT, dueAt: Number.POSITIVE_INFINITY };
+  memo.set(agentId, claim);
   try {
+    // Takes the next generation, so a recompute still in flight (negative
+    // gen, here or in another process) can't write over the clear. Already
+    // cleared and nothing in flight: matches no row, rewrites nothing.
     await pool.query(
-      `UPDATE eval_agents SET sim_carrier = NULL, sim_reason = $2, sim_number_redacted = NULL, sim_number_hash = NULL
-       WHERE id = $1 AND sim_reason IS DISTINCT FROM $2`,
+      `UPDATE eval_agents SET sim_carrier = NULL, sim_reason = $2, sim_number_redacted = NULL, sim_number_hash = NULL,
+         sim_report_gen = abs(sim_report_gen) + 1
+       WHERE id = $1 AND (sim_reason IS DISTINCT FROM $2 OR sim_report_gen < 0)`,
       [agentId, NO_SIM_REPORT_REASON],
     );
     return true;
   } catch (err) {
-    memo.delete(agentId);
+    if (memo.get(agentId) === claim) memo.delete(agentId);
     throw err;
   }
 }

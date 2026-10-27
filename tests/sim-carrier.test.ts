@@ -19,7 +19,7 @@ await vi.hoisted(async () => {
   }
 });
 import { storage, pool } from "../server/storage";
-import { TwilioLookupProvider, CACHE_MAX_AGE_MS, numberHash, lookupFlowLine } from "../server/number-lookup";
+import { TwilioLookupProvider, CACHE_MAX_AGE_MS, numberHash, lookupFlowLine, lookupNumber } from "../server/number-lookup";
 import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo, noteSimReport, SIM_RETRY_MS, NO_SIM_REPORT_REASON } from "../server/sim-carrier";
 import { PAID_LOOKUPS_PER_DAY, SIM_LOOKUPS_PER_DAY, FLOW_LOOKUPS_PER_DAY, SIM_USER_LOOKUPS_PER_DAY, resetPaidLookupBudget, flowLookupGate } from "../server/paid-lookup-budget";
 
@@ -35,7 +35,7 @@ const SID = "AC" + "0123456789abcdef0123456789abcdef";
 
 // ---- Twilio stub ------------------------------------------------------------
 
-let codes: (e164: string) => { carrier: string | null; mcc: string | null; mnc: string | null; status?: number } = () => ({ carrier: null, mcc: null, mnc: null });
+let codes: (e164: string) => { carrier: string | null; mcc: string | null; mnc: string | null; status?: number; delayMs?: number } = () => ({ carrier: null, mcc: null, mnc: null });
 const requests: string[] = [];
 let server: http.Server;
 let baseUrl = "";
@@ -46,11 +46,13 @@ beforeAll(async () => {
     requests.push(req.url ?? "");
     const m = /^\/v2\/PhoneNumbers\/([^?]+)/.exec(req.url ?? "");
     const c = codes(decodeURIComponent(m?.[1] ?? ""));
-    res.writeHead(c.status ?? 200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      valid: true,
-      line_type_intelligence: { carrier_name: c.carrier, type: "mobile", mobile_country_code: c.mcc, mobile_network_code: c.mnc },
-    }));
+    setTimeout(() => {
+      res.writeHead(c.status ?? 200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        valid: true,
+        line_type_intelligence: { carrier_name: c.carrier, type: "mobile", mobile_country_code: c.mcc, mobile_network_code: c.mnc },
+      }));
+    }, c.delayMs ?? 0);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -467,6 +469,124 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     resetSimMemo(); // a Core restart: the memo goes, the durable per-agent cap doesn't — so the next day
     expect(await refreshAgentSim(a.id, rep, { provider: provider(), now: Date.now() + SIM_AGENT_LOOKUP_WINDOW_MS + 1000 })).toBe(true);
     expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: "v1: lookup-failed" });
+  });
+
+  // PR #258 round 4: overlapping reports — the latest one wins, whichever finishes last.
+  const A_NUM = "+15550401111";
+  const B_NUM = "+15550402222";
+  const overlapCodes = () => {
+    codes = (n) => n === A_NUM
+      ? { carrier: "AT&T Wireless", mcc: "310", mnc: "410", delayMs: 300 }
+      : { carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" };
+  };
+
+  it("report A (slow) then report B (fast), different numbers: the final state is B's — memo and row", async () => {
+    overlapCodes();
+    const a = await mkAgent();
+    const t0 = noonUtc();
+    const slow = refreshAgentSim(a.id, { number: A_NUM, mcc: "310", mnc: "410" }, { provider: provider(), now: t0 });
+    await new Promise((r) => setTimeout(r, 50));
+    // Another agent's day is separate; B is this agent's 2nd uncached number, so lift its per-agent cap.
+    await pool.query("DELETE FROM paid_lookup_usage WHERE scope = 'sim-agent'");
+    await refreshAgentSim(a.id, { number: B_NUM, mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + 1 });
+    expect((await row(a.id)).sim_carrier).toBe("t-mobile");
+    await slow;
+    expect(await row(a.id)).toMatchObject({ sim_carrier: "t-mobile", sim_reason: "v1: sim-match 310-260", sim_number_hash: numberHash(B_NUM) });
+    // The memo is B's too: B's unchanged report is not recomputed, A's is.
+    requests.length = 0;
+    expect(await refreshAgentSim(a.id, { number: B_NUM, mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + 2 })).toBe(false);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("a report in flight when the phone stops reporting its SIM doesn't resurrect the old carrier", async () => {
+    overlapCodes();
+    const a = await mkAgent();
+    const slow = noteSimReport(a.id, { number: A_NUM, mcc: "310", mnc: "410" }, ["phone"], { provider: provider() });
+    await new Promise((r) => setTimeout(r, 50));
+    await noteSimReport(a.id, undefined, ["phone"]);
+    await slow;
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: NO_SIM_REPORT_REASON, sim_number_hash: null });
+  });
+
+  it("…also when the agent was already cleared before that report (the clear still supersedes it)", async () => {
+    overlapCodes();
+    const a = await mkAgent();
+    await noteSimReport(a.id, undefined, ["phone"]);
+    expect((await row(a.id)).sim_reason).toBe(NO_SIM_REPORT_REASON);
+    const slow = noteSimReport(a.id, { number: A_NUM, mcc: "310", mnc: "410" }, ["phone"], { provider: provider() });
+    await new Promise((r) => setTimeout(r, 50));
+    await noteSimReport(a.id, undefined, ["phone"]);
+    await slow;
+    expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: NO_SIM_REPORT_REASON, sim_number_hash: null });
+  });
+
+  it("a newer report starting right after an older one commits keeps the memo: the older never overwrites it", async () => {
+    codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
+    const a = await mkAgent();
+    const t0 = noonUtc();
+    // B's number is cached (free, no per-agent cap) so B needs no budget write first.
+    await lookupNumber(B_NUM, { provider: provider() });
+    const realConnect = pool.connect.bind(pool);
+    let bRun: Promise<boolean> | undefined;
+    // Start B the moment A's settle transaction releases its client — before A
+    // gets to update the memo.
+    const spy = vi.spyOn(pool, "connect").mockImplementation(((...args: unknown[]) => {
+      // pool.query goes through connect(callback): pass those through untouched.
+      if (args.length) return (realConnect as any)(...args);
+      return (async () => {
+      const client = await realConnect();
+      // Only the SIM settle transaction (not the budget's): it reads sim_report_gen.
+      let isSettle = false;
+      const query = client.query.bind(client) as (...q: unknown[]) => unknown;
+      client.query = ((...q: unknown[]) => {
+        if (typeof q[0] === "string" && q[0].includes("sim_report_gen")) isSettle = true;
+        return query(...q);
+      }) as typeof client.query;
+      const release = client.release.bind(client);
+      client.release = ((e?: Error | boolean) => {
+        client.query = query as typeof client.query;
+        client.release = release;
+        release(e);
+        if (isSettle && !bRun) {
+          // Synchronously from here up to its first await: B claims the memo now.
+          bRun = refreshAgentSim(a.id, { number: B_NUM, mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + 1 });
+        }
+      }) as typeof client.release;
+      return client;
+      })();
+    }) as any);
+    try {
+      expect(await refreshAgentSim(a.id, { number: A_NUM, mcc: "310", mnc: "260" }, { provider: provider(), now: t0 })).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    // B claimed the memo synchronously at its start, before A resumed: A
+    // must not have replaced it, so B's report is deduped while B is in flight.
+    expect(bRun).toBeDefined();
+    expect(await refreshAgentSim(a.id, { number: B_NUM, mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + 1 })).toBe(false);
+    expect(await bRun).toBe(true);
+    expect((await row(a.id)).sim_number_hash).toBe(numberHash(B_NUM));
+    requests.length = 0;
+    expect(await refreshAgentSim(a.id, { number: B_NUM, mcc: "310", mnc: "260" }, { provider: provider(), now: t0 + 2 })).toBe(false);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("holds across processes: a second Core instance's newer report wins over this one's slower, older report", async () => {
+    overlapCodes();
+    const a = await mkAgent();
+    const t0 = noonUtc();
+    const slow = refreshAgentSim(a.id, { number: A_NUM, mcc: "310", mnc: "410" }, { provider: provider(), now: t0 });
+    await new Promise((r) => setTimeout(r, 50));
+    await pool.query("DELETE FROM paid_lookup_usage WHERE scope = 'sim-agent'");
+    // A fresh module instance: its own memo, its own pool — another process.
+    vi.resetModules();
+    const other = await import("../server/sim-carrier");
+    const otherNl = await import("../server/number-lookup");
+    const otherProvider = new otherNl.TwilioLookupProvider({ accountSid: SID, authToken: "tok", baseUrl });
+    await other.refreshAgentSim(a.id, { number: B_NUM, mcc: "310", mnc: "260" }, { provider: otherProvider, now: t0 + 1 });
+    await (await import("../server/storage")).pool.end();
+    await slow;
+    expect(await row(a.id)).toMatchObject({ sim_carrier: "t-mobile", sim_number_hash: numberHash(B_NUM) });
   });
 
   it("an unchanged report on a heartbeat costs no database query and no lookup", async () => {

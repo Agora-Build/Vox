@@ -86,6 +86,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 60, description: "network tags part 2: eval_agents.net_signals (agent cloudMetadata/publicIpOnInterface)", file: "0059_agent_net_signals.sql" },
   { version: 61, description: "eval_agents.sim_number_hash (keyed hash of our SIM's number)", file: "0060_sim_number_hash.sql" },
   { version: 62, description: "paid_lookup_usage (durable paid-lookup caps); number_lookups keyed by number hash", file: "0061_paid_lookup_usage.sql" },
+  { version: 63, description: "eval_agents.sim_report_gen (latest SIM report wins)", file: "0062_sim_report_gen.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
