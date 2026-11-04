@@ -1,11 +1,30 @@
-# Network tags: compare results by line provider, ISP and link
+# Network tags: design and implementation
 
-**Status:** design, approved in discussion · 2026-10-22
+**Status:** implemented on PR #258, pending merge. Approved 2026-10-22;
+consolidated with the implementation plans and review fixes on 2026-11-04.
+
+This is the single source of truth for network tags, access classification,
+SIM matching, implementation boundaries, and the DialF SIM-operator contract.
+The two original implementation plans and separate DialF request are folded
+into this document; superseded proposals are not rollout instructions.
+
+## Contents
+
+- [Tag format](#tag-format-sharedtagsts) and [data model](#data-model)
+- [Detection](#detection) and [number lookup](#number-lookup-line)
+- [Freezing at claim](#freezing-at-claim) and [board rules](#which-value-a-board-uses)
+- [API contracts and permissions](#api-contracts-and-permissions)
+- [Analysis](#analysis), [rollout](#rollout), and [testing](#testing)
+- [Last mile vs datacenter](#last-mile-vs-datacenter-access)
+- [System-only SIM matching](#sim-is-system-only--detected-on-both-sides-must-match)
+- [DialF SIM-operator contract](#dialf-sim-operator-contract)
+- [Agent badges](#agent-badge-follows-access) and [region grouping](#group-by-region)
+- [Implementation map](#implementation-map) and [migration history](#migration-history)
 
 ## What and why
 
-A result today says **which provider**, **which region** and **web or phone**.
-It doesn't say **which network path** the conversation took — and that can
+A result records **which provider**, **which region** and **web or phone**.
+Network tags add **which network path** the conversation took — and that can
 matter as much as the provider. The same voice agent behind a Twilio number and
 behind a Bandwidth number can answer at different latency; the same eval run
 from a Starlink-on-WiFi host and an AT&T-fibre host can measure differently.
@@ -18,12 +37,13 @@ measured over Ethernet", "Starlink vs everything else".
 
 | Question | Decision |
 |---|---|
-| Phone line provider — lookup or manual? | First answer was manual-only; revised: **automatic lookup is in this design**, with manual tags as the fallback and the override. |
+| Phone line provider — lookup or manual? | **Automatic lookup**, with manual tags as the fallback and the override. |
 | Which lookup service? | **Twilio Lookup v2, Line Type Intelligence** (~$0.008/lookup, self-service, worldwide; returns `carrier_name` and line type). Behind a small seam so a second service (e.g. Telnyx) can be added later. |
-| How free are tags? | **Known keys + custom keys.** Known: `line`, `isp`, `link`, `sim` — suggestions and normalisation. Custom keys allowed (`codec:opus`, `vpn:on`), filterable, no suggestions. |
+| How free are tags? | **Known keys + custom keys.** Known: `line`, `isp`, `link`, `access`, `sim`; `access` and `sim` are system-only. Custom keys allowed (`codec:opus`, `vpn:on`), filterable, no suggestions. |
 | Detected vs hand-set — which counts? | **Both kept.** The agent's operator may correct a detected tag. My Evals and Community use the hand-set value; **Mainline uses the detected value** for `isp`/`link` (a public agent's operator could otherwise mislabel results others rely on). |
 | Where does analysis show in v1? | **Filter + Group by on the existing views** (Leaderboard, Community, My Evals) and the same parameters on the public API. A comparison page is v2. |
-| Where are tags stored? | **The simpler shape:** a hand-set `tags` field on the eval flow and on the eval agent, one reported link type on the agent, and **detected values computed at claim, not stored ahead**. |
+| Where are tags stored? | Hand-set `tags` on the flow and agent, cached line lookup on the flow, and reported link/system classifications on the agent. Claim assembles and freezes the source-labelled job tags; ISP detection happens at claim. |
+| Public visibility of user-run agents? | Keep coarse ISP and connection-type tags visible in Community and the public API, including results from private-token agents running public flows. Do not expose raw IPs, user account identity, or addresses through tags. |
 
 ## Two ends of every result
 
@@ -45,7 +65,11 @@ provider describes the target, so it can't live on the agent.
   - `line` — suggestions: twilio, bandwidth, telnyx, vonage, plivo, sinch, signalwire.
   - `isp` — suggestions from the ASN map below.
   - `link` — **closed set**: `wifi | ethernet | cellular | satellite`; anything else is refused.
-  - `sim` — suggestions: att, verizon, t-mobile, … (free value).
+  - `access` — system-only, closed set: `lastmile | datacenter | unknown`.
+  - `sim` — system-only carrier slug, such as `att`, `verizon`, or `t-mobile`.
+- Flow editors may set `line` and custom keys; agent operators may set `isp`,
+  `link`, and custom keys. `access`, `sim`, and `region` cannot be hand-set.
+  `untagged` is a reserved value for missing tag groups, not a writable value.
 - One module, imported by the client form, Core's save routes and the agent, so
   they can't disagree (the `shared/placeholders.ts` pattern). Client-safe: no
   dependencies.
@@ -59,14 +83,22 @@ provider describes the target, so it can't live on the agent.
 | `eval_flows` | `line_lookup jsonb` | the number lookup's answer for the flow's dialled number (value, carrier name, line type, time); null = not looked up |
 | `number_lookups` | table | per-number cache: keyed hash of the E.164, provider, carrier name, line type, mapped value, looked-up time |
 | `eval_agents` | `link_type varchar(16)` | reported by the agent on register/heartbeat; null = not reported (an older agent) |
+| `eval_agents` | `access_class`, `access_reason`, `access_checked_at`, `access_ip` | system classification, versioned reason, check time, and internal checked-IP binding |
+| `eval_agents` | `net_signals jsonb` | optional agent-reported cloud-metadata and public-interface-IP signals |
+| `eval_agents` | `sim_carrier`, `sim_reason`, `sim_number_redacted`, `sim_number_hash`, `sim_report_gen` | system SIM match, last four digits, internal full-number HMAC, and race-protection generation |
 | `eval_jobs` | `tags jsonb` | frozen at claim (below); null for jobs claimed before the release |
+| `number_lookups` | `invalid_number`, `mcc`, `mnc` | definitive negative-cache flag and optional network codes, alongside the carrier answer |
+| `paid_lookup_usage` | scope, subject, UTC day, count | durable paid-lookup allowances reserved atomically in PostgreSQL |
 
-One hand-written migration, registered in `server/migrate.ts`. No backfill:
-older results are simply untagged.
+Hand-written migrations 0057-0063 are registered as schema versions 58-64 in
+`server/migrate.ts`; see [migration history](#migration-history). No result-tag
+backfill: older results are simply untagged. Existing access classifications are
+not assigned a guessed IP binding; they are unknown at claim until rechecked.
 
 Visibility: an agent's tags and link type are shown to whoever can see the
-agent (operator name and link type only — never the IP; `observed_ip` stays
-Core-internal).
+agent. Job tags also accompany publicly visible results, including coarse
+`isp`/`link` from user-run agents. `observed_ip`, `access_ip`, and full SIM
+numbers stay Core-internal and are never added to agent or result responses.
 
 ## Detection
 
@@ -92,9 +124,10 @@ Core-internal).
   interface name from the OS's own output is checked against
   `^[A-Za-z0-9._@:-]{1,32}$` (not `.`/`..`) before it is used anywhere — anything
   else reads as "couldn't tell". `vox-upgrade.sh` validates the same way.
-- **`sim`** — manual for now (superseded: see "`sim` is system-only" below). DialF's `sims.list` returns slot / number / default
-  but no operator name; a DialF issue asks for it (Android's per-SIM operator
-  name). Once present, the agent reports it like `link`.
+- **`sim`** — system-only. Core matches the SIM's reported MCC/MNC against a
+  lookup of its own number. Missing operator fields mean no SIM tag, not a
+  manual fallback; see [SIM matching](#sim-is-system-only--detected-on-both-sides-must-match)
+  and the [DialF contract](#dialf-sim-operator-contract).
 - **`line`** — by number lookup (next section); hand-set on the flow as the fallback and the override.
 
 ## Number lookup (`line`)
@@ -118,6 +151,8 @@ other end: the `sim` tag.)
   keyed hash. It is distinct from a valid number with no carrier. Cache hits
   consume no paid-lookup allowance; expiry permits a fresh check. Timeouts,
   rate limits, authentication errors and other provider failures are not cached.
+  The UI says "The lookup provider reports this phone number as invalid."
+  This is a provider validity result, not proof that every call would fail.
 - **Which number:** a literal number in `call.dial`, or one filled from the
   flow's own `${config.*}`. **Never a number held in a secret** — sending a
   secret's value to a third party breaks the rule that secrets don't leave Vox;
@@ -131,21 +166,30 @@ other end: the `sim` tag.)
   `bandwidth`, "Telnyx" → `telnyx`, "Vonage"/"Nexmo" → `vonage`, …); unmapped
   names fall back to the name, normalised. The line type (`nonFixedVoip`,
   `mobile`, …) is kept on the lookup row for display, not as a tag in v1.
-- **Stored on the flow** as `line` with source `lookup` (a separate
-  `eval_flows.line_lookup jsonb` — value, carrier name, line type, time — so the
-  owner's hand-set `tags` stay theirs). The owner may still set `line` by hand.
+- **Stored on the flow** in separate `eval_flows.line_lookup jsonb` (value,
+  carrier name, line type, time), so the owner's hand-set `tags` stay theirs.
+  Claim freezes a successful value as `line` with source `detected`; the owner
+  may still set a separate `line` tag by hand.
 - **Configuration:** an admin enters the Twilio Account SID + Auth Token on the
-  console (Providers or Regions page, like the MaxMind key), stored encrypted in
+  admin Regions page, like the MaxMind key, stored encrypted in
   `systemConfig`. No credentials → lookup is off, `line` is manual only, the form
   says why. A failed lookup (network, 4xx) never blocks saving the flow; it's
   retried on the next save or by a "Look up again" button.
 - **Disclosure:** the flow form notes that the dialled number is checked with
   Twilio Lookup to identify its line provider.
+- **Concurrency and spending:** concurrent misses for the same number are
+  single-flighted. A flow lookup writes only if a locked re-read confirms the
+  flow still dials the same full number; equality uses its keyed HMAC, never
+  only its last four digits. Errors or save-time races cannot overwrite a newer
+  number's answer. Durable caps, reserved flow/SIM shares, and billable-response
+  accounting are detailed under [SIM matching](#sim-is-system-only--detected-on-both-sides-must-match).
+  The hash uses `CREDENTIAL_ENCRYPTION_KEY` or `SESSION_SECRET`; without a server
+  key, nothing is cached. Plain numbers are never cache keys.
 
 ## Freezing at claim
 
-Both claim SQL paths already freeze per-job facts (`token_visibility`,
-`location_trust`). At the same point Core writes `eval_jobs.tags`:
+The shared `claimEvalJob` path freezes per-job facts (`token_dispatch_tier`,
+`location_trust`). In the same claim UPDATE, Core writes `eval_jobs.tags`:
 
 ```json
 [
@@ -162,6 +206,9 @@ tags), `detected` (`isp` from the IP, `link` from the heartbeat or inferred,
 appear twice — detected and hand-set — so a board's rule can change later
 without rewriting history. The snapshot keeps its own copy of the flow's tags
 too (as for every flow field), so editing a flow's tags never changes past jobs.
+`JobTag` also accepts an optional versioned `reason` for system classifications.
+Analyze jobs freeze `[]`; `line` lookup and `sim` tags apply only to phone jobs,
+using the job's stamped transport rather than a later edit of the live flow.
 
 ## Which value a board uses
 
@@ -172,9 +219,34 @@ For each key, the effective value of a job is:
 | **Mainline** | `line`/`isp`/`link`/`sim`: the **detected** value (lookup / IP / heartbeat); a hand-set-only value counts as untagged — except `line` on a flow without lookup (no credentials, toll-free, secret number), where the flow owner's value counts, as the flow is the owner's claim anyway. Other keys: the flow's / agent's value. |
 | **Community, My Evals** | the **hand-set** value when there is one, else the detected one. |
 
+`access` and `sim` always use detected values on every board. For a duplicate
+custom key, the agent's hand-set value takes precedence over the flow's value.
+
 One function (`effectiveTags(jobTags, board)` in `shared/tags.ts`) — the SQL
 filter and the JS grouping both go through it (the SQL side as a generated
 predicate on the jsonb array).
+
+## API contracts and permissions
+
+- Console and v1 flow create/update routes validate with
+  `parseTags(raw, { end: "flow" })`; flow tags follow the existing
+  owner/organization-manager edit permission. Invalid tags return 400.
+- `PATCH /api/eval-agents/:id/tags` requires a session and the token creator's
+  ownership. Admin status alone is not edit permission. Agent responses expose
+  `canEditTags` so the UI offers editing only to that operator.
+- Register/heartbeat accept optional `linkType`. Absent or unrecognized values
+  leave it unchanged, a recognized value replaces it, and explicit `null` clears
+  it. Optional `netSignals` and `sim` reports are validated independently; older
+  agents need not send any of these fields.
+- `POST /api/eval-flows/:id/line-lookup` requires flow-edit permission and performs
+  the explicit "Look up again" action. Automatic save-time lookup remains
+  asynchronous in both console and v1 routes.
+- `GET/PUT/DELETE /api/admin/number-lookup/twilio` require both authentication
+  and admin authorization. GET returns configuration status and a masked SID,
+  never the Auth Token; credential updates are excluded from request logging.
+- `shared/tags.ts` is the dependency-free client/server/daemon model. Keep
+  `normalizeTag`, `parseTags`, `effectiveTags`, `parseTagFilter`, and
+  `parseGroupBy` consistent with `server/tag-sql.ts` and `docs/openapi.yaml`.
 
 ## Analysis
 
@@ -207,14 +279,26 @@ the cache key. The keyless rate limit and the tier/transport rules are unchanged
 
 ## Rollout
 
-1. Core release (migration, claim freezing, parameters, UI, number lookup).
+1. Deploy Core with all migrations through schema v64 (claim freezing,
+   parameters, UI, number lookup, access binding, and SIM matching).
    Detected `isp` works at once for every agent — it needs only Core. Lookup
    turns on when an admin enters Twilio credentials; existing phone flows are
-   looked up on their next save or "Look up again".
-2. Agent release: `link` reporting; `vox-upgrade.sh` passes `VOX_LINK_TYPE`.
-3. DialF issue: SIM operator name → `sim` detected.
+   looked up on their next save or "Look up again". Do not configure production
+   Twilio credentials before the release with durable spending caps is deployed.
+2. Keep `GEOIP_DB_DIR` on persistent storage where possible. Access data refreshes
+   weekly; startup failures retry after 15, 30, then 60 minutes. No historical
+   hosting-ASN fallback is used while the data is missing.
+3. Agent upgrade is optional for Core compatibility. `vox-upgrade.sh` supplies
+   host `VOX_LINK_TYPE` and `VOX_PUBLIC_IP_ON_IFACE` values; upgraded agents send
+   richer link/network/SIM reports. Old agents continue running, with missing
+   fields left unknown or absent.
+4. DialF must supply the operator fields in the [contract](#dialf-sim-operator-contract)
+   before its SIM can earn a `sim` tag. Call control, recording, and other phone
+   primitives remain unchanged.
 
-No env var, no plugin; lookup is configured in the console. Results from before the release stay untagged.
+No mandatory new environment variable or plugin; lookup credentials are configured
+in the console. Deployment settings and source licences are in `docs/DEPLOYMENT.md`.
+Results from before the release stay untagged.
 
 ## Testing
 
@@ -222,7 +306,7 @@ No env var, no plugin; lookup is configured in the console. Results from before 
   `link` set, the 16-tag cap, one value per key, ASN map, `effectiveTags` per board.
 - Claim freezing (integration): flow tags + agent tags + detected isp/link land
   on the job; editing the flow or agent afterwards doesn't change it; both claim
-  paths.
+  entry points share the same atomic claim path.
 - Board rule (integration): a hand-set `isp` on a public agent counts on My Evals
   and Community but not Mainline; the detected one counts on Mainline.
 - Filter and groupBy on each endpoint, including `untagged` and v1 parity with
@@ -235,8 +319,29 @@ No env var, no plugin; lookup is configured in the console. Results from before 
 - Daemon: link detection on a fake `/sys` tree; `VOX_LINK_TYPE` wins.
 - E2E: tag a flow, filter and group the leaderboard.
 - Mutation-check each rule.
+- Privacy: exclude both `observedIp`/`observed_ip` and `accessIp`/`access_ip` from
+  responses, even to admins. Never log or persist a full SIM number in the cache.
+- Lookup/SIM regressions: invalid-number reuse across callers, 30-day expiry,
+  positive/negative transitions, transient failures and timeouts, cap/refund
+  accounting, full-number equality, generation fencing across processes, and
+  SIM memo expiry measured from the original provider lookup time.
+- Location regressions: preserve same-IP classifications while data is unloaded;
+  emit unknown after a move; reject late old-IP and missing-IP writes on both
+  private and public paths, including checks without access data or GeoIP.
+- Data ingestion: fixture parsers and source limits; efficient sorted/merged range
+  lookup with a benchmark using at least 100,000 ranges. Agent tests use fake OS
+  trees/command runners; no-shell interface validation must reject unsafe names.
+- Run HTTP integration tests against a server built from the tested checkout and
+  an isolated database, not a stale dev process. Migrations use the runner, never
+  `db:push` on a runner-managed database. Stubs belong only in tests.
 
-## Last mile vs datacenter (`access`) — added 2026-10-22
+Validation recorded for the combined #258/#268 implementation on 2026-11-04:
+275 unique focused tests passed, including HTTP/privacy/heartbeat tests,
+PostgreSQL-backed regressions, and migration-recovery tests. `npm run check` and
+`npm run build` passed, with existing bundle-size/CJS warnings. This is not a claim
+that the full repository or E2E suites were rerun for the follow-up.
+
+## Last mile vs datacenter (`access`)
 
 **Why.** A result measured from a home or office connection is what real end users
 experience: it has a **last mile** (Wi-Fi, cable/DSL/fibre access, a home router).
@@ -283,7 +388,7 @@ But there is **one classifier**: the existing location check (`server/location.t
 run on register, IP change and every `LOCATION_RECHECK_HOURS`) computes both region
 + trust **and** access in the same pass, with all signals in one place next to the
 GeoIP and Tor checks. Location trust's `datacenter` value is then derived from
-`access = datacenter` instead of its own 12-ASN list, so the two can never disagree.
+`access = datacenter` instead of its old hosting-ASN list, so the two can never disagree.
 This changes no gating: `trusted` and `datacenter` are treated identically everywhere
 (`REGION_ELIGIBLE_TRUST`, the Community gate in `storage.ts`); only the badge tells
 them apart. `access` is surfaced for analysis as a system-only detected tag.
@@ -317,12 +422,16 @@ the measured call still runs from the datacenter. Region trust has the same limi
 today; nothing Core sees from that IP can fully close it. A later step could
 cross-check the media path's source address where the target platform reports it.
 
-**Known limit — the moment after an IP change.** A heartbeat from a new IP starts
-the re-check fire-and-forget (a slow catalog write must not delay the beat), so a
-job claimed in that brief window — typically milliseconds, at most one rDNS
-timeout (1.5 s) plus a couple of row writes — freezes the access (and trust) the
-agent had for its *previous* IP. The next claim sees the new answer. Closing it
-would mean blocking the claim on rDNS, which the claim path deliberately never does.
+**IP changes and late checks.** Register/heartbeat await recording the observed
+IP before starting a location check. Claims never wait for rDNS: they reuse access
+only when its normalized `access_ip` matches the current `observed_ip`, otherwise
+freezing `access:unknown` with reason `v1: ip-changed` (or `v1: not-classified`
+without a prior binding). Location writes are guarded by the checked IP separately
+from optional access fields, including unloaded-data outcomes. A no-IP check may
+write only while `observed_ip IS NULL`; rejected checks return the current stored
+location and do not update marketplace listings. A rejected write may consume a
+site sequence number, leaving a harmless gap. This binds access tags to the IP;
+it does not add synchronous location detection or change location-trust gating.
 
 **Only Core can earn `lastmile`.** Agent signals can only push a result to
 `datacenter` or `unknown`, never to `lastmile` — so a modified agent can't dress a
@@ -347,9 +456,11 @@ direction is safe. Disagreement means `unknown`, never a guess.
   measures `publicIpOnInterface` on the host and passes `VOX_PUBLIC_IP_ON_IFACE`;
   the metadata probe works from inside a container (short timeout, once per beat
   at most every 10 minutes).
-- Data: the datacenter range list, PeeringDB network types and APNIC end-user
-  estimates are downloaded and refreshed in-app weekly next to the GeoIP databases (`server/geoip-refresh.ts`
-  pattern), stored under `GEOIP_DB_DIR`; missing data ⇒ fewer signals ⇒ more
+- Data: datacenter/VPN ranges and APNIC end-user estimates are downloaded and
+  refreshed in-app weekly next to the GeoIP databases (`server/access-data-refresh.ts`,
+  following the `server/geoip-refresh.ts` pattern), stored under `GEOIP_DB_DIR`.
+  PeeringDB is read only from an operator-supplied export; Vox never downloads
+  it automatically. Missing data ⇒ fewer signals ⇒ more
   `unknown`, never a wrong `lastmile`. Licences and terms of each source (X4BNet,
   ipcat, PeeringDB bulk export and rate limits, APNIC) are checked before use and
   credited on the page like DB-IP. The hardcoded 19-ASN list
@@ -390,7 +501,7 @@ fixture files; rDNS patterns on real-world example names; reserved-key refusal o
 both ends; claim freezing; filter/groupBy on `access`; daemon metadata probe and
 `VOX_PUBLIC_IP_ON_IFACE`; e2e toggle. Mutation-check the rule.
 
-## `sim` is system-only — detected on both sides, must match (added 2026-10-22)
+## `sim` is system-only — detected on both sides, must match
 
 `sim` (our own phone's SIM carrier — the calling side of phone tests) is set only by
 the system, like `access`: refused on flows and agents, absent from the tag editor.
@@ -409,6 +520,8 @@ Agents keep `isp`/`link` (correctable) + custom keys.
 - Stored on the agent (`eval_agents.sim_carrier`, system-only, recomputed when the
   reported number/operator changes or the 30-day lookup cache expires) and frozen
   at claim as a `detected` tag — phone jobs only.
+  Positive and invalid-number memo expiry is measured from the provider's
+  original `lookedUpAt`, never extended by another 30 days on a cache hit.
 - **Limit:** both inputs reach Core through the agent — **the phone side of `sim` is
   agent-reported**, filed as `detected` once Core's own lookup agrees. A modified
   agent could report a different real number plus a matching operator; Core's lookup
@@ -443,17 +556,57 @@ Agents keep `isp`/`link` (correctable) + custom keys.
   (`sim_number_hash`) so "same number" never relies on the last 4; the full number
   is stored nowhere — `number_lookups` is keyed by the same keyed hash.
 
-## Agent badge follows `access` (added 2026-10-22)
+## DialF SIM-operator contract
+
+This is the additive `sims.list` handoff originally requested on 2026-10-22.
+The Vox client already accepts these fields; their availability depends on the
+installed DialF version. Related phone requirements remain in
+`2026-09-21-dialf-requirements-for-vox-phone-eval.md`.
+
+Each SIM entry should supply an operator name plus MCC and MNC strings:
+
+```json
+{
+  "slot": 0,
+  "number": "+15551234567",
+  "is_default": true,
+  "operator_name": "T-Mobile",
+  "mcc": "310",
+  "mnc": "260"
+}
+```
+
+- Android sources: `TelephonyManager.getSimOperatorName()` or
+  `SubscriptionInfo.getCarrierName()` for the name;
+  `SubscriptionInfo.getMccString()` / `getMncString()` for separate codes.
+  `TelephonyManager.getSimOperator()` is also usable as a concatenated
+  five- or six-digit MCC+MNC string.
+- Vox accepts `operator_name` or `operator` for the name. A numeric value in
+  either is parsed as MCC+MNC when a separate pair is absent. MCC has three
+  digits; MNC has two or three. Keep codes as strings to preserve leading zeros.
+- The daemon selects the default SIM with a number, otherwise the first with
+  a number, matching its existing `${phoneNumber}` selection. It reports
+  `sim: { number, mcc, mnc, operatorName? }` only with a valid E.164 number and
+  valid code pair. An older DialF response without codes produces no report.
+- Core compares the codes, not carrier names; an MVNO name can differ from
+  its host network. The operator name is diagnostic, not independent proof of
+  the carrier or the physical SIM in the phone.
+- No IMSI or ICCID is requested. Operator metadata describes the network;
+  the phone number keeps the redaction/HMAC handling described above.
+- `job.run`, call control, recording legs, and the other existing phone
+  primitives are unchanged. Missing fields do not block normal phone jobs.
+
+## Agent badge follows `access`
 
 The Eval Agents page's location badge (zero-trust region: Verified / Verified ·
 datacenter / Unverified) keeps meaning **location**, but its second word comes from
-`access` instead of region trust's 12-ASN `datacenter` class:
+`access` instead of region trust's old hosting-ASN classification:
 **Verified · last mile**, **Verified · datacenter**, **Verified** (access unknown),
-**Unverified**. One classification for both. Stored `location_trust` values are
+**Unverified**. One classification for both. Stored `location_trust`
 values keep their names, but `datacenter` is now derived from `access` (see "Location
 vs access") — no gating changes, since `trusted` and `datacenter` are handled alike.
 
-## Group by region (added 2026-10-22)
+## Group by region
 
 Region stays a separate property (not a tag), but the views can split by it:
 `groupBy=region` on the console metrics endpoints and `/api/v1/metrics/*`, and
@@ -463,8 +616,64 @@ uploaded analysis its `recording_region`; results with neither group as
 `unattributed`. `region` is therefore a reserved groupBy key (not a tag key —
 tags can't use it). The region filter is unchanged.
 
+## Implementation map
+
+The original task plans are retained here as module/verification maps, not
+unchecked instructions to rebuild the feature. Runtime contracts above take
+precedence over earlier proposals. Stack: TypeScript, Express, Drizzle/PostgreSQL,
+React/TanStack Query, Vitest, and Playwright.
+
+### Phase 1: Tags, lookup, and analysis
+
+| Original task | Implementation boundary | Primary verification |
+|---|---|---|
+| 1. Shared tag model | `shared/tags.ts`: syntax, end-specific permissions, suggestions, mapping, filtering, effective values | `tests/tags.test.ts`; JS/SQL rule consistency |
+| 2. Schema and snapshots | `shared/schema.ts`, `server/migrate.ts`, `server/storage.ts`: flow tags/lookup in `JobSnapshot`, agent tags/link, job tags, lookup cache | `tests/network-tags-schema.test.ts` |
+| 3. API | `server/routes.ts`, `server/routes-api-v1.ts`: normalized flow tags, operator-owned agent edits, optional heartbeat fields, minimal response shapes | `tests/network-tags-api.test.ts`; admin-route/privacy checks |
+| 4. Atomic claim freezing | `server/job-tags.ts`, `claimEvalJob` in `server/storage.ts`: snapshot + agent + detected tags in the claim UPDATE | `tests/network-tags-claim.test.ts`; edits after claim never rewrite history |
+| 5. Number lookup | `server/number-lookup.ts`, `server/paid-lookup-budget.ts`, `server/sensitive-paths.ts`: provider seam, cache, safe async writes, credentials, spending | `tests/number-lookup.test.ts`, `tests/number-lookup-api.test.ts` |
+| 6. Metrics | `server/metrics-params.ts`, `server/tag-sql.ts`, storage and console/v1 routes: tag AND filters, grouping, metadata, cache keys | `tests/network-tags-metrics.test.ts`, `tests/network-tags-sql.test.ts`, `tests/network-tags-detail.test.ts` |
+| 7. Agent link detection | `vox_eval_agentd/link-type.ts`, `vox-agentd.ts`, Dockerfile, `scripts/vox-upgrade.sh`: OS detection and host override | `tests/link-type.test.ts`, daemon/upgrade tests; real Docker build when packaging changes |
+| 8. Console | `tag-input.tsx`, `line-lookup.tsx`, `metrics-tag-controls.tsx`, `twilio-lookup-card.tsx`; flow, agent, job, realtime, and leaderboard pages | `tests/e2e/network-tags.spec.ts`; screenshot review of changed views |
+| 9. Docs | `CLAUDE.md`, `README.md`, `docs/DEPLOYMENT.md`, `docs/openapi.yaml`, `client/src/pages/api-docs.tsx` | Keep runtime, API, and deployment contracts synchronized |
+
+### Phase 2: Access, SIM, badges, and region grouping
+
+| Original task | Implementation boundary | Primary verification |
+|---|---|---|
+| 1. Access data | `server/access-data.ts`, `server/access-data-refresh.ts`, `server/data/mobile-carrier-asns.json`: fixture parsers, sorted range lookup, source limits, refresh | `tests/access-data.test.ts`, `tests/fixtures/access/` |
+| 2. Classifier and location | `server/access-class.ts`, `server/location.ts`, schema/storage: one location/access pipeline, versioned reasons, checked-IP fencing | `tests/access-class.test.ts`, `tests/location-access.test.ts`, `tests/location-catalog.test.ts`, `tests/location.test.ts` |
+| 3. Agent network signals | `vox_eval_agentd/net-signals.ts`, daemon, upgrade script, `server/net-signals-update.ts`: signed metadata probes, host public-IPv4 signal, optional reports | `tests/net-signals.test.ts`, `tests/net-signals-core.test.ts`, daemon/upgrade tests |
+| 4. System-only SIM and tags | `vox_eval_agentd/dialf-client.ts`, `server/sim-carrier.ts`, lookup, shared tags, claim freezing: MCC/MNC match, durable generations, redaction/HMAC | `tests/dialf-client.test.ts`, `tests/sim-carrier.test.ts`, reserved-key/claim tests |
+| 5. Analysis and UI | Metrics routes/storage, `client/src/lib/access-view.ts`, `access-text.ts`, Agents badge, access toggle/columns, `groupBy=region` | `tests/network-tags-region-access.test.ts`, `tests/access-toggle.test.ts`, E2E |
+| 6. Documentation and DialF handoff | This design, deployment/API docs, and the SIM-operator contract above | Preserve the additive phone contract and source licensing requirements |
+
+Metadata probes have a 500 ms timeout, reject redirects, validate provider-specific
+responses, and cache for 10 minutes. Public IPv4 checks ignore IPv6-only global
+addresses. Unknown agent fields are omitted, not manufactured. Module changes
+must preserve the security and fail-closed rules above; no production lookup or
+live dataset is needed to exercise fixture-backed tests.
+
+## Migration history
+
+| File | Schema version | Purpose |
+|---|---|---|
+| `0057_network_tags.sql` | 58 | Flow/agent tags, line lookup, frozen job tags, initial number cache |
+| `0058_access_sim.sql` | 59 | System access/SIM fields and lookup MCC/MNC |
+| `0059_agent_net_signals.sql` | 60 | Optional agent network signals |
+| `0060_sim_number_hash.sql` | 61 | Full-number HMAC for SIM equality without plaintext storage |
+| `0061_paid_lookup_usage.sql` | 62 | Durable paid-lookup caps and HMAC-keyed number cache; remove plaintext cache keys |
+| `0062_sim_report_gen.sql` | 63 | Latest SIM report wins across Core processes |
+| `0063_lookup_validity_access_ip.sql` | 64 | Definitive invalid-number cache flag and internal checked-IP binding |
+
+Append migrations to `server/migrate.ts`; never rewrite an applied step. The
+negative-cache flag defaults to false for old rows. Access IP bindings are not
+backfilled from whichever IP an agent happens to have at deployment time.
+
 ## Out of scope (v1)
 
 - A comparison page (side-by-side distributions per tag value) — v2 on this data.
 - Native-app tags — the same keys apply when native testing lands.
 - Tags on eval sets (a scenario isn't a network path).
+- Leaderboard completeness beyond its existing 1,000-row limit (#266).
+- Further tag-filter cost and caching improvements (#267).
