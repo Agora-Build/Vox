@@ -123,7 +123,7 @@ async function computeSimMatchDetailed(
   const answer = await lookupNumber(report.number, opts);
   if ("skipped" in answer) {
     if (answer.skipped === "not-configured") return none("lookup-off");
-    if (answer.skipped === "invalid-number") return none("invalid-number");
+    if (answer.skipped === "invalid-number") return none("invalid-number", answer.lookedUpAt);
     if (answer.skipped === "rate-limited") return none("rate-limited");
     return none("lookup-failed");
   }

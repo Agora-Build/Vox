@@ -216,7 +216,7 @@ d("lookupFlowLine (stub Twilio, isolated DB)", () => {
     expect(requests).toHaveLength(1);
     expect(await lookupNumber("+15550201112", { provider: null })).toEqual({ skipped: "not-configured" });
     reply = () => ({ status: 404, body: {} });
-    expect(await lookupNumber("+15550201113", { provider: provider() })).toEqual({ skipped: "invalid-number" });
+    expect(await lookupNumber("+15550201113", { provider: provider() })).toMatchObject({ skipped: "invalid-number", lookedUpAt: expect.any(Date) });
     reply = () => ({ status: 500, body: {} });
     expect(await lookupNumber("+15550201114", { provider: provider() })).toEqual({ skipped: "failed" });
   });
@@ -253,6 +253,71 @@ d("lookupFlowLine (stub Twilio, isolated DB)", () => {
     reply = (n) => ({ status: 200, body: { phone_number: n, valid: false, line_type_intelligence: null } });
     expect(await lookupFlowLine(phoneFlow('- type: call.dial\n  number: "+15550106666"\n'), USER, { provider: provider() }))
       .toEqual({ skipped: "invalid-number" });
+  });
+
+  it.each([404, 200])("caches a provider-reported invalid number (HTTP %i) for 30 days, shared across callers", async (status) => {
+    const n = "+15550105556";
+    reply = () => ({ status, body: { valid: false } });
+    const flow = phoneFlow(`- type: call.dial\n  number: "${n}"\n`);
+    expect(await lookupFlowLine(flow, USER, { provider: provider() })).toEqual({ skipped: "invalid-number" });
+    const cached = (await pool.query("SELECT * FROM number_lookups WHERE number_hash = $1", [numberHash(n)])).rows[0];
+    expect(cached).toMatchObject({ provider: "twilio", invalid_number: true, carrier_name: null, line_type: null, value: null, mcc: null, mnc: null });
+    expect(JSON.stringify(cached)).not.toContain(n.slice(1));
+
+    // A negative hit is free even when this caller cannot spend another lookup.
+    const gate = { allow: vi.fn(async () => false), refund: vi.fn(async () => {}) };
+    expect(await lookupNumber(n, { provider: provider(), gate })).toEqual({ skipped: "invalid-number", lookedUpAt: cached.looked_up_at });
+    expect(gate.allow).not.toHaveBeenCalled();
+    expect(await lookupFlowLine(flow, USER + 1, { provider: provider() })).toEqual({ skipped: "invalid-number" });
+
+    await pool.query("UPDATE number_lookups SET looked_up_at = $1 WHERE number_hash = $2",
+      [new Date(Date.now() - CACHE_MAX_AGE_MS + 60_000), numberHash(n)]);
+    expect(await lookupFlowLine(flow, USER, { provider: provider() })).toEqual({ skipped: "invalid-number" });
+    expect(requests).toHaveLength(1);
+
+    // The number may become valid later; an expired negative is looked up again.
+    await pool.query("UPDATE number_lookups SET looked_up_at = $1 WHERE number_hash = $2",
+      [new Date(Date.now() - CACHE_MAX_AGE_MS - 60_000), numberHash(n)]);
+    reply = (number) => twilioOk(number, "Telnyx", "nonFixedVoip");
+    expect(await lookupFlowLine(flow, USER, { provider: provider() })).toMatchObject({ value: "telnyx" });
+    expect(requests).toHaveLength(2);
+    const refreshed = (await pool.query("SELECT invalid_number, value FROM number_lookups WHERE number_hash = $1", [numberHash(n)])).rows[0];
+    expect(refreshed).toEqual({ invalid_number: false, value: "telnyx" });
+  });
+
+  it("an invalid answer replaces expired positive carrier data without keeping stale metadata", async () => {
+    const n = "+15550105557";
+    reply = (number) => twilioOk(number, "Telnyx", "nonFixedVoip");
+    expect(await lookupNumber(n, { provider: provider() })).toMatchObject({ value: "telnyx" });
+    await pool.query("UPDATE number_lookups SET looked_up_at = $1 WHERE number_hash = $2",
+      [new Date(Date.now() - CACHE_MAX_AGE_MS - 60_000), numberHash(n)]);
+    reply = () => ({ status: 404, body: {} });
+    expect(await lookupNumber(n, { provider: provider() })).toMatchObject({ skipped: "invalid-number" });
+    expect(await lookupNumber(n, { provider: provider() })).toMatchObject({ skipped: "invalid-number" });
+    expect(requests).toHaveLength(2);
+    const row = (await pool.query("SELECT * FROM number_lookups WHERE number_hash = $1", [numberHash(n)])).rows[0];
+    expect(row).toMatchObject({ invalid_number: true, carrier_name: null, line_type: null, value: null, mcc: null, mnc: null });
+  });
+
+  it.each([429, 500])("does not cache a temporary provider error (HTTP %i), so a retry can succeed", async (status) => {
+    const n = "+15550105558";
+    reply = () => ({ status, body: {} });
+    expect(await lookupNumber(n, { provider: provider() })).toEqual({ skipped: "failed" });
+    expect((await pool.query("SELECT 1 FROM number_lookups WHERE number_hash = $1", [numberHash(n)])).rowCount).toBe(0);
+    reply = (number) => twilioOk(number, "Telnyx", "nonFixedVoip");
+    expect(await lookupNumber(n, { provider: provider() })).toMatchObject({ value: "telnyx" });
+    expect(requests).toHaveLength(2);
+  });
+
+  it("does not cache a lookup timeout", async () => {
+    const n = "+15550105559";
+    reply = (number) => twilioOk(number, "Telnyx", "nonFixedVoip");
+    delayMs = 100;
+    const slow = new TwilioLookupProvider({ accountSid: SID, authToken: TOKEN, baseUrl, timeoutMs: 20 });
+    expect(await lookupNumber(n, { provider: slow })).toEqual({ skipped: "failed" });
+    expect((await pool.query("SELECT 1 FROM number_lookups WHERE number_hash = $1", [numberHash(n)])).rowCount).toBe(0);
+    delayMs = 0;
+    expect(await lookupNumber(n, { provider: provider() })).toMatchObject({ value: "telnyx" });
   });
 
   it("an unreachable service → failed (never throws)", async () => {
@@ -512,8 +577,8 @@ d("flow-path paid-lookup caps and single-flight (stub Twilio)", () => {
     (await pool.query("SELECT count FROM paid_lookup_usage WHERE scope = 'flow-user' AND subject = $1 AND day = $2",
       [String(subject), new Date(t).toISOString().slice(0, 10)])).rows[0]?.count ?? 0;
 
-  it("a provider 200 followed by a failed cache write keeps the reservation (the call was billed)", async () => {
-    reply = (n) => twilioOk(n, "Telnyx", "nonFixedVoip");
+  it.each([200, 404])("a provider HTTP %i followed by a failed cache write keeps the reservation (the call was billed)", async (status) => {
+    reply = (n) => status === 404 ? { status, body: {} } : twilioOk(n, "Telnyx", "nonFixedVoip");
     const t0 = noonUtc();
     const who = ownerId + 40_000_000;
     await pool.query(`CREATE OR REPLACE FUNCTION nl_fail_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'forced cache failure'; END $$ LANGUAGE plpgsql`);
@@ -540,6 +605,9 @@ d("flow-path paid-lookup caps and single-flight (stub Twilio)", () => {
     const who = ownerId + 41_000_000;
     expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(701)) } }, who, { provider: provider(), now: t0 })).toEqual({ skipped: "invalid-number" });
     expect(await userCount(who, t0)).toBe(1);
+    expect(await lookupFlowLine({ config: { stepsPrefix: dial(num(701)) } }, who, { provider: provider(), now: t0 })).toEqual({ skipped: "invalid-number" });
+    expect(await userCount(who, t0)).toBe(1);
+    expect(requests).toHaveLength(1);
   });
 
   it("a 2xx with an unreadable body is billed: kept, reported failed", async () => {

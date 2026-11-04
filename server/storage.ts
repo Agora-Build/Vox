@@ -127,7 +127,7 @@ const METRICS_ALL_MAX_DAYS = METRICS_RETENTION_DAYS;
 
 export type MetricTier = "mainline" | "community" | "myEvals";
 /** System-only access columns, written only by the location check (server/location.ts). */
-export type EvalAgentAccessFields = { accessClass: string; accessReason: string; accessCheckedAt: Date };
+export type EvalAgentAccessFields = { accessClass: string; accessReason: string; accessCheckedAt: Date; accessIp: string | null };
 export type MetricsMode = "raw" | "bucketHour" | "bucketDay";
 export type RegionQueryScope = {
   siteId?: string;
@@ -931,12 +931,16 @@ export class DatabaseStorage {
   // `locationCheckedAt` and the access fields are optional: a check made while
   // the VPN/datacenter data is unloaded leaves them as they were, so the next
   // heartbeat re-checks instead of waiting out LOCATION_RECHECK_HOURS.
+  // A completed check may not overwrite a newer IP's result. Null observed IP
+  // supports a first check before any observation; normal routes record it first.
+  // The guard is independent of optional access fields, including unloaded data.
+  // A no-IP check may only apply while no IP has been observed.
   async updateEvalAgentLocation(agentId: number, fields: {
     region: string | null; siteId: string | null; locationTrust: string;
     locationCheckedAt?: Date; locationSource: unknown;
     pendingRegion: string | null; pendingRegionCount: number;
-  } & Partial<EvalAgentAccessFields>): Promise<void> {
-    await db.update(evalAgents).set({
+  } & Partial<EvalAgentAccessFields>, checkedIp: string | null): Promise<boolean> {
+    const rows = await db.update(evalAgents).set({
       region: fields.region,
       siteId: fields.siteId,
       locationTrust: fields.locationTrust,
@@ -948,9 +952,15 @@ export class DatabaseStorage {
         accessClass: fields.accessClass,
         accessReason: fields.accessReason,
         accessCheckedAt: fields.accessCheckedAt,
+        accessIp: fields.accessIp,
       } : {}),
       updatedAt: new Date(),
-    }).where(eq(evalAgents.id, agentId));
+    }).where(and(
+      eq(evalAgents.id, agentId),
+      checkedIp === null ? isNull(evalAgents.observedIp)
+        : or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, checkedIp), eq(evalAgents.observedIp, `::ffff:${checkedIp}`)),
+    )).returning({ id: evalAgents.id });
+    return rows.length > 0;
   }
 
   // Public-tier agents: configured identity (region/siteId) is never touched
@@ -958,8 +968,8 @@ export class DatabaseStorage {
   // (access is computed for every agent). Optional fields as above.
   async updateEvalAgentLocationObservability(agentId: number, fields: {
     locationTrust: string; locationCheckedAt?: Date; locationSource: unknown;
-  } & Partial<EvalAgentAccessFields>): Promise<void> {
-    await db.update(evalAgents).set({
+  } & Partial<EvalAgentAccessFields>, checkedIp: string | null): Promise<boolean> {
+    const rows = await db.update(evalAgents).set({
       locationTrust: fields.locationTrust,
       ...(fields.locationCheckedAt ? { locationCheckedAt: fields.locationCheckedAt } : {}),
       locationSource: fields.locationSource,
@@ -967,9 +977,15 @@ export class DatabaseStorage {
         accessClass: fields.accessClass,
         accessReason: fields.accessReason,
         accessCheckedAt: fields.accessCheckedAt,
+        accessIp: fields.accessIp,
       } : {}),
       updatedAt: new Date(),
-    }).where(eq(evalAgents.id, agentId));
+    }).where(and(
+      eq(evalAgents.id, agentId),
+      checkedIp === null ? isNull(evalAgents.observedIp)
+        : or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, checkedIp), eq(evalAgents.observedIp, `::ffff:${checkedIp}`)),
+    )).returning({ id: evalAgents.id });
+    return rows.length > 0;
   }
 
   async createProject(project: InsertProject): Promise<Project> {
@@ -1297,9 +1313,9 @@ export class DatabaseStorage {
    * Layer-2/3 foundation: Core-observed egress IP of an agent (register/
    * heartbeat). Raw IP is Core-internal — future phases derive network labels
    * (residential/datacenter/starlink) from it; never expose it publicly.
-   * Fire-and-forget safe: call sites use `void ...` on the hot register/
-   * heartbeat path, so this method must never reject — a lost sample is
-   * harmless, an unhandled rejection would kill the process.
+   * Registration/heartbeat await this before launching their location check,
+   * so a late check for the previous IP cannot overwrite the current one.
+   * It must never reject: an observation failure must not break a heartbeat.
    */
   async updateEvalAgentObservedIp(agentId: number, ip: string): Promise<void> {
     try {
@@ -1485,7 +1501,7 @@ export class DatabaseStorage {
       // claim UPDATE itself. One statement, one commit: a claim can never
       // land without its tags (no later write a crash could skip).
       const agentRow = await client.query(
-        `SELECT tags, link_type, observed_ip, access_class, access_reason, sim_carrier, sim_reason FROM eval_agents WHERE id = $1`,
+        `SELECT tags, link_type, observed_ip, access_class, access_reason, access_ip, sim_carrier, sim_reason FROM eval_agents WHERE id = $1`,
         [agentId],
       );
       const snapshotFlow = (selectResult.rows[0].snapshot as JobSnapshot | null)?.evalFlow ?? null;
@@ -1498,6 +1514,7 @@ export class DatabaseStorage {
           observedIp: agentRow.rows[0]?.observed_ip ?? null,
           accessClass: agentRow.rows[0]?.access_class ?? null,
           accessReason: agentRow.rows[0]?.access_reason ?? null,
+          accessIp: agentRow.rows[0]?.access_ip ?? null,
           simCarrier: agentRow.rows[0]?.sim_carrier ?? null,
           simReason: agentRow.rows[0]?.sim_reason ?? null,
         },

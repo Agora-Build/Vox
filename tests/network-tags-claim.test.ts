@@ -134,7 +134,23 @@ describe("buildJobTags (unit, injected ASN lookup)", () => {
 
   // ---- system tags: access (every non-analyze job) and sim (phone jobs) ----
 
-  const classified = { tags: [], linkType: null, observedIp: null, accessClass: "lastmile", accessReason: "v1: mobile-asn", simCarrier: "t-mobile", simReason: "v1: sim-match 310-260" };
+  const classified = { tags: [], linkType: null, observedIp: "203.0.113.7", accessIp: "203.0.113.7", accessClass: "lastmile", accessReason: "v1: mobile-asn", simCarrier: "t-mobile", simReason: "v1: sim-match 310-260" };
+
+  it("an IP change invalidates the old access class until that IP is checked", () => {
+    for (const accessClass of ["lastmile", "datacenter"]) {
+      const tags = buildJobTags({ job: WEB, snapshotFlow: null, agent: { ...classified, accessClass, observedIp: "203.0.113.8" } }, noAsn);
+      expect(tags).toEqual([{ key: "access", value: "unknown", source: "detected", reason: "v1: ip-changed" }]);
+    }
+  });
+
+  it("a legacy classification without an IP binding is not reused", () => {
+    expect(buildJobTags({ job: WEB, snapshotFlow: null, agent: { ...classified, accessIp: null } }, noAsn)).toEqual([UNCLASSIFIED]);
+  });
+
+  it("normalizes IPv4-mapped IPv6 before comparing the checked IP", () => {
+    const tags = buildJobTags({ job: WEB, snapshotFlow: null, agent: { ...classified, observedIp: "::ffff:203.0.113.7" } }, noAsn);
+    expect(tags).toEqual([{ key: "access", value: "lastmile", source: "detected", reason: "v1: mobile-asn" }]);
+  });
 
   it("freezes the agent's access class with its reason on web AND phone jobs", () => {
     const access = { key: "access", value: "lastmile", source: "detected", reason: "v1: mobile-asn" };
@@ -211,7 +227,7 @@ d("claim freezes eval_jobs.tags (integration, both claim paths)", () => {
   const mkAgent = async (tokenId: number, siteId: string, opts: { tags: unknown[]; linkType: string | null; ip: string | null; access?: [string, string]; sim?: [string | null, string] }) => {
     const a = await storage.createEvalAgent({ tokenId, name: `tags-a-${Date.now()}-${Math.random()}`, siteId, state: "idle", metadata: {} } as any);
     await pool.query(`UPDATE eval_agents SET tags = $2::jsonb, link_type = $3, observed_ip = $4,
-        access_class = $5, access_reason = $6, sim_carrier = $7, sim_reason = $8 WHERE id = $1`,
+        access_class = $5, access_reason = $6, sim_carrier = $7, sim_reason = $8, access_ip = $4 WHERE id = $1`,
       [a.id, JSON.stringify(opts.tags), opts.linkType, opts.ip, opts.access?.[0] ?? null, opts.access?.[1] ?? null, opts.sim?.[0] ?? null, opts.sim?.[1] ?? null]);
     return a;
   };
@@ -344,7 +360,19 @@ d("claim freezes eval_jobs.tags (integration, both claim paths)", () => {
   describe("system tags at claim (access, sim)", () => {
     const ACCESS = { key: "access", value: "datacenter", source: "detected", reason: "v1: dc-range" };
     const SIM = { key: "sim", value: "t-mobile", source: "detected", reason: "v1: sim-match 310-260" };
-    const sys = { tags: [{ key: "sim", value: "att" }], linkType: null, ip: null, access: ["datacenter", "v1: dc-range"] as [string, string], sim: ["t-mobile", "v1: sim-match 310-260"] as [string, string] };
+    const sys = { tags: [{ key: "sim", value: "att" }], linkType: null, ip: "203.0.113.7", access: ["datacenter", "v1: dc-range"] as [string, string], sim: ["t-mobile", "v1: sim-match 310-260"] as [string, string] };
+
+    it.each(["targeted", "pooled"])("%s claim freezes unknown after a classified agent changes IP", async (path) => {
+      const tok = await mkToken(`tags-moved-${path}-${Date.now()}`, "na-us-ashburn-11");
+      const agent = await mkAgent(tok.id, tok.siteId!, { ...sys, access: ["lastmile", "v1: mobile-asn"] });
+      await storage.updateEvalAgentObservedIp(agent.id, "203.0.113.8");
+      const job = await mkJob(path === "targeted"
+        ? { targetTokenId: tok.id, transport: "web" }
+        : { targetRegion: "na-us-ashburn", targetTier: "public", transport: "web" });
+      const claimed = await storage.claimEvalJob(job.id, agent.id, identity(tok), { asnLookup: noAsn });
+      expect(claimed?.tags).toContainEqual({ key: "access", value: "unknown", source: "detected", reason: "v1: ip-changed" });
+      expect(await storedTags(job.id)).toEqual(claimed?.tags);
+    });
 
     it("targeted phone claim freezes access + sim with reasons; a hand-set sim on the agent is ignored", async () => {
       const tok = await mkToken(`tags-sys-p-${Date.now()}`, "na-us-ashburn-08");

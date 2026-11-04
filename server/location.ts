@@ -535,6 +535,7 @@ export async function runAgentLocationCheck(opts: {
   netSignals?: AgentNetSignals;
 }): Promise<{ region: string | null; siteId: string | null; locationTrust: LocationTrust }> {
   const deps = opts.deps ?? liveDeps();
+  const checkedIp = opts.ip ? normalizeIp(opts.ip) : null;
   const rdns = await rdnsIfItCanMatter(opts.ip ?? "", deps);
   const det = detectLocation(opts.ip ?? "", deps, { rdns, agent: opts.netSignals });
   const now = new Date();
@@ -550,7 +551,8 @@ export async function runAgentLocationCheck(opts: {
   // locationCheckedAt would hold that for up to LOCATION_RECHECK_HOURS after
   // the data loads. Untouched, the stored answer stands and the next heartbeat
   // re-checks. An agent that never had an answer stays Unverified (still fail
-  // closed). The observed IP is recorded by the routes either way.
+  // closed). Access is only reused at claim when accessIp still matches the
+  // observed IP, which the routes record before this check, even while capped.
   // Unambiguous outcomes — a Tor exit, private IP, no geo — are not capped and
   // still fast-distrust below.
   if (det.capped) {
@@ -567,13 +569,23 @@ export async function runAgentLocationCheck(opts: {
   const accessNoData = det.access.access === "unknown" && det.access.reason === `${ACCESS_CLASSIFIER_VERSION}: no-data`;
   const checked = accessNoData
     ? {}
-    : { locationCheckedAt: now, accessClass: det.access.access, accessReason: det.access.reason, accessCheckedAt: now };
+    : { locationCheckedAt: now, accessClass: det.access.access, accessReason: det.access.reason, accessCheckedAt: now, accessIp: checkedIp };
+
+  const currentLocation = async () => {
+    const current = await storage.getEvalAgent(opts.agent.id);
+    const trust = current?.locationTrust;
+    return {
+      region: current?.region ?? null, siteId: current?.siteId ?? null,
+      locationTrust: (locationTrustValues as readonly string[]).includes(trust ?? "") ? trust as LocationTrust : "unknown" as const,
+    };
+  };
 
   // Public tier: configured identity is trusted; detection is observability only.
   if (opts.token.dispatchTier === "public") {
-    await storage.updateEvalAgentLocationObservability(opts.agent.id, {
+    const applied = await storage.updateEvalAgentLocationObservability(opts.agent.id, {
       locationTrust: det.trust, locationSource: det.source, ...checked,
-    });
+    }, checkedIp);
+    if (!applied) return currentLocation();
     return { region: opts.agent.region, siteId: opts.agent.siteId, locationTrust: det.trust };
   }
 
@@ -581,14 +593,16 @@ export async function runAgentLocationCheck(opts: {
   const next = decideLocationTransition(opts.agent, { trust: det.trust, baseId }, { immediate: opts.immediate });
   let siteId = opts.agent.siteId;
   if (next.changed) {
+    // A rejected stale write can leave a harmless gap in the site sequence.
     siteId = next.region ? await storage.allocateSiteId(next.region) : null;
   }
-  await storage.updateEvalAgentLocation(opts.agent.id, {
+  const applied = await storage.updateEvalAgentLocation(opts.agent.id, {
     region: next.region, siteId, locationTrust: det.trust,
     locationSource: det.source,
     pendingRegion: next.pendingRegion, pendingRegionCount: next.pendingRegionCount,
     ...checked,
-  });
+  }, checkedIp);
+  if (!applied) return currentLocation();
   if (next.changed && opts.token.dispatchTier === "shared") {
     // Shared listings advertise the agent's siteId; keep the plugin in sync.
     // The Plugin/Core boundary is duck-typed by design (server/index.ts casts

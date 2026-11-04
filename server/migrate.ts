@@ -87,6 +87,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 61, description: "eval_agents.sim_number_hash (keyed hash of our SIM's number)", file: "0060_sim_number_hash.sql" },
   { version: 62, description: "paid_lookup_usage (durable paid-lookup caps); number_lookups keyed by number hash", file: "0061_paid_lookup_usage.sql" },
   { version: 63, description: "eval_agents.sim_report_gen (latest SIM report wins)", file: "0062_sim_report_gen.sql" },
+  { version: 64, description: "cache invalid-number answers and bind access classification to its IP", file: "0063_lookup_validity_access_ip.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

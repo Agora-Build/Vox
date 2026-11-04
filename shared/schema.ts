@@ -364,6 +364,8 @@ export const evalAgents = pgTable("eval_agents", {
   // Classifier version + deciding signals, e.g. "v1: dc-range".
   accessReason: text("access_reason"),
   accessCheckedAt: timestamp("access_checked_at"),
+  // IP this classification checked. Core-internal, never returned to clients.
+  accessIp: text("access_ip"),
   // System-only: our SIM's carrier slug (phone agents), the reason, and our
   // own number redacted to its last 4 digits — never the full number.
   simCarrier: varchar("sim_carrier", { length: 48 }),
@@ -405,6 +407,7 @@ export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   accessClass: true,
   accessReason: true,
   accessCheckedAt: true,
+  accessIp: true,
   simCarrier: true,
   simReason: true,
   simNumberRedacted: true,
@@ -429,6 +432,8 @@ export const numberLookups = pgTable("number_lookups", {
   // The lookup service that answered (e.g. "twilio") — a seam, so a second
   // provider (Telnyx) can be added later without migrating existing rows.
   provider: varchar("provider", { length: 16 }).notNull(),
+  // A definitive invalid-number answer, distinct from a valid number with no carrier.
+  invalidNumber: boolean("invalid_number").default(false).notNull(),
   carrierName: text("carrier_name"),
   lineType: varchar("line_type", { length: 32 }),
   // The mapped `line` tag value (shared/tags.ts `lineFromCarrier`); null when

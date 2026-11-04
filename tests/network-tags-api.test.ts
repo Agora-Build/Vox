@@ -430,6 +430,8 @@ d("network tags: hand-set tags and link type through the API", () => {
       expect(mine.canEditTags).toBe(true);
       expect(JSON.stringify(mine)).not.toContain("observedIp");
       expect(JSON.stringify(mine)).not.toContain("observed_ip");
+      expect(JSON.stringify(mine)).not.toContain("accessIp");
+      expect(JSON.stringify(mine)).not.toContain("access_ip");
 
       const asOther = await jsonFetch(`${BASE_URL}/api/eval-agents`, { cookie: userB.cookie });
       // This agent's token is private (userA's own) — it's invisible to userB,
@@ -441,6 +443,8 @@ d("network tags: hand-set tags and link type through the API", () => {
       const asAdminRow = asAdmin.body.find((a: { id: number }) => a.id === agentId);
       expect(asAdminRow).toBeTruthy(); // admin sees private agents (existing visibility rule)
       expect(asAdminRow.canEditTags).toBe(false); // but may not edit its tags
+      expect(JSON.stringify(asAdminRow)).not.toContain("accessIp");
+      expect(JSON.stringify(asAdminRow)).not.toContain("access_ip");
     });
   });
 });

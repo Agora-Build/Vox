@@ -16,8 +16,8 @@
  *   6. `access` from the agent's stored classification (`access_class` +
  *      `access_reason`, written by the location check) — detected, with its
  *      reason (none when none is stored), on every job this function tags;
- *      never classified (or a value outside the closed set) →
- *      `access:unknown` "v1: not-classified";
+ *      a changed IP → `access:unknown` "v1: ip-changed"; never classified for
+ *      this IP (or a value outside the closed set) → "v1: not-classified";
  *   7. `sim` from the agent's stored SIM match (`sim_carrier` + `sim_reason`,
  *      server/sim-carrier.ts) — phone jobs only, and only when there is a
  *      carrier (a mismatch or a missing side is no tag, never a guess).
@@ -40,7 +40,7 @@
  * the same reason the claim nulls an analysis's site_id.
  */
 import { normalizeTag, ispFromAsn, isSatelliteIsp, isSystemKey, LINK_VALUES, ACCESS_VALUES, type JobTag, type Tag, type LineLookup } from "@shared/tags";
-import { lookupAsn, type AsnLookup } from "./location";
+import { lookupAsn, normalizeIp, type AsnLookup } from "./location";
 
 export type AsnLookupFn = (ip: string) => AsnLookup | null;
 
@@ -57,6 +57,7 @@ export interface JobTagsInput {
     /** System-only columns (eval_agents.access_class/access_reason, sim_carrier/sim_reason). */
     accessClass?: string | null;
     accessReason?: string | null;
+    accessIp?: string | null;
     simCarrier?: string | null;
     simReason?: string | null;
   };
@@ -106,12 +107,17 @@ export function buildJobTags(input: JobTagsInput, asnLookup: AsnLookupFn = looku
   }
 
   const accessClass = input.agent.accessClass;
-  if (accessClass && (ACCESS_VALUES as readonly string[]).includes(accessClass)) {
+  const currentIp = input.agent.observedIp ? normalizeIp(input.agent.observedIp) : null;
+  const classifiedIp = input.agent.accessIp ? normalizeIp(input.agent.accessIp) : null;
+  const validAccessClass = accessClass && (ACCESS_VALUES as readonly string[]).includes(accessClass);
+  if (validAccessClass && classifiedIp && classifiedIp === currentIp) {
     // A classified agent's reason is frozen as stored; none stored → no
     // reason (not-classified would contradict the class itself).
     tags.push({ key: "access", value: accessClass, source: "detected", ...(input.agent.accessReason ? { reason: input.agent.accessReason } : {}) });
   } else {
-    tags.push({ key: "access", value: "unknown", source: "detected", reason: NOT_CLASSIFIED_REASON });
+    // A late check for the old IP must not restore its class on the new network.
+    const reason = validAccessClass && classifiedIp ? "v1: ip-changed" : NOT_CLASSIFIED_REASON;
+    tags.push({ key: "access", value: "unknown", source: "detected", reason });
   }
 
   if (input.job.transport === "phone" && input.agent.simCarrier) {
