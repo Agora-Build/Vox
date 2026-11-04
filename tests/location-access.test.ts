@@ -206,6 +206,45 @@ describeDb("runAgentLocationCheck persists access", () => {
       .toContainEqual({ key: "access", value: "datacenter", source: "detected", reason: "v1: dc-range" });
   });
 
+  it.each(["private", "public"])("%s agent ignores a no-IP check after an IP has been observed", async (dispatchTier) => {
+    const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
+    const staleAgent = { id: agentId, ...fresh };
+    await storage.updateEvalAgentObservedIp(agentId, DC_IP);
+    await runAgentLocationCheck({ agent: staleAgent, token, ip: DC_IP, immediate: true, deps: makeDeps() });
+    const current = await row();
+
+    const result = await runAgentLocationCheck({ agent: staleAgent, token, ip: undefined, immediate: true, deps: makeDeps() });
+
+    expect(await row()).toEqual(current);
+    expect(result).toEqual({ region: current.region, siteId: current.siteId, locationTrust: current.locationTrust });
+  });
+
+  it.each(["private", "public"])("%s agent ignores an old-IP check even when it has no access data or geo", async (dispatchTier) => {
+    const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
+    const staleAgent = { id: agentId, ...fresh };
+    await storage.updateEvalAgentObservedIp(agentId, DC_IP);
+    await runAgentLocationCheck({ agent: staleAgent, token, ip: DC_IP, immediate: true, deps: makeDeps() });
+    const current = await row();
+
+    const result = await runAgentLocationCheck({
+      agent: staleAgent, token, ip: DT_IP, immediate: true,
+      deps: makeDeps({ networkClassLoaded: false, geo: () => null }),
+    });
+
+    expect(await row()).toEqual(current);
+    expect(result).toEqual({ region: current.region, siteId: current.siteId, locationTrust: current.locationTrust });
+  });
+
+  it.each(["private", "public"])("%s agent can record a no-IP check before its first observation", async (dispatchTier) => {
+    const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
+    await runAgentLocationCheck({ agent: { id: agentId, ...fresh }, token, ip: undefined, immediate: true, deps: makeDeps() });
+
+    const current = await row();
+    expect(current.accessClass).toBe("unknown");
+    expect(current.accessIp).toBeNull();
+    expect(current.accessCheckedAt).not.toBeNull();
+  });
+
   it("Tor exit / private IP: stored unknown and no DNS lookup", async () => {
     for (const [ip, reason] of [["185.220.101.1", "v1: tor"], ["10.0.0.5", "v1: private-ip"]] as const) {
       const deps = makeDeps();

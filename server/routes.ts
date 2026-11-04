@@ -4523,7 +4523,8 @@ export async function registerRoutes(
       // / never ran), or a pending region change is mid-hysteresis (every beat counts it down —
       // the IP-change trigger alone would stall since observed_ip updates each
       // beat). Fire-and-forget: a slow catalog write must not delay the beat.
-      const stale = !agent.accessIp || agent.accessIp !== (callerIp ? normalizeIp(callerIp) : null) || !agent.locationCheckedAt
+      const bindingChanged = !!callerIp && (!agent.accessIp || normalizeIp(agent.accessIp) !== normalizeIp(callerIp));
+      const stale = bindingChanged || !agent.locationCheckedAt
         || (Date.now() - new Date(agent.locationCheckedAt).getTime()) > LOCATION_RECHECK_HOURS * 60 * 60 * 1000;
       const pending = agent.pendingRegion != null;
       // A reported signal change (e.g. cloudMetadata flips false→true) must

@@ -933,11 +933,13 @@ export class DatabaseStorage {
   // heartbeat re-checks instead of waiting out LOCATION_RECHECK_HOURS.
   // A completed check may not overwrite a newer IP's result. Null observed IP
   // supports a first check before any observation; normal routes record it first.
+  // The guard is independent of optional access fields, including unloaded data.
+  // A no-IP check may only apply while no IP has been observed.
   async updateEvalAgentLocation(agentId: number, fields: {
     region: string | null; siteId: string | null; locationTrust: string;
     locationCheckedAt?: Date; locationSource: unknown;
     pendingRegion: string | null; pendingRegionCount: number;
-  } & Partial<EvalAgentAccessFields>): Promise<boolean> {
+  } & Partial<EvalAgentAccessFields>, checkedIp: string | null): Promise<boolean> {
     const rows = await db.update(evalAgents).set({
       region: fields.region,
       siteId: fields.siteId,
@@ -955,7 +957,8 @@ export class DatabaseStorage {
       updatedAt: new Date(),
     }).where(and(
       eq(evalAgents.id, agentId),
-      fields.accessIp ? or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, fields.accessIp), eq(evalAgents.observedIp, `::ffff:${fields.accessIp}`)) : undefined,
+      checkedIp === null ? isNull(evalAgents.observedIp)
+        : or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, checkedIp), eq(evalAgents.observedIp, `::ffff:${checkedIp}`)),
     )).returning({ id: evalAgents.id });
     return rows.length > 0;
   }
@@ -965,7 +968,7 @@ export class DatabaseStorage {
   // (access is computed for every agent). Optional fields as above.
   async updateEvalAgentLocationObservability(agentId: number, fields: {
     locationTrust: string; locationCheckedAt?: Date; locationSource: unknown;
-  } & Partial<EvalAgentAccessFields>): Promise<boolean> {
+  } & Partial<EvalAgentAccessFields>, checkedIp: string | null): Promise<boolean> {
     const rows = await db.update(evalAgents).set({
       locationTrust: fields.locationTrust,
       ...(fields.locationCheckedAt ? { locationCheckedAt: fields.locationCheckedAt } : {}),
@@ -979,7 +982,8 @@ export class DatabaseStorage {
       updatedAt: new Date(),
     }).where(and(
       eq(evalAgents.id, agentId),
-      fields.accessIp ? or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, fields.accessIp), eq(evalAgents.observedIp, `::ffff:${fields.accessIp}`)) : undefined,
+      checkedIp === null ? isNull(evalAgents.observedIp)
+        : or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, checkedIp), eq(evalAgents.observedIp, `::ffff:${checkedIp}`)),
     )).returning({ id: evalAgents.id });
     return rows.length > 0;
   }
