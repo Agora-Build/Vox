@@ -113,6 +113,11 @@ other end: the `sim` tag.)
   (`number_lookups`: keyed hash of the E.164 number — never the number itself —
   provider, carrier name, line type, mapped value, looked-up time) — about one paid lookup per number per month; a cached
   answer is reused across flows and owners.
+- **Invalid-number answers:** a provider-reported invalid number (HTTP 404 or
+  `valid: false`) is cached for the same 30 days, keyed only by the number's
+  keyed hash. It is distinct from a valid number with no carrier. Cache hits
+  consume no paid-lookup allowance; expiry permits a fresh check. Timeouts,
+  rate limits, authentication errors and other provider failures are not cached.
 - **Which number:** a literal number in `call.dial`, or one filled from the
   flow's own `${config.*}`. **Never a number held in a secret** — sending a
   secret's value to a third party breaks the rule that secrets don't leave Vox;
@@ -330,8 +335,12 @@ direction is safe. Disagreement means `unknown`, never a guess.
 - Reverse DNS and range checks are too slow for the claim transaction, so the
   location check computes access (register, IP change, and the existing
   `LOCATION_RECHECK_HOURS` cadence on heartbeat) and stores it on the agent:
-  `eval_agents.access_class` + `access_reason` (system-only; never writable through
-  any route). At claim, `buildJobTags` freezes it as a `detected` tag
+  `eval_agents.access_class` + `access_reason` + `access_ip` (system-only; never
+  writable through any route, and the IP is never returned to clients). At claim,
+  `buildJobTags` only reuses a class bound to the agent's current observed IP;
+  a changed IP freezes `access:unknown` until checked again. An old classification
+  without an IP binding is also unknown, and the next heartbeat rechecks it.
+  A late check for an old IP cannot overwrite the new IP's result. The class is a `detected` tag
   `access:<class>` (same transaction as today). Analyze jobs still get `[]`.
 - Agent signals travel on register/heartbeat as `netSignals: { cloudMetadata, publicIpOnInterface }`
   (omitted when unknown). In a container the interface is a veth, so `vox-upgrade.sh`
@@ -356,7 +365,8 @@ direction is safe. Disagreement means `unknown`, never a guess.
 - Until that data has loaded once, a check that would have read `trusted`/`datacenter`
   is **capped** — and a capped check writes nothing: not the region, not trust, not
   access, not the check time. The stored answer stands (an agent that was Verified
-  stays Verified, and jobs claimed meanwhile freeze its last real answer), an agent
+  stays Verified, and jobs on the same IP freeze its last real answer; a moved
+  agent's jobs freeze `access:unknown` until the new IP is checked), an agent
   that never had one stays Unverified (fail closed), and because the check time
   doesn't advance the next heartbeat re-checks, so the first beat after the data
   loads classifies it. Likewise an access answer of `no-data` (public IP, data

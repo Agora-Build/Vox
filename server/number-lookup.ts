@@ -44,7 +44,7 @@ export type LineSkipReason =
   | "not-configured" // no lookup credentials — `line` is manual only
   | "secret"         // the number is held in a secret — never sent
   | "no-number"      // no call.dial, or its number doesn't resolve to E.164
-  | "invalid-number" // the service says the number doesn't exist (404 / valid:false)
+  | "invalid-number" // the lookup provider reports the number as invalid (404 / valid:false)
   | "no-carrier"     // no carrier for this number (toll-free and similar)
   | "rate-limited"   // over a paid-lookup cap (server/paid-lookup-budget.ts) — non-definitive, keeps what's stored
   | "timeout"        // still running after LOOKUP_TIMEOUT_MS — non-definitive; it finishes and is stored in the background
@@ -276,7 +276,9 @@ export interface NumberAnswer {
   mnc: string | null;
   lookedUpAt: Date;
 }
-export type NumberLookupResult = NumberAnswer | { skipped: "not-configured" | "invalid-number" | "failed" | "rate-limited" };
+export type NumberLookupResult = NumberAnswer
+  | { skipped: "invalid-number"; lookedUpAt: Date }
+  | { skipped: "not-configured" | "failed" | "rate-limited" };
 
 /**
  * In-flight lookups by number (single-flight): concurrent callers for the
@@ -355,6 +357,7 @@ async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: Pa
     if (key) {
       const [cached] = await db.select().from(numberLookups).where(eq(numberLookups.numberHash, key));
       if (cached && Date.now() - cached.lookedUpAt.getTime() < CACHE_MAX_AGE_MS) {
+        if (cached.invalidNumber) return { skipped: "invalid-number", lookedUpAt: cached.lookedUpAt };
         return { carrierName: cached.carrierName, lineType: cached.lineType, value: cached.value, mcc: cached.mcc, mnc: cached.mnc, lookedUpAt: cached.lookedUpAt };
       }
     }
@@ -365,31 +368,32 @@ async function lookupOnce(e164: string, provider: NumberLookupProvider, gate: Pa
 
     const answer = await provider.lookup(e164);
     providerReturned = true;
-    if (answer.kind === "invalid-number") return { skipped: "invalid-number" };
     if (answer.kind === "failed") {
       if (charged && !answer.billed) await gate!.refund().catch(() => {});
       console.warn(`[number-lookup] ${provider.name} lookup for ${redactNumber(e164)} failed: ${answer.reason}`);
       return { skipped: "failed" };
     }
 
+    const details = answer.kind === "ok" ? answer : null;
     const row = {
       provider: provider.name,
-      carrierName: answer.carrierName,
-      lineType: answer.lineType,
-      // No carrier (toll-free…) is cached too, as value null: the answer
-      // won't change within the month, and each lookup is paid.
-      value: lineFromCarrier(answer.carrierName) ?? null,
-      mcc: answer.mcc ?? null,
-      mnc: answer.mnc ?? null,
+      invalidNumber: answer.kind === "invalid-number",
+      carrierName: details?.carrierName ?? null,
+      lineType: details?.lineType ?? null,
+      // Cache definitive negative answers too; transient failures returned above.
+      value: lineFromCarrier(details?.carrierName) ?? null,
+      mcc: details?.mcc ?? null,
+      mnc: details?.mnc ?? null,
       lookedUpAt: new Date(),
     };
     // Idempotent: a second writer for the same number just refreshes the row.
     if (key) {
       await db.insert(numberLookups).values({ numberHash: key, ...row }).onConflictDoUpdate({
         target: numberLookups.numberHash,
-        set: { provider: row.provider, carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt },
+        set: { provider: row.provider, invalidNumber: row.invalidNumber, carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt },
       });
     }
+    if (row.invalidNumber) return { skipped: "invalid-number", lookedUpAt: row.lookedUpAt };
     return { carrierName: row.carrierName, lineType: row.lineType, value: row.value, mcc: row.mcc, mnc: row.mnc, lookedUpAt: row.lookedUpAt };
   } catch (err) {
     // Never refunded here: either the provider threw (it may have billed) or

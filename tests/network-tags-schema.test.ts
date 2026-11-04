@@ -66,6 +66,9 @@ d("network tags: migration 0057", () => {
     expect(byName.provider?.data_type).toBe("character varying");
     expect(byName.provider?.character_maximum_length).toBe(16);
     expect(byName.provider?.is_nullable).toBe("NO");
+    expect(byName.invalid_number?.data_type).toBe("boolean");
+    expect(byName.invalid_number?.is_nullable).toBe("NO");
+    expect(byName.invalid_number?.column_default).toBe("false");
     expect(byName.carrier_name?.data_type).toBe("text");
     expect(byName.line_type?.data_type).toBe("character varying");
     expect(byName.line_type?.character_maximum_length).toBe(32);

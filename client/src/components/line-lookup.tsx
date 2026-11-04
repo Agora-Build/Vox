@@ -21,7 +21,7 @@ export const LINE_LOOKUP_SKIP_TEXT: Record<LineLookupSkip, string> = {
   "not-configured": "Automatic lookup is off — an admin can turn it on with Twilio Lookup credentials.",
   secret: "The number is stored as a secret, so it isn't looked up. Add a line: tag by hand.",
   "no-number": "No dialable number found in the Setup steps.",
-  "invalid-number": "No dialable number found in the Setup steps.",
+  "invalid-number": "The lookup provider reports this phone number as invalid.",
   "no-carrier": "Twilio has no carrier for this number (toll-free and some types). Add a line: tag by hand.",
   "rate-limited": "Automatic lookup is paused — too many lookups today. Try again tomorrow or tag the line provider by hand.",
   timeout: "The lookup is taking longer than usual — it will finish in the background.",

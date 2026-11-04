@@ -37,7 +37,7 @@ import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsuppo
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
-import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders } from "./location";
+import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders, normalizeIp } from "./location";
 import {
   refreshGeoipDatabases,
   getGeoipRefreshStatus,
@@ -4420,7 +4420,7 @@ export async function registerRoutes(
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
-      { const ip = clientIp(req); if (ip) void storage.updateEvalAgentObservedIp(agent.id, ip); }
+      { const ip = clientIp(req); if (ip) await storage.updateEvalAgentObservedIp(agent.id, ip); }
       // Our SIM (phone agents, design "`sim` is system-only"): matched in the
       // background — a lookup must never hold registration up.
       void noteSimReport(agent.id, req.body.sim, capabilities ?? []);
@@ -4517,13 +4517,13 @@ export async function registerRoutes(
       await storage.updateEvalAgentHeartbeat(agentId);
       const callerIp = clientIp(req);
       const ipChanged = !!callerIp && callerIp !== agent.observedIp;
-      if (callerIp) void storage.updateEvalAgentObservedIp(agentId, callerIp);
+      if (callerIp) await storage.updateEvalAgentObservedIp(agentId, callerIp);
 
       // Re-detect when the IP moved, the check is stale (> LOCATION_RECHECK_HOURS
       // / never ran), or a pending region change is mid-hysteresis (every beat counts it down —
       // the IP-change trigger alone would stall since observed_ip updates each
       // beat). Fire-and-forget: a slow catalog write must not delay the beat.
-      const stale = !agent.locationCheckedAt
+      const stale = !agent.accessIp || agent.accessIp !== (callerIp ? normalizeIp(callerIp) : null) || !agent.locationCheckedAt
         || (Date.now() - new Date(agent.locationCheckedAt).getTime()) > LOCATION_RECHECK_HOURS * 60 * 60 * 1000;
       const pending = agent.pendingRegion != null;
       // A reported signal change (e.g. cloudMetadata flips false→true) must

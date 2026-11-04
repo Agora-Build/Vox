@@ -3,7 +3,8 @@
 // "Where it's computed and stored". DB-backed; DNS is injected, never real.
 import { describe, it, expect, afterAll, beforeAll, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db, hashToken } from "../server/storage";
+import { db, storage, hashToken } from "../server/storage";
+import { buildJobTags } from "../server/job-tags";
 import { evalAgents, evalAgentTokens } from "../shared/schema";
 import { runAgentLocationCheck, accessSignalsFrom, type DetectionDeps, type GeoLookup } from "../server/location";
 import { createAccessData, parseCidrList, networkClassOf } from "../server/access-data";
@@ -61,7 +62,7 @@ describeDb("runAgentLocationCheck persists access", () => {
     agentId = agent.id;
   });
   beforeEach(async () => {
-    await db.update(evalAgents).set({ ...fresh, accessClass: null, accessReason: null, accessCheckedAt: null })
+    await db.update(evalAgents).set({ ...fresh, accessClass: null, accessReason: null, accessCheckedAt: null, accessIp: null, observedIp: null })
       .where(eq(evalAgents.id, agentId));
   });
   afterAll(async () => {
@@ -98,6 +99,7 @@ describeDb("runAgentLocationCheck persists access", () => {
     const r = await row();
     expect(r.accessClass).toBe("lastmile");
     expect(r.accessReason).toBe("v1: eyeball-asn + residential-rdns");
+    expect(r.accessIp).toBe(DT_IP);
   });
 
   it("agent net signals reach the classifier (cloud metadata → datacenter)", async () => {
@@ -152,6 +154,56 @@ describeDb("runAgentLocationCheck persists access", () => {
     expect(r.locationTrust).toBe("datacenter");
     expect(r.accessClass).toBe("datacenter");
     expect(r.locationCheckedAt?.getTime()).toBe(checkedAt.getTime());
+  });
+
+  it.each(["private", "public"])("%s agent moving while data is unloaded tags unknown until its new IP is checked", async (dispatchTier) => {
+    const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
+    const agent = { id: agentId, ...fresh };
+    const tags = async () => buildJobTags({ job: { kind: "eval", transport: "web" }, snapshotFlow: null, agent: await row() }, () => null);
+    await storage.updateEvalAgentObservedIp(agentId, DT_IP);
+    await runAgentLocationCheck({ agent, token, ip: DT_IP, immediate: true, deps: makeDeps() });
+    expect(await tags()).toContainEqual({ key: "access", value: "lastmile", source: "detected", reason: "v1: eyeball-asn + residential-rdns" });
+    const before = await row();
+
+    // A restart on the SAME IP retains the valid old classification.
+    await runAgentLocationCheck({ agent: before, token, ip: DT_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }) });
+    expect(await tags()).toContainEqual({ key: "access", value: "lastmile", source: "detected", reason: "v1: eyeball-asn + residential-rdns" });
+
+    // The detector cannot answer yet, but the old IP's class cannot follow the agent.
+    await storage.updateEvalAgentObservedIp(agentId, DC_IP);
+    await runAgentLocationCheck({ agent: before, token, ip: DC_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }) });
+    expect(await tags()).toContainEqual({ key: "access", value: "unknown", source: "detected", reason: "v1: ip-changed" });
+    expect((await row()).accessCheckedAt?.getTime()).toBe(before.accessCheckedAt?.getTime());
+
+    await runAgentLocationCheck({ agent: await row(), token, ip: DC_IP, immediate: false, deps: makeDeps() });
+    expect((await row()).accessIp).toBe(DC_IP);
+    expect(await tags()).toContainEqual({ key: "access", value: "datacenter", source: "detected", reason: "v1: dc-range" });
+  });
+
+  it.each(["private", "public"])("%s agent ignores a late classification response for its old IP", async (dispatchTier) => {
+    const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
+    let finishDns!: (value: string) => void;
+    let started!: () => void;
+    const dnsStarted = new Promise<void>((resolve) => { started = resolve; });
+    const oldDns = new Promise<string>((resolve) => { finishDns = resolve; });
+    await storage.updateEvalAgentObservedIp(agentId, DT_IP);
+    const oldCheck = runAgentLocationCheck({
+      agent: { id: agentId, ...fresh }, token, ip: DT_IP, immediate: true,
+      deps: makeDeps({ reverseDns: async () => { started(); return oldDns; } }),
+    });
+    await dnsStarted;
+    try {
+      await storage.updateEvalAgentObservedIp(agentId, DC_IP);
+      await runAgentLocationCheck({ agent: await row(), token, ip: DC_IP, immediate: true, deps: makeDeps() });
+    } finally {
+      finishDns("p5096a101.dip0.t-ipconnect.de");
+      await oldCheck;
+    }
+    const current = await row();
+    expect(current.accessClass).toBe("datacenter");
+    expect(current.accessIp).toBe(DC_IP);
+    expect(buildJobTags({ job: { kind: "eval", transport: "web" }, snapshotFlow: null, agent: current }, () => null))
+      .toContainEqual({ key: "access", value: "datacenter", source: "detected", reason: "v1: dc-range" });
   });
 
   it("Tor exit / private IP: stored unknown and no DNS lookup", async () => {
