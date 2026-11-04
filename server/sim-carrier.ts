@@ -302,20 +302,19 @@ async function settleSimReport(agentId: number, gen: number, report: SimReport, 
   }
 }
 
-/** Memo fingerprint for "this agent's fields were cleared for no report". */
+/** Memo fingerprint for this process's latest no-report operation. */
 const NO_REPORT = "no-sim-report";
 export const NO_SIM_REPORT_REASON = reason(NO_REPORT);
 
 /**
  * A phone agent sent no valid `sim`: clear its sim fields (carrier NULL,
  * reason `v1: no-sim-report`, number fields NULL). Returns whether it
- * attempted a write. The memo makes the unchanged case free — after the first
- * clear, every following no-report beat returns before any query — and the
- * UPDATE itself is conditional (`IS DISTINCT FROM`), so after a Core restart
- * an agent already cleared costs one no-op statement, never a row rewrite.
+ * attempted a conditional write. Every no-report beat checks the persisted
+ * state: a process-local cleared memo cannot fence another Core instance's
+ * recompute. An agent already cleared with nothing in flight costs one no-op
+ * statement, never a row rewrite or generation bump.
  */
 export async function clearAgentSim(agentId: number): Promise<boolean> {
-  if (memo.get(agentId)?.fingerprint === NO_REPORT) return false;
   const claim: MemoEntry = { fingerprint: NO_REPORT, dueAt: Number.POSITIVE_INFINITY };
   memo.set(agentId, claim);
   try {

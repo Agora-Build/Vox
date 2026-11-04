@@ -335,8 +335,8 @@ Results from before the release stay untagged.
   an isolated database, not a stale dev process. Migrations use the runner, never
   `db:push` on a runner-managed database. Stubs belong only in tests.
 
-Validation recorded for the combined #258/#268 implementation on 2026-11-04:
-275 unique focused tests passed, including HTTP/privacy/heartbeat tests,
+Validation recorded for #258, including #268 and the multi-instance SIM-clear
+fix, on 2026-11-04: 277 unique focused tests passed, including HTTP/privacy/heartbeat tests,
 PostgreSQL-backed regressions, and migration-recovery tests. `npm run check` and
 `npm run build` passed, with existing bundle-size/CJS warnings. This is not a claim
 that the full repository or E2E suites were rerun for the follow-up.
@@ -530,6 +530,12 @@ Agents keep `isp`/`link` (correctable) + custom keys.
 - A phone agent that stops reporting a valid `sim` (SIM pulled, phone unplugged) has
   its stored `sim_carrier` cleared (reason `v1: no-sim-report`) — no stale carrier is
   frozen onto later phone jobs. Agents without the `phone` capability are left alone.
+- Every no-report heartbeat executes a conditional database update, even if this
+  Core instance's memo remembers a prior clear. An in-flight recomputation from
+  another instance advances the generation on that clear, invalidating its
+  pending result; an already-settled carrier is cleared too. Already-cleared
+  rows with no pending recomputation are not rewritten or given a new generation.
+  Unchanged valid reports retain the query-free memo fast path.
 - Overlapping reports: the newest wins, whichever lookup finishes last. Each recompute
   or clear takes the next `eval_agents.sim_report_gen` when it starts (negative while
   a recompute is in flight), and a recompute writes only if its generation is still

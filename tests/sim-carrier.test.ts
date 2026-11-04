@@ -19,7 +19,7 @@ await vi.hoisted(async () => {
   }
 });
 import { storage, pool } from "../server/storage";
-import { TwilioLookupProvider, CACHE_MAX_AGE_MS, numberHash, lookupFlowLine, lookupNumber } from "../server/number-lookup";
+import { TwilioLookupProvider, CACHE_MAX_AGE_MS, numberHash, lookupFlowLine, lookupNumber, type NumberLookupProvider } from "../server/number-lookup";
 import { parseSimReport, computeSimMatch, refreshAgentSim, resetSimMemo, noteSimReport, SIM_RETRY_MS, NO_SIM_REPORT_REASON } from "../server/sim-carrier";
 import { PAID_LOOKUPS_PER_DAY, SIM_LOOKUPS_PER_DAY, FLOW_LOOKUPS_PER_DAY, SIM_USER_LOOKUPS_PER_DAY, resetPaidLookupBudget, flowLookupGate } from "../server/paid-lookup-budget";
 
@@ -173,24 +173,24 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     expect((await row(a.id)).sim_carrier).toBe("t-mobile");
   });
 
-  it("no-report beats after the first clear cost no query at all (memo), and a restart costs one no-op statement", async () => {
+  it("every no-report beat checks persisted state without rewriting an already-cleared row, even after restart", async () => {
     codes = () => ({ carrier: "T-Mobile USA, Inc.", mcc: "310", mnc: "260" });
     const a = await mkAgent();
     await noteSimReport(a.id, { number: "+15550111002", mcc: "310", mnc: "260" }, ["phone"], { provider: provider() });
     await noteSimReport(a.id, undefined, ["phone"]);
+    const before = (await pool.query(`SELECT xmin, sim_report_gen FROM eval_agents WHERE id = $1`, [a.id])).rows[0];
     const q = vi.spyOn(pool, "query");
     try {
       for (let i = 0; i < 5; i++) await noteSimReport(a.id, undefined, ["phone"]);
-      expect(q).not.toHaveBeenCalled();
-      // After a restart (memo gone): one conditional UPDATE that matches no row.
+      expect(q).toHaveBeenCalledTimes(5);
+      // Losing the memo does not change the conditional database check.
       resetSimMemo();
-      const before = (await pool.query(`SELECT xmin FROM eval_agents WHERE id = $1`, [a.id])).rows[0].xmin;
       q.mockClear();
       await noteSimReport(a.id, undefined, ["phone"]);
       await noteSimReport(a.id, undefined, ["phone"]);
-      expect(q).toHaveBeenCalledTimes(1);
-      const after = (await pool.query(`SELECT xmin FROM eval_agents WHERE id = $1`, [a.id])).rows[0].xmin;
-      expect(after).toBe(before); // the row was not rewritten
+      expect(q).toHaveBeenCalledTimes(2);
+      const after = (await pool.query(`SELECT xmin, sim_report_gen FROM eval_agents WHERE id = $1`, [a.id])).rows[0];
+      expect(after).toEqual(before); // neither a row rewrite nor a generation bump
     } finally {
       q.mockRestore();
     }
@@ -544,6 +544,56 @@ d("refreshAgentSim (stores on the agent; recomputes only on change / expiry)", (
     await noteSimReport(a.id, undefined, ["phone"]);
     await slow;
     expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: NO_SIM_REPORT_REASON, sim_number_hash: null });
+  });
+
+  it.each(["in flight", "already settled"])("a repeated no-report heartbeat supersedes another Core instance's lookup (%s)", async (state) => {
+    const a = await mkAgent();
+    await noteSimReport(a.id, undefined, ["phone"]);
+
+    // Preserve this instance's cleared memo while another instance recomputes.
+    vi.resetModules();
+    const other = await import("../server/sim-carrier");
+    const otherPool = (await import("../server/storage")).pool;
+    let started!: () => void;
+    let finish!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => { started = resolve; });
+    const finishLookup = new Promise<void>((resolve) => { finish = resolve; });
+    const lookup = vi.fn(async () => {
+      started();
+      await finishLookup;
+      return { kind: "ok" as const, carrierName: "AT&T Wireless", lineType: "mobile", mcc: "310", mnc: "410" };
+    });
+    const otherProvider: NumberLookupProvider = { name: "twilio", lookup };
+    const report = { number: A_NUM, mcc: "310", mnc: "410" };
+    let pending: Promise<boolean> | undefined;
+    try {
+      pending = other.refreshAgentSim(a.id, report, { provider: otherProvider });
+      await lookupStarted;
+      if (state === "already settled") {
+        finish();
+        expect(await pending).toBe(true);
+        expect((await row(a.id)).sim_carrier).toBe("att");
+      }
+      const previousGeneration = (await row(a.id)).sim_report_gen;
+
+      await noteSimReport(a.id, undefined, ["phone"]);
+      const cleared = await row(a.id);
+      expect(cleared).toMatchObject({ sim_carrier: null, sim_reason: NO_SIM_REPORT_REASON, sim_number_redacted: null, sim_number_hash: null });
+      expect(cleared.sim_report_gen).toBeGreaterThan(Math.abs(previousGeneration));
+
+      finish();
+      expect(await pending).toBe(state === "already settled");
+      expect(await row(a.id)).toMatchObject({ sim_carrier: null, sim_reason: NO_SIM_REPORT_REASON, sim_report_gen: cleared.sim_report_gen });
+
+      // A genuinely newer SIM report still works and reuses the paid answer.
+      expect(await refreshAgentSim(a.id, report, { provider: otherProvider })).toBe(true);
+      expect((await row(a.id)).sim_carrier).toBe("att");
+      expect(lookup).toHaveBeenCalledTimes(1);
+    } finally {
+      finish();
+      await pending?.catch(() => {});
+      await otherPool.end();
+    }
   });
 
   it("a newer report starting right after an older one commits keeps the memo: the older never overwrites it", async () => {
