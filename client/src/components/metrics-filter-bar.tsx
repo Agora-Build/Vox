@@ -34,7 +34,7 @@ export function MetricsFilterBar({
   actions,
   className,
 }: MetricsFilterBarProps) {
-  // Keep shared filtered views expanded so an active constraint is never hidden.
+  // Keep any initial constraints visible; default All views start collapsed.
   const [networkFiltersVisible, setNetworkFiltersVisible] = useState(() => tagFilters.length > 0 || !!groupBy || network === "strict");
   const networkFiltersId = `${idPrefix}-network-filters`;
 

@@ -37,7 +37,7 @@ import {
 import { detailWindow, mergeMetricDetail, METRICS_DAY_MS, type MetricsResolution, type MetricsWindow } from "@shared/metrics-window";
 import { useRegionLocations } from "@/hooks/use-regions";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
-import { useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
+import { useMetricsTagState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
 import { MetricsFilterBar } from "@/components/metrics-filter-bar";
 import type { NetworkMode } from "@shared/network-events";
 import { formatTag, type Tag } from "@shared/tags";
@@ -1237,8 +1237,8 @@ export default function Dashboard() {
   const [evalMode, setEvalMode] = useState<"web" | "phone">("web");
   // Provider multi-select: hidden set (default empty = all shown).
   const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
-  // Network tags: filters (all must match) + groupBy, kept in the URL.
-  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagUrlState("all");
+  // Network tags: filters (all must match) + groupBy, reset on page load.
+  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagState();
   const tagKey = tagParamsKey(tagFilters, groupBy, network);
   const { data: regionLocations } = useRegionLocations();
   const { data: providerList } = useQuery<Array<{ id: string; name: string }>>({

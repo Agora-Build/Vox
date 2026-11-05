@@ -14,8 +14,9 @@ Leaderboard and metrics APIs, including public v1, default to strict network
 coverage. Old agents remain compatible but unverified;
 historical/unsupported/incomplete runs are visible with `network=all`.
 
-The Real-time UI deliberately defaults to **All networks**, sending `network=all`
-for Mainline, Community and My Evals. Advanced network controls and the **Strict**
+The Real-time and Leaderboard UIs deliberately default to **All networks**, sending
+`network=all` in API requests (including Real-time Mainline, Community and My Evals).
+Advanced network controls and the **Strict**
 switch are hidden, with Strict off. Click the selected **All** button to reveal
 Last mile, Datacenter, tag filters, grouping and Strict; select All again to clear
 network filters/grouping, turn Strict off and collapse the controls. The extended
@@ -25,20 +26,19 @@ filter row preserves the status-to-tabs gap. Time, region, transport and provide
 selections are preserved. The information icon before the compact Strict switch
 explains coverage and the frozen baseline used for grouping; no coverage summary
 or counts are displayed or polled.
-Filtered/grouped/explicit-Strict links start expanded so active constraints stay
-visible. To retain a strict benchmark, share `/realtime?network=strict` (or append
-`&network=strict` to an existing filtered URL). Older Real-time links that omit
-network now use All, even with tags/grouping. Use `network=all` when comparing API
-results with default Real-time; this UI choice does not change API or Leaderboard
-defaults.
+Network policy, tag filters and grouping are temporary page selections, not URL
+state. Refreshing either page resets to All with Strict off and controls hidden.
+Legacy `network`, `tag` and `groupBy` URL parameters are ignored and removed;
+unrelated parameters such as Real-time's active tab remain intact. To inspect a
+strict benchmark, reveal the controls and enable Strict for the current page.
+Use `network=all` when comparing API results with either default UI; API defaults
+remain strict.
 
 Leaderboard uses the same compact controls: information icon, Strict label and
 switch before the time range, and extended network filters on the next row.
 Selecting All clears tags/grouping, turns Strict off and collapses the extended
 controls; deselecting All reveals them without changing the time or region.
-Filtered/grouped links stay expanded. Its existing Strict-on default remains
-unchanged, so a fresh Leaderboard opens expanded rather than hiding an active
-benchmark constraint.
+Both pages start with All selected and network controls collapsed.
 
 Watch `/api/metrics/network-coverage?tier=realtime` during rollout. This counts
 stable, changed and unverified results in the selected tier/window/filter scope.

@@ -40,6 +40,12 @@ Live dashboard with zoom/pan charts, per-provider series with gap detection, and
 ### Global Leaderboard
 Compare providers across regions with sortable rankings, P95 latency columns, and composite scoring.
 
+Real-time and Leaderboard start with **All** networks selected and advanced network
+filters hidden. Click All to reveal filters and the Strict switch; select All again
+to reset them. Network filters and grouping stay out of the page URL and reset to
+All on refresh. Metrics APIs still default to Strict; use `network=all` to match
+the default dashboard views.
+
 ### Job Detail & Artifacts
 Per-job metrics, turn-level latency, recorded audio playback, and full artifact bundles from S3-compatible storage.
 
