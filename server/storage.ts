@@ -129,6 +129,7 @@ const METRICS_ROW_CEILING = 20000;
 const METRICS_ALL_MAX_DAYS = METRICS_RETENTION_DAYS;
 
 export type MetricTier = "mainline" | "community" | "myEvals";
+export class JobExecutionIdentityError extends Error {}
 /** System-only access columns, written only by the location check (server/location.ts). */
 export type EvalAgentAccessFields = { accessClass: string; accessReason: string; accessCheckedAt: Date; accessIp: string | null };
 export type MetricsMode = "raw" | "bucketHour" | "bucketDay";
@@ -2125,7 +2126,7 @@ export class DatabaseStorage {
    */
   async finalizeRunningJobWithResult(
     jobId: number, error: string | undefined, result: InsertEvalResult | null,
-    holder?: { agentId: number; leaseId: unknown; startedAt?: Date | null;
+    holder?: { agentId: number; leaseId: unknown; startedAt?: Date | null; legacyCompletion?: boolean;
       network?: { report?: unknown; ip?: string; lastHeartbeatAt?: Date | null;
         onAck: (ack: NetworkAck | undefined) => void; onStatus?: (status: NetworkReportStatus | undefined) => void } },
   ): Promise<EvalJob | undefined> {
@@ -2141,6 +2142,16 @@ export class DatabaseStorage {
         const [agent] = await tx.select({ lease: evalAgents.currentLeaseId }).from(evalAgents)
           .where(eq(evalAgents.id, holder.agentId)).for("share");
         if (!agent || (!!agent.lease && agent.lease !== holder.leaseId)) throw superseded;
+      }
+      if (holder?.legacyCompletion && running?.status === "running") {
+        const { rows: [history] } = await client.query(`SELECT EXISTS (
+          SELECT 1 FROM eval_job_network_events WHERE job_id=$1 AND source='core'
+          AND event='initial' AND started_at <> $2) AS prior_claim`, [jobId, running.startedAt]);
+        // Legacy daemons do not echo a claim identity. Accept their initial
+        // execution only; a delayed result cannot be distinguished after reclaim.
+        if (running.retryCount > 0 || history.prior_claim) {
+          throw new JobExecutionIdentityError("Execution timestamp required after a job is reclaimed; upgrade the eval agent");
+        }
       }
       let networkAck: NetworkAck | undefined;
       let networkReportStatus: NetworkReportStatus | undefined;

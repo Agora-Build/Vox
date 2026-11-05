@@ -90,6 +90,9 @@ Core independently observes the request IP, without exposing it in events.
 Deploy Core's schema-66 migration before rolling out this daemon. Old agents
 continue to run; they do not qualify for the default strict dashboards. Use
 the explicit Include unstable / unverified toggle to inspect older data.
+Timestamp-less old daemons can complete a job's first execution, but cannot
+complete a retried/reclaimed job: Core cannot distinguish their delayed result
+from a successor on the same lease. Upgrade to echo the claim `startedAt`.
 
 ### Artifact Upload (S3)
 

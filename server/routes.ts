@@ -2,7 +2,7 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import { randomUUID, createHash } from "crypto";
 import { type Server } from "http";
 import { z } from "zod";
-import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
+import { storage, hashToken, generateSecureToken, generateEvalAgentToken, generateBrokerRegistrationToken, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, encryptValue, decryptValue, isEncryptionConfigured, JobExecutionIdentityError, type MetricSourceRow, type RegionQueryScope, type MetricTier } from "./storage";
 import { parseNextCronRun } from "./cron";
 import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
@@ -4832,11 +4832,12 @@ export async function registerRoutes(
       let finalized: EvalJob | undefined;
       try {
         finalized = await storage.finalizeRunningJobWithResult(parseInt(jobId), jobError, resultRow, {
-          agentId, leaseId, startedAt: job.startedAt,
+          agentId, leaseId, startedAt: job.startedAt, legacyCompletion: !claimStart.success,
           network: { report: req.body.networkReport, ip: clientIp(req), lastHeartbeatAt: agent.lastSeenAt,
             onAck: (ack) => { networkAck = ack; }, onStatus: (status) => { networkReportStatus = status; } },
         });
       } catch (resultError) {
+        if (resultError instanceof JobExecutionIdentityError) return res.status(409).json({ error: resultError.message });
         if (resultError instanceof NetworkReportError) return res.status(resultError.status).json({ error: resultError.message });
         console.error(`Failed to save the result of job ${jobId}:`, resultError);
         return res.status(500).json({ error: "Failed to save eval results" });

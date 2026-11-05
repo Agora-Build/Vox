@@ -733,6 +733,10 @@ marks monitoring incomplete; database failures request retry without discarding
 pending events. Missing pre-upgrade history resumes at an incomplete checkpoint,
 never a fabricated fully monitored baseline. Completion carries a separate
 claim `startedAt` so old-execution results and superseded leases remain fenced.
+Timestamp-less legacy completions remain compatible only on a job's first
+execution. After a retry or archived prior claim, Core requires the claim
+timestamp under the finalization lock; a delayed legacy result cannot be
+mistaken for its same-agent/same-lease successor. Upgraded daemons echo it.
 The job-level incomplete flag is authoritative; updating its telemetry-state
 mirror is best-effort behind a separate savepoint. A failed telemetry-table
 write therefore cannot poison result finalization. A lost database connection

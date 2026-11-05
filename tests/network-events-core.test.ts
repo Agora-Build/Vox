@@ -5,7 +5,7 @@ await vi.hoisted(async () => {
     process.env.DATABASE_URL = await prepareIsolatedCoreDb(process.env.DATABASE_URL, "vox_test_network_events");
   }
 });
-import { storage, pool } from "../server/storage";
+import { storage, pool, JobExecutionIdentityError } from "../server/storage";
 import { recordAgentNetworkEvents, receiveAgentNetworkEvents, getJobNetworkHistory } from "../server/network-events";
 import type { EvalJob } from "../shared/schema";
 import type { NetworkReport } from "../shared/network-events";
@@ -184,6 +184,15 @@ d("Core network history, claim fencing and strict metrics", () => {
     expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
     expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ status: "rejected", reason: "invalid_report" }));
     expect(onAck.mock.calls[0][0]?.ackedEventSeqs ?? []).toEqual([]);
+  });
+  it("fences timestamp-less legacy results transactionally after same-lease reclaim", async () => {
+    await pool.query("UPDATE eval_jobs SET status='pending' WHERE id=$1", [job.id]);
+    job = (await storage.claimEvalJob(job.id, agentId, identity()))!;
+    await expect(storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId, siteId: null }, {
+      agentId, leaseId, startedAt: job.startedAt, legacyCompletion: true,
+    })).rejects.toBeInstanceOf(JobExecutionIdentityError);
+    expect((await current()).status).toBe("running");
+    expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(0);
   });
   it("rolls back only failed telemetry storage, saving the result and requesting a safe retry", async () => {
     await pool.query(`CREATE FUNCTION network_test_storage_error() RETURNS trigger LANGUAGE plpgsql AS $$

@@ -147,11 +147,31 @@ d("network event HTTP contract and benchmark policy", () => {
     const path = `/api/eval-agent/jobs/${job.id}/complete`;
     const body = { agentId, leaseId, networkReport: old, results: { responseLatencyMedian: 100 } };
     await auth(request(app).post(path)).send(body).expect(409);
+    await auth(request(app).post(path)).send({ agentId, leaseId, results: body.results }).expect(409);
     await auth(request(app).post(path)).send({ ...body, startedAt: old.startedAt }).expect(409);
     expect((await storage.getEvalJob(job.id))?.status).toBe("running");
     expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(0);
     const recovered = await auth(request(app).post(path)).send({ ...body, startedAt: job.startedAt!.toISOString() }).expect(200);
     expect(recovered.body.networkReportStatus).toMatchObject({ status: "rejected", reason: "execution_mismatch", incomplete: true });
+    expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+  });
+  it("keeps a legacy daemon's first completion compatible without optional network metadata", async () => {
+    await auth(request(app).post(`/api/eval-agent/jobs/${job.id}/complete`)).send({ agentId, leaseId,
+      results: { responseLatencyMedian: 100 } }).expect(200);
+    expect(await storage.getEvalJob(job.id)).toMatchObject({ status: "completed", networkMonitoring: "incomplete" });
+    expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+  });
+  it("requires execution identity on pre-upgrade reclaims even without historical event rows", async () => {
+    await pool.query("DELETE FROM eval_job_network_events WHERE job_id=$1", [job.id]);
+    await pool.query("DELETE FROM eval_job_network_state WHERE job_id=$1", [job.id]);
+    await pool.query("UPDATE eval_jobs SET retry_count=1 WHERE id=$1", [job.id]);
+    const path = `/api/eval-agent/jobs/${job.id}/complete`;
+    const body = { agentId, leaseId, results: { responseLatencyMedian: 100 } };
+    const response = await auth(request(app).post(path)).send(body).expect(409);
+    expect(response.body.error).toContain("Execution timestamp required");
+    expect((await storage.getEvalJob(job.id))?.status).toBe("running");
+    expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(0);
+    await auth(request(app).post(path)).send({ ...body, startedAt: job.startedAt!.toISOString() }).expect(200);
     expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
   });
   it("job history requires authorization and exposes neither leases nor addresses", async () => {
