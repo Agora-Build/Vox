@@ -258,11 +258,13 @@ export function isClaimable(
   // applies to every arm below, targeted included. Absent transport = web.
   if (job.transport === "phone" && token.phoneCapable !== true) return false;
   const owner = job.snapshot?.evalFlow;
-  if (job.snapshot?.requiresCredentials || job.snapshot?.sessionInjection) {
+  // Match SQL jsonb presence: even a malformed JSON-null stamp fails closed.
+  const hasSessionInjection = job.snapshot?.sessionInjection !== undefined;
+  if (job.snapshot?.requiresCredentials || hasSessionInjection) {
     if (token.dispatchTier === "private" && (!owner || owner.organizationId != null || owner.ownerId !== token.createdBy)) return false;
     if (token.dispatchTier === "team" && (!owner || !sameOrg({ organizationId: owner.organizationId }, { organizationId: orgs?.tokenOwnerOrgId ?? null }))) return false;
     const personalAgent = owner?.organizationId == null && owner?.ownerId === token.createdBy;
-    if (token.dispatchTier === "shared" && !personalAgent && (job.targetTokenId !== token.id || (job.snapshot.sessionInjection && job.snapshot.credentialConsent !== true))) return false;
+    if (token.dispatchTier === "shared" && !personalAgent && (job.targetTokenId !== token.id || (hasSessionInjection && job.snapshot?.credentialConsent !== true))) return false;
   }
 
   // Targeted: only the aimed token, ever.

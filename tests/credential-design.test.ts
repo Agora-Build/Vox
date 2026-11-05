@@ -27,6 +27,15 @@ describe("living credential design", () => {
     }
     expect(design).not.toContain("BROKER_REGISTRATION_TOKEN");
   });
+  it("keeps repository guidance and upgrade effects aligned with the policy", () => {
+    const guidance = readFileSync("CLAUDE.md", "utf8");
+    expect(guidance).toContain("designs/agent-credentials-design.md");
+    expect(guidance).toContain("`isTestAccount` remains legacy metadata, never authorization");
+    expect(guidance).toContain("Runtime is hard-blocked on third-party Shared agents");
+    const deployment = readFileSync("docs/DEPLOYMENT.md", "utf8");
+    expect(deployment).toContain("The scheduler disables such schedules on its next");
+    expect(deployment).toContain("There is no grandfathered credential grant for pending legacy jobs");
+  });
   it.each([
     "designs/2026-08-20-secret-class-protected-runtime-design.md",
     "designs/2026-08-21-broker-registry-design.md",

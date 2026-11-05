@@ -293,13 +293,10 @@ export async function processScheduledJobs() {
         }
         const jobConfig = mergeEvalConfig(evalFlow.config, evalSet?.config, { evalSetSecrets: gate.evalSetSecrets });
         // The evalFlow's secrets are mutable after schedule creation: a
-        // public/team schedule whose evalFlow LATER gained a login-class
-        // secret would emit an unclaimable session job every tick (the claim
-        // predicate refuses them, and pooled rows ride the 24h backstop).
-        // Check with the PURE detector BEFORE stampOwnerSession — the stamp
-        // helper mutates config and pre-warms a broker mint (ensureSession),
-        // and a schedule we are about to disable must not burn a login
-        // attempt first.
+        // credential-bearing flow must still match its Private/Team pool.
+        // Mainline is trusted for both Runtime and Brokered credentials.
+        // Check before stampOwnerSession so disallowed schedules neither mint
+        // sessions nor emit jobs that delivery would refuse.
         const schedSessionReq = await detectSessionNeed(evalFlow);
         const violation = await ownedCredentialPoolViolation(evalFlow, evalSet, schedule.targetTier, {
           id: schedule.createdBy!, organizationId: creatorMembership?.organizationId ?? null,

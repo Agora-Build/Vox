@@ -359,6 +359,15 @@ Keep the encryption key, broker registrations, organization plugin and secret
 classifications unchanged. Verify owner and third-party paths independently;
 successful dispatch alone does not prove safe credential delivery.
 
+Upgrade compatibility does not grandfather credential authorization. The
+scheduler disables an existing schedule whose credentials no longer match its
+Private/Team pool; its owner must correct the pool and explicitly re-enable it.
+Legacy pending/in-flight jobs must satisfy the new delivery checks, including
+durable trial admission for borrowed credentials. Drain/review incompatible jobs
+before rollout rather than synthesizing authorization records. Organization
+provider absence/outages remain temporary skip conditions, never a reason to
+disable schedules.
+
 No deployment, production credential changes, blanket schedule resumption,
 or automatic borrowing opt-in is authorized by this document. Future work:
 provider-cost measurement, exact next-capacity timestamps, cross-owner BYOC

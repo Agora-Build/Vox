@@ -69,6 +69,28 @@ Team agents use only their own organization's credentials. Trusted Mainline
 supports authorized Runtime and Brokered flows, including owner schedules.
 Raw Brokered credentials never reach an eval agent, even the owner's.
 
+### Existing schedules and pending jobs
+
+Before deployment, review enabled schedules that use credentials. In particular,
+organization flows in a Private pool and personal flows in a Team pool no longer
+meet the ownership matrix. The scheduler disables such schedules on its next
+tick, before minting or creating a job; they do not re-enable automatically.
+Have the schedule owner choose a same-org Team/Mainline pool for an org flow,
+or an own Private/Mainline pool for a personal flow, then explicitly re-enable.
+Provider absence/outages still skip rather than disable schedules; do not
+confuse that temporary state with a persistent policy violation.
+
+There is no grandfathered credential grant for pending legacy jobs. In-flight
+jobs also use the new delivery checks on any subsequent credential request.
+A cross-owner run lacking the durable browser-trial admission, a third-party
+Shared Runtime job, or a mismatched Private/Team scope will be denied rather
+than receive credentials. Review/drain these jobs before rollout, or have their
+owners cancel and resubmit using an authorized agent/credential scope. Do not
+fabricate trial usage rows, stamp consent on old jobs or automatically resume
+schedules to work around the policy.
+
+### Enabling and verifying public trials
+
 Borrowing stays **off by default**. To enable it, the credential owner opens
 Secrets, enables Public flow trials and saves a positive aggregate 30-day run
 budget. Organization settings require that organization's owner/admin. Each

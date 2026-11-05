@@ -230,6 +230,27 @@ d("credential policy: isolated PostgreSQL and HTTP contracts", () => {
     await request(app).get(`/api/eval-agent/jobs/${job.id}/secrets?leaseId=credential-lease`).set("Authorization", "Bearer credential-test-agent").expect(200, {});
     expect(await count()).toBe(0);
   });
+  it("keeps Mainline token creation and promotion admin-only", async () => {
+    await auth(request(app).post("/api/eval-agent-tokens"), 1).send({ name: "Untrusted Mainline", dispatchTier: "public", regionLocationBaseId: region }).expect(403);
+    const legacy = await storage.createEvalAgentToken({ name: "Configured private token", tokenHash: randomUUID(), createdBy: 1, dispatchTier: "private", siteId: `${region}-09`, region });
+    await auth(request(app).patch(`/api/eval-agent-tokens/${legacy.id}`), 1).send({ dispatchTier: "public" }).expect(403);
+    expect((await storage.getEvalAgentToken(legacy.id))?.dispatchTier).toBe("private");
+    await auth(request(app).post("/api/eval-agent-tokens"), 3).send({ name: "Trusted Mainline", dispatchTier: "public", regionLocationBaseId: region }).expect(200);
+    await auth(request(app).patch(`/api/eval-agent-tokens/${legacy.id}`), 3).send({ dispatchTier: "public" }).expect(200);
+  });
+  it.each(["private", "shared"] as const)("keeps pure, list and atomic %s claim gates consistent for a JSON-null session stamp", async (tier) => {
+    const token = await storage.createEvalAgentToken({ name: "Malformed-stamp agent", tokenHash: randomUUID(), createdBy: 2, dispatchTier: tier, siteId: `${region}-08` });
+    const agent = await storage.createEvalAgent({ name: "Malformed-stamp agent", tokenId: token.id, state: "idle" });
+    const job = await storage.createEvalJob({
+      ...values(),
+      ...(tier === "shared" ? { targetTokenId: token.id, targetRegion: null, targetTier: null } : { targetTier: "private" }),
+      snapshot: { ...buildJobSnapshot(flow, set, null, "premium"), requiresCredentials: false, sessionInjection: null } as never,
+    });
+    const target = { ...identity(), id: token.id, dispatchTier: tier, createdBy: 2 };
+    expect(isClaimable(job, target)).toBe(false);
+    expect((await storage.getClaimableJobsForToken(target)).some((j) => j.id === job.id)).toBe(false);
+    expect(await storage.claimEvalJob(job.id, agent.id, target)).toBeUndefined();
+  });
   it("blocks Runtime on Shared before any marketplace hold, even with the old consent flag", async () => {
     setMarketplace({ authorizeDispatch } as unknown as EvalMarketplace);
     const result = await auth(request(app).post(`/api/eval-flows/${flow.id}/run`), 1).send({ evalSetId: set.id, targetTokenId: sharedId, runtimeSecretConsent: true }).expect(400);
@@ -247,6 +268,31 @@ d("credential policy: isolated PostgreSQL and HTTP contracts", () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0].snapshot.sessionInjection).toBeDefined();
     expect(await count()).toBe(0);
+  });
+  it.each([
+    { organization: false, tier: "team" as const },
+    { organization: true, tier: "private" as const },
+  ])("disables legacy credential schedules with mismatched $tier pools until the owner corrects them (org=$organization)", async ({ organization, tier }) => {
+    setOrganizations(orgs);
+    memberships.set(1, { organizationId: 10, role: "owner" });
+    if (organization) {
+      flow = (await storage.updateEvalFlow(flow.id, { organizationId: 10 }))!;
+      set = (await storage.updateEvalSet(set.id, { organizationId: 10 }))!;
+      orgSecrets.set(10, [{ name: "RUN_KEY", brokerType: null, encryptedValue: encryptValue("organization-runtime-value") } as OrgSecretRow]);
+    }
+    const response = await auth(request(app).post("/api/eval-schedules"), 1).send({
+      name: "Legacy mismatched pool", evalFlowId: flow.id, evalSetId: set.id,
+      region, targetTier: "public", scheduleType: "once",
+    }).expect(200);
+    // Simulate a pre-upgrade row without bypassing the new API admission gate.
+    await storage.updateEvalSchedule(response.body.id, { targetTier: tier });
+    await processScheduledJobs();
+    expect((await storage.getEvalSchedule(response.body.id))?.isEnabled).toBe(false);
+    expect((await pool.query("SELECT count(*)::int AS n FROM eval_jobs WHERE schedule_id=$1", [response.body.id])).rows[0].n).toBe(0);
+    await auth(request(app).patch(`/api/eval-schedules/${response.body.id}`), 1).send({ isEnabled: true }).expect(403);
+    await auth(request(app).patch(`/api/eval-schedules/${response.body.id}`), 1).send({ targetTier: "public", isEnabled: true }).expect(200);
+    expect((await storage.getEvalSchedule(response.body.id))?.isEnabled).toBe(true);
+    await storage.updateEvalSchedule(response.body.id, { isEnabled: false });
   });
   it("requires fresh owner consent for Shared sessions, not a test-account checkbox", async () => {
     setMarketplace({ authorizeDispatch } as unknown as EvalMarketplace);
