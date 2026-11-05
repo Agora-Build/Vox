@@ -1,7 +1,7 @@
 import { and, eq, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { credentialTrialPolicies, credentialTrialUsage, evalFlows, evalJobs, type EvalJob, type InsertEvalJob, type JobSnapshot } from "@shared/schema";
+import { credentialTrialPolicies, credentialTrialUsage, evalFlows, evalSets, evalJobs, type EvalJob, type InsertEvalJob, type JobSnapshot } from "@shared/schema";
 import { trialAllowance, type CredentialTrialPolicy, type FlowTrialLimits } from "@shared/credential-trials";
 import { db } from "./storage";
 import { getOrganizations } from "./organizations";
@@ -80,7 +80,8 @@ export async function findCredentialTrialJob(
 export async function createCredentialTrialJob(job: InsertEvalJob, requestKey: string = randomUUID()): Promise<EvalJob> {
   const snapshot = job.snapshot as JobSnapshot | null;
   const frozenFlow = snapshot?.evalFlow;
-  if (!frozenFlow || job.createdBy == null || job.targetTier !== "public" || job.targetTokenId != null ||
+  const frozenSet = snapshot?.evalSet;
+  if (!frozenFlow || !frozenSet || job.evalSetId == null || job.createdBy == null || job.targetTier !== "public" || job.targetTokenId != null ||
       job.triggerType !== 2 || frozenFlow.visibility !== "public" || job.scheduleId != null) {
     throw new CredentialTrialError("Borrowed credentials require a manual Mainline trial.", 403);
   }
@@ -100,6 +101,12 @@ export async function createCredentialTrialJob(job: InsertEvalJob, requestKey: s
     if (!flow || flow.visibility !== "public" || flow.ownerId !== frozenFlow.ownerId ||
         flow.organizationId !== frozenFlow.organizationId || !isDeepStrictEqual(flow.config, frozenFlow.config)) {
       throw new CredentialTrialError("The flow changed. Refresh before starting a trial.", 409);
+    }
+    const [evalSet] = await tx.select().from(evalSets).where(eq(evalSets.id, job.evalSetId!)).for("share");
+    if (!evalSet || evalSet.ownerId !== frozenSet.ownerId ||
+        evalSet.organizationId !== (frozenSet.organizationId ?? null) || evalSet.visibility !== frozenSet.visibility ||
+        !isDeepStrictEqual(evalSet.config, frozenSet.config)) {
+      throw new CredentialTrialError("The eval set changed. Refresh before starting a trial.", 409);
     }
     const allowance = trialAllowance(await readPolicy(tx, scopeKey), await readUsage(tx, scopeKey, job.createdBy!, flow.id), flow);
     if (!allowance.available) throw new CredentialTrialError(allowance.reason!, 429);
@@ -121,8 +128,11 @@ export async function jobMayUseCredentials(job: EvalJob): Promise<boolean> {
   if (ownsCredentialScope(frozenFlow, { id: job.createdBy, organizationId: membership?.organizationId ?? null })) return true;
   const stamp = job.snapshot?.credentialTrial;
   if (!stamp || stamp.callerId !== job.createdBy || stamp.scopeKey !== credentialScopeKey(frozenFlow) || job.targetTier !== "public") return false;
-  const [usage] = await db.select({ id: credentialTrialUsage.id }).from(credentialTrialUsage).where(and(
-    eq(credentialTrialUsage.jobId, job.id), eq(credentialTrialUsage.callerId, job.createdBy), eq(credentialTrialUsage.scopeKey, stamp.scopeKey),
-  ));
+  // Scope opt-out revokes delivery; exhausting a positive cap only stops admission.
+  const [usage] = await db.select({ id: credentialTrialUsage.id }).from(credentialTrialUsage)
+    .innerJoin(credentialTrialPolicies, eq(credentialTrialPolicies.scopeKey, credentialTrialUsage.scopeKey)).where(and(
+      eq(credentialTrialUsage.jobId, job.id), eq(credentialTrialUsage.callerId, job.createdBy), eq(credentialTrialUsage.scopeKey, stamp.scopeKey),
+      eq(credentialTrialPolicies.enabled, true), sql`${credentialTrialPolicies.maxRuns30Days} > 0`,
+    ));
   return !!usage;
 }

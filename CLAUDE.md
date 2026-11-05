@@ -191,7 +191,10 @@ credential-owner opt-in and a positive aggregate 30-day run budget. Defaults are
 from 0 to 10,000 (zero disables). Organization limit edits require secret-manager
 rights. PostgreSQL admission/usage are atomic and request-UUID idempotent;
 failures/cancellations count and history deletion never refunds usage. API keys
-and borrower schedules have no borrowing exception. Schema 67 and upgrade effects
+and borrower schedules have no borrowing exception. Admission locks/rechecks the
+eval set as well as the flow. Scope opt-out blocks future trial credential delivery,
+including queued/running jobs, without retracting delivered values or sessions;
+an exhausted positive budget only stops new admissions. Schema 67 and upgrade effects
 are documented in `docs/DEPLOYMENT.md#credential-policy-rollout-schema-67`.
 
 - **Dynamic registry:** admin mints a hashed `broker_registration_tokens` row; the broker sidecar registers against Core, advertising an internal-only callback URL and receiving a per-broker in-memory mint secret. Core tracks `(brokerType, state)` in `brokers` and dispatches mints lease-fenced to a live broker, with cold-cache reregister after Core restarts. Heartbeats only prove broker→Core, so Core also probes each broker's advertised `GET /health` (after registration, then every minute in the maintenance worker) and records `reachability_error` on the row (#129, Brokers page "From Core"). Mint errors name their class: Core couldn't reach the broker / the broker refused Core (401) / `target login failed` (the broker's 502); the agent prefixes them `session mint failed:`.

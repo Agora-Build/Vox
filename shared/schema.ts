@@ -543,7 +543,11 @@ export type JobSnapshot = {
     tags?: Tag[];
     lineLookup?: LineLookup | null;
   } | null;
-  evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
+  evalSet: {
+    name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number;
+    // Optional for snapshots created before credential-trial admission checks.
+    organizationId?: number | null;
+  } | null;
   creatorPlan: string | null;
   // Conversation transport frozen at creation (design 2026-09-21 §3). Absent on
   // pre-existing snapshots ⇒ treat as "web".

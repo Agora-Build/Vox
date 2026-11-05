@@ -639,6 +639,7 @@ export function buildJobSnapshot(
           visibility: evalSet.visibility,
           isMainline: evalSet.isMainline,
           ownerId: evalSet.ownerId,
+          organizationId: evalSet.organizationId ?? null,
         }
       : null,
     creatorPlan,

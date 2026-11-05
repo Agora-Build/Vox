@@ -239,6 +239,69 @@ d("credential policy: isolated PostgreSQL and HTTP contracts", () => {
     await expect(createCredentialTrialJob(values())).rejects.toMatchObject({ status: 409 });
     expect(await count()).toBe(0);
   });
+  it.each(["config", "owner", "organization", "visibility", "deleted"] as const)("rejects an eval set %s change while trial admission waits", async (change) => {
+    await enable();
+    const blocker = await pool.connect();
+    await blocker.query("BEGIN");
+    await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`credential-trials:${scope()}`]);
+    const rejected = expect(createCredentialTrialJob(values())).rejects.toMatchObject({ status: 409 });
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await pool.query("SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE a.datname=current_database() AND l.locktype='advisory' AND NOT l.granted");
+        expect(waiting.rows[0].n).toBe(1);
+      }, { timeout: 5000 });
+      if (change === "config") await storage.updateEvalSet(set.id, { config: { steps: "- type: log\n  text: changed\n" } });
+      if (change === "owner") await storage.updateEvalSet(set.id, { ownerId: 2 });
+      if (change === "organization") await storage.updateEvalSet(set.id, { organizationId: 10 });
+      if (change === "visibility") await storage.updateEvalSet(set.id, { visibility: "private" });
+      if (change === "deleted") await storage.deleteEvalSet(set.id);
+    } finally {
+      await blocker.query("COMMIT");
+      blocker.release();
+    }
+    await rejected;
+    expect(await count()).toBe(0);
+    expect((await pool.query("SELECT count(*)::int AS n FROM eval_jobs WHERE eval_flow_id=$1", [flow.id])).rows[0].n).toBe(0);
+  });
+  it.each([
+    { enabled: false, maxRuns30Days: 10 },
+    { enabled: true, maxRuns30Days: 0 },
+  ])("revokes pending trial credential delivery when the scope policy is $enabled/$maxRuns30Days", async (policy) => {
+    await enable(1);
+    const key = randomUUID();
+    const pending = await createCredentialTrialJob(values(), key);
+    const owned = await storage.createEvalJob(values(1));
+    // Reaching the admission budget must not revoke already admitted work.
+    expect(await jobMayUseCredentials(pending)).toBe(true);
+    await setCredentialTrialPolicy(scope(), policy);
+    expect(await jobMayUseCredentials(pending)).toBe(false);
+    expect(await jobMayUseCredentials(owned)).toBe(true);
+    const replay = await run({ requestId: key }).expect(200);
+    expect(replay.body.job.id).toBe(pending.id);
+    const job = await claim(pending);
+    await request(app).get(`/api/eval-agent/jobs/${job.id}/secrets?leaseId=credential-lease`).set("Authorization", "Bearer credential-test-agent").expect(403);
+    expect(await count()).toBe(1);
+    await enable(1);
+    await request(app).get(`/api/eval-agent/jobs/${job.id}/secrets?leaseId=credential-lease`).set("Authorization", "Bearer credential-test-agent").expect(200, { RUN_KEY: "owner-runtime-value" });
+    await pool.query("DELETE FROM credential_trial_policies WHERE scope_key=$1", [scope()]);
+    expect(await jobMayUseCredentials(job)).toBe(false);
+  });
+  it.each(["session", "restful"] as const)("revokes %s credential delivery for running trials", async (kind) => {
+    const stepsPrefix = kind === "session"
+      ? "- type: platform.setup\n  platform_id: agora\n  params:\n    email: ${secrets.LOGIN_EMAIL}\n    password: ${secrets.LOGIN_PASSWORD}\n"
+      : "- type: restful.request\n  method: POST\n  url: https://example.com/test\n  headers:\n    Authorization: Bearer ${secrets.RUN_KEY}\n";
+    flow = (await storage.updateEvalFlow(flow.id, { config: { stepsPrefix } }))!;
+    await enable();
+    const response = await run().expect(200);
+    const job = await claim(await storage.getEvalJob(response.body.job.id) as EvalJob);
+    await setCredentialTrialPolicy(scope(), { enabled: false, maxRuns30Days: 100 });
+    if (kind === "session") {
+      await request(app).get(`/api/eval-agent/jobs/${job.id}/session?leaseId=credential-lease`).set("Authorization", "Bearer credential-test-agent").expect(403);
+    } else {
+      await request(app).post(`/api/eval-agent/jobs/${job.id}/restful`).set("Authorization", "Bearer credential-test-agent")
+        .send({ leaseId: "credential-lease", stepIndex: 0 }).expect(403);
+    }
+  });
   it("web trials use an immutable, durable credential scope, not caller-supplied overrides", async () => {
     await enable();
     const response = await run({ config: { stepsPrefix: "evil" }, snapshot: { credentialTrial: { scopeKey: "user:3", callerId: 3 } } }).expect(200);

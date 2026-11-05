@@ -99,6 +99,12 @@ disables its borrowed trials. Borrowing requires a signed-in browser session,
 an owner-controlled eval set and pooled Mainline. API keys and borrower
 schedules never gain access. Admitted failures/cancellations count; deleting
 history does not refund usage. These are run caps, not provider-dollar caps.
+Disabling the scope's trials blocks subsequent credential delivery to queued
+and running trials; it cannot retract values or sessions already delivered.
+An exhausted positive budget blocks new admissions, not admitted jobs.
+Re-enabling permits remaining requests again. Post-admission flow/eval-set
+edits do not revoke their frozen authorization; cancel individual jobs to stop
+them, or disable the scope to block further borrowed credential delivery.
 
 Post-deploy, verify with limited test credentials:
 
@@ -111,6 +117,8 @@ Post-deploy, verify with limited test credentials:
   schedule without resuming unrelated schedules.
 - Confirm public create/edit/publish controls show 5/80 defaults and custom
   limits, and run forms show remaining allowance or the BYOC alternative.
+- Disable borrowing and confirm queued/running trials cannot receive Runtime,
+  session or REST credentials while owner-authorized jobs remain unaffected.
 - Confirm personal/org secret deletion opens a name/scope dialog, Cancel does
   not delete, and unauthorized users cannot delete another scope's secrets.
 

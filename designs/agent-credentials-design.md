@@ -201,8 +201,10 @@ owner schedules do not consume borrowed-trial allowance.
 
 - Both rolling caller limits and the owner's aggregate budget must pass.
 - A database transaction takes submission, flow, and owner-scope advisory
-  locks, reads the live public flow/limits under row lock, then inserts the
-  job and durable usage together. All Core instances share this accounting.
+  locks, reads the live public flow/limits and eval set under row locks, then
+  inserts the job and durable usage together. Changes to the eval set's config,
+  owner, organization or visibility, or its deletion before admission, require
+  refresh. All Core instances share this accounting.
 - Flow ownership/config changes while waiting require refresh; live quota
   changes apply without resetting usage. Per-flow usage survives ownership
   transfers; prior aggregate charges stay with their original credential scope.
@@ -218,6 +220,14 @@ owner schedules do not consume borrowed-trial allowance.
   concurrent retries reach the transactional replay path.
 - Borrowed credential release requires a durable usage record matching the
   exact job, caller, and frozen credential scope. Never trust a client stamp.
+  The scope's current policy must still be enabled with a positive budget.
+  Disabling it stops future Runtime/session/REST credential delivery for queued
+  and running trials, but cannot retract values/sessions already delivered.
+  An exhausted positive admission budget does not revoke admitted jobs.
+  Re-enabling permits their remaining authorized requests again. Flow/eval-set
+  edits after admission do not rewrite frozen authorization; cancel a specific
+  job to stop it. Retrying a submission only returns its original job and does
+  not reauthorize it or override this live scope-policy check.
 
 ### Entry Point and Safe Alternatives
 

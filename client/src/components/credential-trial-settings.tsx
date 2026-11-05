@@ -35,6 +35,7 @@ export function CredentialTrialSettings({ scope }: { scope: "personal" | "organi
         <CardDescription>
           Let signed-in users try your public flows on Mainline using {scope === "personal" ? "your" : "your organization's"} credentials.
           Off by default. This does not enable API runs or schedules for other users.
+          Turning it off blocks further credential delivery to queued and running trials, but cannot retract credentials or sessions already delivered.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
