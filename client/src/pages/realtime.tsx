@@ -6,7 +6,6 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Clock, Activity, RefreshCw, Lock, ChevronDown, Phone, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Toggle } from "@/components/ui/toggle";
 import {
   Popover,
   PopoverContent,
@@ -38,8 +37,8 @@ import {
 import { detailWindow, mergeMetricDetail, METRICS_DAY_MS, type MetricsResolution, type MetricsWindow } from "@shared/metrics-window";
 import { useRegionLocations } from "@/hooks/use-regions";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
-import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
-import { NetworkPolicyControls } from "@/components/network-policy-controls";
+import { useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
+import { MetricsFilterBar } from "@/components/metrics-filter-bar";
 import type { NetworkMode } from "@shared/network-events";
 import { formatTag, type Tag } from "@shared/tags";
 
@@ -1240,8 +1239,6 @@ export default function Dashboard() {
   const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
   // Network tags: filters (all must match) + groupBy, kept in the URL.
   const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagUrlState("all");
-  // Keep shared filtered views expanded so an active constraint is never hidden.
-  const [networkFiltersVisible, setNetworkFiltersVisible] = useState(() => tagFilters.length > 0 || !!groupBy || network === "strict");
   const tagKey = tagParamsKey(tagFilters, groupBy, network);
   const { data: regionLocations } = useRegionLocations();
   const { data: providerList } = useQuery<Array<{ id: string; name: string }>>({
@@ -1482,48 +1479,17 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex min-w-0 flex-col items-start gap-2 xl:col-start-2 xl:row-start-1 xl:row-span-2 xl:items-end">
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end" data-testid="realtime-primary-filters">
-            {networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} />}
-            <Select value={timeRange} onValueChange={setTimeRange}>
-              <SelectTrigger className="w-[100px]">
-                <SelectValue placeholder="Time" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="1">1 hour</SelectItem>
-                <SelectItem value="6">6 hours</SelectItem>
-                <SelectItem value="24">24 hours</SelectItem>
-                <SelectItem value="168">7 days</SelectItem>
-                <SelectItem value="720">30 days</SelectItem>
-                <SelectItem value="all">All time</SelectItem>
-              </SelectContent>
-            </Select>
-            <RegionScopeSelector
-              locations={visibleLocations}
-              value={regionScopes}
-              onChange={setRegionScopes}
-              showUnverified={activeTab === "my-evals" && !!regionAvailability?.hasUnverified}
-            />
-            <Toggle
-              variant="outline"
-              size="sm"
-              pressed={!networkFiltersVisible}
-              onPressedChange={(selected) => {
-                setNetworkFiltersVisible(!selected);
-                if (selected) {
-                  setTagFilters([]);
-                  setGroupBy(undefined);
-                  setNetwork("all");
-                }
-              }}
-              aria-expanded={networkFiltersVisible}
-              aria-controls="realtime-network-filters"
-              aria-label="All networks"
-              data-testid="access-toggle-all"
-              title={networkFiltersVisible ? "Show all networks and reset network filters" : "All networks (Strict off). Click to show network filters."}
-            >
-              All
-            </Toggle>
+        <MetricsFilterBar
+          idPrefix="realtime"
+          className="xl:col-start-2 xl:row-start-1 xl:row-span-2"
+          tagFilters={tagFilters}
+          onTagFiltersChange={setTagFilters}
+          groupBy={groupBy}
+          onGroupByChange={setGroupBy}
+          network={network}
+          onNetworkChange={setNetwork}
+          customKeys={tagCustomKeys}
+          actions={<>
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
@@ -1585,20 +1551,28 @@ export default function Dashboard() {
             >
               <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
             </Button>
-          </div>
-          {networkFiltersVisible && (
-            <div id="realtime-network-filters" className="flex w-full flex-wrap items-center gap-2 sm:justify-end" data-testid="realtime-network-filters">
-              <MetricsTagControls
-                tagFilters={tagFilters}
-                onTagFiltersChange={setTagFilters}
-                groupBy={groupBy}
-                onGroupByChange={setGroupBy}
-                customKeys={tagCustomKeys}
-                showAllAccessOption={false}
-              />
-            </div>
-          )}
-        </div>
+          </>}
+        >
+          <Select value={timeRange} onValueChange={setTimeRange}>
+            <SelectTrigger className="w-[100px]">
+              <SelectValue placeholder="Time" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1">1 hour</SelectItem>
+              <SelectItem value="6">6 hours</SelectItem>
+              <SelectItem value="24">24 hours</SelectItem>
+              <SelectItem value="168">7 days</SelectItem>
+              <SelectItem value="720">30 days</SelectItem>
+              <SelectItem value="all">All time</SelectItem>
+            </SelectContent>
+          </Select>
+          <RegionScopeSelector
+            locations={visibleLocations}
+            value={regionScopes}
+            onChange={setRegionScopes}
+            showUnverified={activeTab === "my-evals" && !!regionAvailability?.hasUnverified}
+          />
+        </MetricsFilterBar>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="contents">

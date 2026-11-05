@@ -782,6 +782,18 @@ filter row opens. The UI no longer displays or polls coverage counts.
 API and Leaderboard defaults remain unchanged. Older Real-time links without a
 network parameter now use All; add `network=strict` to preserve strict results.
 
+**Leaderboard UI follow-up (2026-11-05):** Leaderboard shares the compact Strict
+placement, extended-filter row and All reset/collapse behavior with Real-time.
+It retains its Strict-on benchmark default, leaving those active controls
+expanded on a fresh page. An explicit unfiltered `network=all` link starts
+collapsed; tags/grouping keep shared links expanded. Ranking calculations and
+server defaults are unchanged.
+
+Both pages compose `client/src/components/metrics-filter-bar.tsx`. It owns the
+two-row layout, initial expansion and All reset behavior, and renders the shared
+Strict/tag controls. Pages retain their URL/query state and supply their own
+primary selectors and optional trailing actions (providers/refresh on Real-time).
+
 Deploy Core schema 66 first, then updated daemons. Older daemons still run but
 remain unverified. Docker startup overrides cannot prove continuous monitoring:
 use the read-only live host sampler documented in `vox_eval_agentd/README.md`.

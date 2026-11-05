@@ -223,8 +223,11 @@ test.describe("network tags", () => {
       await page.goto(`/leaderboard?tag=run%3A${RUN}`);
       const rows = page.getByRole("row").filter({ hasText: name });
       await expect(rows).toHaveCount(1);
-      // All (default): the row averages both, and shows the split under it.
-      await expect(page.getByTestId("access-toggle-all")).toHaveAttribute("data-state", "on");
+      // No access constraint: the row averages both and shows the split.
+      // The custom run filter keeps the extended controls expanded.
+      await expect(page.getByTestId("access-toggle-all")).toHaveAttribute("data-state", "off");
+      await expect(page.getByTestId("access-toggle-lastmile")).toHaveAttribute("data-state", "off");
+      await expect(page.getByTestId("access-toggle-datacenter")).toHaveAttribute("data-state", "off");
       await expect(rows).toContainText("1520");
       await expect(rows.locator('[data-testid^="text-response-access-"]')).toHaveText("1010 / 2030");
       await expect(rows.locator('[data-testid^="text-access-count-"]')).toHaveText("1 / 1");
@@ -242,7 +245,8 @@ test.describe("network tags", () => {
       await expect(page).not.toHaveURL(/access%3Alastmile/);
       await expect(rows).toContainText("2030");
 
-      await page.getByTestId("access-toggle-all").click();
+      // Deselect only the access shortcut; All would reset every network filter.
+      await page.getByTestId("access-toggle-datacenter").click();
       await expect(page).not.toHaveURL(/tag=access/);
       await expect(page).toHaveURL(new RegExp(`tag=run%3A${RUN}`)); // other filters stay
       await expect(rows).toContainText("1520");
