@@ -74,7 +74,14 @@ WORKDIR /app
 # never does audio I/O (setup:account only) and needs none of this.
 ARG TARGETARCH
 ARG AEVAL_VERSION=v0.4.3
-RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; esac) && \
+# Override the matching checksum too when selecting a different release.
+ARG AEVAL_SHA256_X86_64=26f5eb8ba79a6503d623e5a661b21b3089e6c4171da1be79ef546a051cc16418
+ARG AEVAL_SHA256_ARM64=2a9764e54d10d92cb843c56ce9e2c0730a319a99768d0293a207e61575a54ec2
+RUN case "${TARGETARCH}" in \
+      arm64) ARCH=arm64; SHA256="${AEVAL_SHA256_ARM64}" ;; \
+      amd64|"") ARCH=x86_64; SHA256="${AEVAL_SHA256_X86_64}" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
     if [ "${AEVAL_VERSION}" = "latest" ]; then \
       DOWNLOAD_URL="https://github.com/Agora-Build/aeval/releases/latest/download/aeval-linux-${ARCH}"; \
     else \
@@ -82,6 +89,7 @@ RUN ARCH=$(case "${TARGETARCH}" in arm64) echo "arm64" ;; *) echo "x86_64" ;; es
     fi && \
     echo "Downloading aeval from ${DOWNLOAD_URL}" && \
     curl -fSL -o /usr/local/bin/aeval "${DOWNLOAD_URL}" && \
+    printf '%s  %s\n' "${SHA256}" /usr/local/bin/aeval | sha256sum --check --status && \
     chmod +x /usr/local/bin/aeval
 
 # Install Playwright Chromium for aeval (Python Playwright 1.57.x = chromium-1200)
