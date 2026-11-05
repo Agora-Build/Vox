@@ -76,7 +76,7 @@ d("analyze results: where they show (real SQL)", () => {
   });
 
   it("is in its creator's My Evals, in the transport they chose only", async () => {
-    expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web"))).toBe(false); // unverified in strict mode
+    expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web"))).toBe(true); // network stability does not apply to uploaded recordings
     expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web", { network: "all" }))).toBe(true);
     expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "phone", { network: "all" }))).toBe(false);
     expect(has(await storage.getMyEvalMetrics(OTHER, 24, undefined, "web", { network: "all" }))).toBe(false);
@@ -95,8 +95,12 @@ d("analyze results: where they show (real SQL)", () => {
   });
 
   it("the My Evals region picker offers the stated region", async () => {
-    const { baseIds } = await storage.getAvailableRegions("myEvals", 24, ME, "web", { network: "all" });
+    const { baseIds } = await storage.getAvailableRegions("myEvals", 24, ME, "web");
     expect(baseIds).toContain(REGION);
+  });
+
+  it("does not count uploaded recordings as unstable or unverified network runs", async () => {
+    expect(await storage.getNetworkCoverage("myEvals", 24, ME)).toEqual({ stable: 0, changed: 0, unverified: 0 });
   });
 
   it("the /api/v1 results list keeps to eval runs", async () => {

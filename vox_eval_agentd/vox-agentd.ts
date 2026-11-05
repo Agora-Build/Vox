@@ -509,6 +509,7 @@ class VoxEvalAgentDaemon {
     if (!this.agentId) return;
 
     try {
+      const networkReport = this.networkEvents.report();
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
         // Bounded (#246 review): a Vox that accepts the connection but never
@@ -520,13 +521,15 @@ class VoxEvalAgentDaemon {
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
           capabilities: await this.currentCapabilities(),
-          networkReport: this.networkEvents.report(),
+          networkReport,
         }, this.currentLinkType()), await this.currentNetSignals()), this.currentSim())),
       });
 
       await this.exitIfSuperseded(response);
       if (response.ok) {
-        this.networkEvents.acknowledge((await response.json()).networkAck);
+        const body = await response.json();
+        this.networkEvents.acknowledge(body.networkAck, networkReport);
+        this.networkEvents.recover(body.networkReportStatus, networkReport);
         console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       } else {
         console.error(`[Daemon] Heartbeat rejected by Vox: ${await describeHttpFailure(response)}`);
@@ -609,12 +612,17 @@ class VoxEvalAgentDaemon {
     try {
       this.finishNetwork();
       const failure = await sendWithRetry(async () => {
+        const networkReport = this.networkEvents.report();
         const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
           method: 'POST',
-          body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, ...payload, networkReport: this.networkEvents.report() }),
+          body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, startedAt: this.claimedJob?.startedAt, ...payload, networkReport }),
         });
         await this.exitIfSuperseded(response);
-        if (response.ok) this.networkEvents.acknowledge((await response.clone().json()).networkAck);
+        if (response.ok) {
+          const body = await response.clone().json();
+          this.networkEvents.acknowledge(body.networkAck, networkReport);
+          this.networkEvents.recover(body.networkReportStatus, networkReport);
+        }
         return response;
       });
       if (!failure) {

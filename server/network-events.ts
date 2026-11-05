@@ -1,22 +1,23 @@
 import type { PoolClient } from "pg";
 import type { EvalJob } from "@shared/schema";
 import {
-  networkReportSchema, networkEventTags, type NetworkReport, type NetworkAck,
+  networkReportSchema, networkReportEnvelopeSchema, agentNetworkEventSchema,
+  MAX_NETWORK_EVENT_BATCH, NETWORK_EVENT_RETENTION_MS, networkEventTags, type NetworkReport, type NetworkAck,
   type NetworkHistory, type NetworkEventTags,
-  type AgentNetworkEvent,
+  type AgentNetworkEvent, type NetworkRejectedEvent, type NetworkRejectionReason, type NetworkReportResponse,
 } from "@shared/network-events";
 import { pool } from "./storage";
 import { lookupAsn, normalizeIp } from "./location";
 import { ispFromAsn, LINK_VALUES } from "@shared/tags";
 
 export class NetworkReportError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public reason: NetworkRejectionReason = "execution_mismatch", public expectedFirstSeq?: number) { super(message); }
 }
 
 export function parseNetworkReport(raw: unknown): NetworkReport | undefined {
   if (raw === undefined) return undefined;
   const parsed = networkReportSchema.safeParse(raw);
-  if (!parsed.success) throw new NetworkReportError(400, "Invalid network event report");
+  if (!parsed.success) throw new NetworkReportError(400, "Invalid network event report", "invalid_report");
   return parsed.data;
 }
 
@@ -27,7 +28,7 @@ async function assertStoredEvent(client: PoolClient, job: Record<string, any>, e
   if (!prior || prior.event !== event.event || new Date(prior.occurred_at).getTime() !== event.timestamp
     || prior.offset_ms !== event.offsetMs || prior.link !== event.tags.link
     || JSON.stringify(prior.changed) !== JSON.stringify(event.changed)) {
-    throw new NetworkReportError(409, "Conflicting network event sequence");
+    throw new NetworkReportError(409, "Conflicting network event sequence", "event_conflict");
   }
 }
 
@@ -52,6 +53,9 @@ export async function recordAgentNetworkEvents(opts: {
   agentId: number; leaseId: string | null; ip?: string; report?: NetworkReport;
   finalJobId?: number;
   client?: PoolClient;
+  rejectedEvents?: NetworkRejectedEvent[];
+  incomplete?: boolean;
+  lastHeartbeatAt?: Date | null;
 }): Promise<NetworkAck | undefined> {
   if (opts.report && !opts.leaseId) throw new NetworkReportError(409, "Network event reporting requires a current lease");
   const client = opts.client ?? await pool.connect();
@@ -82,14 +86,22 @@ export async function recordAgentNetworkEvents(opts: {
         // A lost completion response may retry. A terminal run can acknowledge
         // existing events, but cannot acquire a different history after finalization.
         if (report) {
-          for (const event of report.events) await assertStoredEvent(client, job, event);
-          ack = { jobId: job.id, startedAt: new Date(job.started_at).toISOString(), ackedEventSeqs: report.events.map((event) => event.seq) };
+          const accepted: number[] = [];
+          for (const event of report.events) {
+            try { await assertStoredEvent(client, job, event); accepted.push(event.seq); }
+            catch (error) {
+              if (!(error instanceof NetworkReportError) || !opts.rejectedEvents) throw error;
+              opts.rejectedEvents.push({ seq: event.seq, reason: "event_conflict" });
+            }
+          }
+          ack = { jobId: job.id, startedAt: new Date(job.started_at).toISOString(), ackedEventSeqs: accepted };
         }
         continue;
       }
       const baseline = networkEventTags(job.tags);
       let changed = !!job.network_changed;
-      let monitoringGap = !!job.monitoring_gap;
+      let monitoringGap = !!job.monitoring_gap || job.network_monitoring === "incomplete" || !!opts.incomplete
+        || (opts.lastHeartbeatAt !== undefined && Date.now() - Math.max(new Date(job.started_at).getTime(), opts.lastHeartbeatAt?.getTime() ?? 0) >= NETWORK_EVENT_RETENTION_MS);
       const currentIp = opts.ip ? normalizeIp(opts.ip) : null;
       const previousIp = job.network_observed_ip ? normalizeIp(job.network_observed_ip) : null;
       const link = (LINK_VALUES as readonly string[]).includes(job.current_link_type) ? job.current_link_type : null;
@@ -107,9 +119,10 @@ export async function recordAgentNetworkEvents(opts: {
           Math.max(0, Date.now() - new Date(job.started_at).getTime()), JSON.stringify(tags), JSON.stringify(changedKeys)]);
       }
       if (report) {
-        if (job.first_seq !== null && Number(job.first_seq) !== report.firstSeq) throw new NetworkReportError(409, "Network sequence changed within an execution");
+        if (job.first_seq !== null && Number(job.first_seq) !== report.firstSeq) throw new NetworkReportError(409, "Network sequence changed within an execution", "sequence_mismatch", Number(job.first_seq));
         changed ||= report.networkChanged || report.events.some((event) => event.event === "network_change");
         monitoringGap ||= !report.continuous || report.events.some((event) => event.event === "monitoring_gap");
+        const accepted: number[] = [];
         for (const event of report.events) {
           // Delayed delivery does not prove which public ISP carried an earlier
           // observation. Keep it explicitly unknown; Core observations above
@@ -122,10 +135,17 @@ export async function recordAgentNetworkEvents(opts: {
           [job.id, opts.agentId, opts.leaseId, job.started_at, event.seq, event.event,
             new Date(event.timestamp), event.offsetMs, JSON.stringify(tags), JSON.stringify(event.changed)]);
           if (!inserted.rows.length) {
-            await assertStoredEvent(client, job, event);
+            try { await assertStoredEvent(client, job, event); }
+            catch (error) {
+              if (!(error instanceof NetworkReportError) || !opts.rejectedEvents) throw error;
+              opts.rejectedEvents.push({ seq: event.seq, reason: "event_conflict" });
+              monitoringGap = true;
+              continue;
+            }
           }
+          accepted.push(event.seq);
         }
-        ack = { jobId: job.id, startedAt: report.startedAt, ackedEventSeqs: report.events.map((event) => event.seq) };
+        ack = { jobId: job.id, startedAt: report.startedAt, ackedEventSeqs: accepted };
       }
       const lastSeq = Math.max(Number(job.last_seq ?? 0), report?.lastSeq ?? 0);
       const firstSeq = job.first_seq === null ? report?.firstSeq ?? null : Number(job.first_seq);
@@ -150,6 +170,110 @@ export async function recordAgentNetworkEvents(opts: {
     }
     if (!opts.client) await client.query("COMMIT");
     return ack;
+  } catch (error) {
+    if (!opts.client) await client.query("ROLLBACK");
+    throw error;
+  } finally { if (!opts.client) client.release(); }
+}
+
+/** Liveness/results survive telemetry rejection; only committed events are acknowledged. */
+export async function receiveAgentNetworkEvents(opts: {
+  agentId: number; leaseId: string | null; ip?: string; rawReport?: unknown;
+  finalJobId?: number; client?: PoolClient; incomplete?: boolean;
+  lastHeartbeatAt?: Date | null;
+}): Promise<NetworkReportResponse> {
+  const client = opts.client ?? await pool.connect();
+  const identity = networkReportEnvelopeSchema.pick({ jobId: true, startedAt: true }).strip().safeParse(opts.rawReport);
+  const scope = identity.success ? identity.data : {};
+  const rejectedEvents: NetworkRejectedEvent[] = [];
+  let report: NetworkReport | undefined;
+  let reason: NetworkRejectionReason | undefined;
+  const rawEvents = opts.rawReport && typeof opts.rawReport === "object" && "events" in opts.rawReport
+    && Array.isArray(opts.rawReport.events) ? opts.rawReport.events.slice(0, MAX_NETWORK_EVENT_BATCH) : [];
+  const submittedSeqs = Array.from(new Set(rawEvents.map((event: any) => event?.seq)
+    .filter((seq: unknown): seq is number => Number.isSafeInteger(seq) && (seq as number) > 0)));
+  if (opts.rawReport !== undefined) {
+    const envelope = networkReportEnvelopeSchema.safeParse(opts.rawReport);
+    if (envelope.success) {
+      const events: AgentNetworkEvent[] = [];
+      const duplicates = new Set(submittedSeqs.filter((seq) => rawEvents.filter((event: any) => event?.seq === seq).length > 1));
+      for (const raw of envelope.data.events) {
+        const parsed = agentNetworkEventSchema.safeParse(raw);
+        if (parsed.success && !duplicates.has(parsed.data.seq)) events.push(parsed.data);
+        else {
+          reason = "invalid_event";
+          if (raw && typeof raw === "object" && "seq" in raw && submittedSeqs.includes(raw.seq as number)
+            && !rejectedEvents.some((event) => event.seq === raw.seq)) rejectedEvents.push({ seq: raw.seq as number, reason: "invalid_event" });
+        }
+      }
+      const parsed = networkReportSchema.safeParse({ ...envelope.data, events });
+      if (parsed.success) report = parsed.data;
+    }
+    if (!report) {
+      reason = "invalid_report";
+      rejectedEvents.splice(0, rejectedEvents.length, ...submittedSeqs.map((seq) => ({ seq, reason: reason! })));
+    }
+  }
+  try {
+    if (!opts.client) await client.query("BEGIN");
+    // Use the same job -> agent lock order as claim/completion. A superseded
+    // lease is an authorization failure, not a recoverable telemetry error.
+    const jobId = opts.finalJobId ?? (identity.success ? identity.data.jobId : undefined);
+    const { rows: jobs } = await client.query(`SELECT * FROM eval_jobs WHERE eval_agent_id = $1
+      AND (($2::int IS NULL AND status = 'running') OR id = $2) FOR UPDATE`, [opts.agentId, jobId ?? null]);
+    const { rows: [agent] } = await client.query("SELECT current_lease_id FROM eval_agents WHERE id=$1 FOR SHARE", [opts.agentId]);
+    if (!agent || (agent.current_lease_id && agent.current_lease_id !== opts.leaseId)) {
+      throw new NetworkReportError(403, "superseded");
+    }
+    const matches = (job: Record<string, any>) => !identity.success || (job.id === identity.data.jobId
+      && new Date(job.started_at).getTime() === Date.parse(identity.data.startedAt));
+    const affected = jobs.filter((job) => job.kind === "eval" && job.status === "running" && (opts.finalJobId !== undefined || matches(job)));
+    const markIncomplete = async () => {
+      for (const job of affected) {
+        await client.query("UPDATE eval_jobs SET network_monitoring='incomplete' WHERE id=$1", [job.id]);
+        await client.query("UPDATE eval_job_network_state SET monitoring_gap=true WHERE job_id=$1 AND started_at=$2", [job.id, job.started_at]);
+      }
+    };
+    await client.query("SAVEPOINT network_report");
+    let response: NetworkReportResponse;
+    try {
+      if (identity.success && !jobs.some(matches)) throw new NetworkReportError(409, "Network report does not match this execution");
+      for (const job of affected) {
+        // Pre-upgrade claims have no history. Resume from an explicitly
+        // incomplete checkpoint, never invent a fully monitored baseline.
+        const recovered = await client.query(`INSERT INTO eval_job_network_state
+          (job_id,agent_id,lease_id,started_at,monitoring_gap) VALUES($1,$2,$3,$4,true)
+          ON CONFLICT (job_id) DO UPDATE SET agent_id=EXCLUDED.agent_id, lease_id=EXCLUDED.lease_id,
+            started_at=EXCLUDED.started_at, observed_ip=NULL, link_type=NULL, first_seq=NULL,
+            last_seq=NULL, monitoring_gap=true, finalized=false
+          WHERE eval_job_network_state.started_at <> EXCLUDED.started_at
+            OR eval_job_network_state.agent_id <> EXCLUDED.agent_id
+            OR eval_job_network_state.lease_id IS DISTINCT FROM EXCLUDED.lease_id RETURNING job_id`,
+        [job.id, opts.agentId, opts.leaseId, job.started_at]);
+        if (recovered.rows.length) await markIncomplete();
+      }
+      const networkAck = await recordAgentNetworkEvents({ ...opts, report, client,
+        incomplete: opts.incomplete || !!reason || rejectedEvents.length > 0, rejectedEvents });
+      response = { networkAck };
+      if (opts.rawReport !== undefined) {
+        const incomplete = await client.query("SELECT network_monitoring FROM eval_jobs WHERE id=$1", [jobId ?? null]);
+        response.networkReportStatus = { ...scope,
+          status: reason || rejectedEvents.length ? (networkAck?.ackedEventSeqs.length ? "partial" : "rejected") : "accepted",
+          incomplete: incomplete.rows[0]?.network_monitoring === "incomplete", rejectedEvents, ...(reason ? { reason } : {}) };
+      }
+    } catch (error) {
+      await client.query("ROLLBACK TO SAVEPOINT network_report");
+      await markIncomplete();
+      const conflict = error instanceof NetworkReportError;
+      response = { networkReportStatus: { ...scope, status: conflict ? "rejected" : "retry", incomplete: true,
+        rejectedEvents: conflict ? submittedSeqs.map((seq) => ({ seq, reason: error.reason })) : [],
+        reason: conflict ? error.reason : "storage_unavailable",
+        ...(conflict && error.expectedFirstSeq !== undefined ? { expectedFirstSeq: error.expectedFirstSeq } : {}) } };
+      if (!conflict) console.error("[network-events] telemetry storage failed:", error instanceof Error ? error.name : "unknown error");
+    }
+    await client.query("RELEASE SAVEPOINT network_report");
+    if (!opts.client) await client.query("COMMIT");
+    return response;
   } catch (error) {
     if (!opts.client) await client.query("ROLLBACK");
     throw error;

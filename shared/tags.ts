@@ -136,6 +136,13 @@ export interface LineLookup {
   numberHash?: string;
 }
 
+/** The keyed equality token is private even when the flow is public. */
+export function publicLineLookup(lookup: LineLookup | null | undefined): Omit<LineLookup, "numberHash"> | null {
+  if (!lookup) return null;
+  const { numberHash: _private, ...visible } = lookup;
+  return visible;
+}
+
 /** Which board is reading a job's tags — each has its own effective-value rule. */
 export type TagBoard = "mainline" | "community" | "myEvals";
 

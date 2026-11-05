@@ -1,5 +1,5 @@
 import * as yaml from "js-yaml";
-import type { NetworkReport, NetworkAck } from "@shared/network-events";
+import type { NetworkAck, NetworkReportStatus } from "@shared/network-events";
 import { metricsResolution, metricsDetailResolution, METRICS_DAY_MS, METRICS_RETENTION_DAYS, type MetricsWindow, type MetricsResolution } from "@shared/metrics-window";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
@@ -112,7 +112,7 @@ import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/r
 import type { AsnLookupFn } from "./job-tags";
 import type { AgentNetSignals } from "./access-class";
 import { netSignalsChanged, netSignalsPatch } from "./net-signals-update";
-import type { Tag, JobTag } from "@shared/tags";
+import { publicLineLookup, type Tag, type JobTag } from "@shared/tags";
 import { groupValueSql, resultRegionSql, tagFilterCondition } from "./tag-sql";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pkg from "pg";
@@ -628,7 +628,7 @@ export function buildJobSnapshot(
       // Frozen here too (design "Freezing at claim"): editing the flow's
       // tags/line lookup afterwards must never change a past job's snapshot.
       tags: evalFlow.tags ?? [],
-      lineLookup: evalFlow.lineLookup ?? null,
+      lineLookup: publicLineLookup(evalFlow.lineLookup),
     },
     evalSet: evalSet
       ? {
@@ -2126,7 +2126,8 @@ export class DatabaseStorage {
   async finalizeRunningJobWithResult(
     jobId: number, error: string | undefined, result: InsertEvalResult | null,
     holder?: { agentId: number; leaseId: unknown; startedAt?: Date | null;
-      network?: { report?: NetworkReport; ip?: string; onAck: (ack: NetworkAck | undefined) => void } },
+      network?: { report?: unknown; ip?: string; lastHeartbeatAt?: Date | null;
+        onAck: (ack: NetworkAck | undefined) => void; onStatus?: (status: NetworkReportStatus | undefined) => void } },
   ): Promise<EvalJob | undefined> {
     const superseded = new Error("superseded lease");
     const client = await pool.connect();
@@ -2142,10 +2143,11 @@ export class DatabaseStorage {
         if (!agent || (!!agent.lease && agent.lease !== holder.leaseId)) throw superseded;
       }
       let networkAck: NetworkAck | undefined;
+      let networkReportStatus: NetworkReportStatus | undefined;
       if (holder?.network) {
-        const { recordAgentNetworkEvents } = await import("./network-events");
-        networkAck = await recordAgentNetworkEvents({ agentId: holder.agentId, leaseId: typeof holder.leaseId === "string" ? holder.leaseId : null,
-          ip: holder.network.ip, report: holder.network.report, finalJobId: jobId, client });
+        const { receiveAgentNetworkEvents } = await import("./network-events");
+        ({ networkAck, networkReportStatus } = await receiveAgentNetworkEvents({ agentId: holder.agentId, leaseId: typeof holder.leaseId === "string" ? holder.leaseId : null,
+          ip: holder.network.ip, rawReport: holder.network.report, finalJobId: jobId, client, lastHeartbeatAt: holder.network.lastHeartbeatAt }));
       }
       const [done] = await tx.update(evalJobs)
         .set({
@@ -2164,6 +2166,7 @@ export class DatabaseStorage {
       if (done && result && !error && !done.deletedAt) await tx.insert(evalResults).values(result);
       await client.query("COMMIT");
       holder?.network?.onAck(networkAck);
+      holder?.network?.onStatus?.(networkReportStatus);
       return done;
     } catch (err) {
       await client.query("ROLLBACK");
@@ -2506,7 +2509,8 @@ export class DatabaseStorage {
     // Transport is a hard partition, never mixed (design 2026-09-21 §11): every
     // tier view is scoped to exactly one transport; default web.
     conditions.push(eq(evalJobs.transport, transport));
-    if (network === "strict") conditions.push(eq(evalJobs.networkMonitoring, "complete"), eq(evalJobs.networkChanged, false));
+    if (network === "strict") conditions.push(or(eq(evalJobs.kind, "analyze"),
+      and(eq(evalJobs.networkMonitoring, "complete"), eq(evalJobs.networkChanged, false))));
     // Network-tag filters, AND-ed, on the job's effective value for this tier's
     // board (the tier names are the board names). In SQL, so they apply before
     // any row limit. A job with no tags (NULL) matches no filter.
@@ -2726,7 +2730,7 @@ export class DatabaseStorage {
       stable: sql<number>`count(*) FILTER (WHERE ${evalJobs.networkMonitoring} = 'complete' AND NOT ${evalJobs.networkChanged})::int`,
       changed: sql<number>`count(*) FILTER (WHERE ${evalJobs.networkChanged})::int`,
       unverified: sql<number>`count(*) FILTER (WHERE NOT ${evalJobs.networkChanged} AND ${evalJobs.networkMonitoring} <> 'complete')::int`,
-    }).from(evalResults)).where(and(...this.tierConditions(tier, hoursBack ?? METRICS_ALL_MAX_DAYS * 24, userId, scope, transport, tags.tagFilters, "all")));
+    }).from(evalResults)).where(and(eq(evalJobs.kind, "eval"), ...this.tierConditions(tier, hoursBack ?? METRICS_ALL_MAX_DAYS * 24, userId, scope, transport, tags.tagFilters, "all")));
     return counts as { stable: number; changed: number; unverified: number };
   }
 

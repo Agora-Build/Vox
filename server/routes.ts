@@ -11,7 +11,8 @@ import { settleEndedJobsNow } from "./settle-now";
 import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, groupValue, emptyGroupValue, accessColumn, wantsAccessColumns } from "./metrics-params";
 import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
-import { parseTags, LINK_VALUES, effectiveTags, type TagBoard } from "@shared/tags";
+import { parseTags, LINK_VALUES, effectiveTags, publicLineLookup, type TagBoard } from "@shared/tags";
+import { publicEvalFlow, publicEvalJob } from "./network-response";
 import { deriveScheduleStatus } from "@shared/schedule-status";
 import { regionSiteSequence } from "@shared/regions";
 import { parseMetricsDetailWindow } from "@shared/metrics-window";
@@ -30,7 +31,7 @@ import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Memb
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
 import { parseNetSignalsUpdate } from "./net-signals-update";
 import { noteSimReport } from "./sim-carrier";
-import { parseNetworkReport, recordAgentNetworkEvents, getJobNetworkHistory, NetworkReportError } from "./network-events";
+import { receiveAgentNetworkEvents, getJobNetworkHistory, NetworkReportError } from "./network-events";
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
@@ -2219,7 +2220,7 @@ export async function registerRoutes(
       const withPerms = async (list: typeof ownEvalFlows) => {
         const missing = await missingEvalFlowSecrets(list.filter((w) => canCreateEvalFlowSecrets(user, w)));
         return list.map(w => ({
-          ...w,
+          ...publicEvalFlow(w),
           canSchedule: canScheduleEvalFlow(user, w),
           ...(missing.has(w.id) ? { missingSecrets: missing.get(w.id) } : {}),
         }));
@@ -2260,7 +2261,7 @@ export async function registerRoutes(
       const missingSecrets = canCreateEvalFlowSecrets(user, evalFlow)
         ? (await missingEvalFlowSecrets([evalFlow])).get(evalFlow.id)
         : undefined;
-      res.json({ ...evalFlow, ownerName: owner?.username ?? null, ...(missingSecrets !== undefined ? { missingSecrets } : {}) });
+      res.json({ ...publicEvalFlow(evalFlow), ownerName: owner?.username ?? null, ...(missingSecrets !== undefined ? { missingSecrets } : {}) });
     } catch (error) {
       console.error("Error fetching evalFlow:", error);
       res.status(500).json({ error: "Failed to fetch evalFlow" });
@@ -2351,7 +2352,7 @@ export async function registerRoutes(
       // and refetch. Never throws (the editor's paid-lookup cap applies).
       const saved = withTags ?? evalFlow;
       const line = await startFlowLineRefresh(saved, user.id);
-      res.json(withLineLookupState(saved, line));
+      res.json(publicEvalFlow(withLineLookupState(saved, line)));
     } catch (error) {
       console.error("Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -2450,7 +2451,7 @@ export async function registerRoutes(
       // Started in the background; the response carries the current
       // lineLookup plus `lineLookupPending` when a lookup is running.
       const line = updated ? await startFlowLineRefresh(updated, user.id) : null;
-      res.json(updated && line ? withLineLookupState(updated, line) : updated);
+      res.json(updated ? publicEvalFlow(line ? withLineLookupState(updated, line) : updated) : updated);
     } catch (error) {
       console.error("Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });
@@ -2477,7 +2478,8 @@ export async function registerRoutes(
       // A skip stores nothing; `timeout` keeps the stored lookup and finishes
       // in the background; the write is conditional on the flow still
       // dialling the looked-up number (server/number-lookup.ts).
-      res.json(await lookupAndStoreFlowLine(evalFlow, user.id));
+      const lookup = await lookupAndStoreFlowLine(evalFlow, user.id);
+      res.json("lineLookup" in lookup ? { lineLookup: publicLineLookup(lookup.lineLookup) } : lookup);
     } catch (error) {
       console.error("Error looking up evalFlow line:", error instanceof Error ? error.name : "error");
       res.status(500).json({ error: "Failed to look up the line provider" });
@@ -2503,7 +2505,7 @@ export async function registerRoutes(
         visibility: isMainline ? "public" : evalFlow.visibility,
       });
       
-      res.json(updated);
+      res.json(updated ? publicEvalFlow(updated) : updated);
     } catch (error) {
       console.error("Error updating evalFlow mainline:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });
@@ -4477,7 +4479,6 @@ export async function registerRoutes(
       }
 
       const { agentId, state, metadata, leaseId } = req.body;
-      const networkReport = parseNetworkReport(req.body.networkReport);
 
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
@@ -4548,12 +4549,13 @@ export async function registerRoutes(
       // the lookup expired (server/sim-carrier.ts) — never delays the beat.
       void noteSimReport(agent.id, req.body.sim, hbCapabilities ?? agent.capabilities);
 
-      const networkAck = await recordAgentNetworkEvents({
-        agentId: agent.id, leaseId: agent.currentLeaseId, ip: callerIp, report: networkReport,
+      const networkResponse = await receiveAgentNetworkEvents({
+        agentId: agent.id, leaseId: typeof leaseId === "string" ? leaseId : null, ip: callerIp,
+        rawReport: req.body.networkReport, lastHeartbeatAt: agent.lastSeenAt,
       });
-      res.json({ message: "Heartbeat received", networkAck });
+      res.json({ message: "Heartbeat received", ...networkResponse });
     } catch (error) {
-      if (error instanceof NetworkReportError) return res.status(error.status).json({ error: error.message });
+      if (error instanceof NetworkReportError) return res.status(error.status).json({ error: error.message, ...(error.status === 403 ? { superseded: true } : {}) });
       console.error("Error processing heartbeat:", error);
       res.status(500).json({ error: "Failed to process heartbeat" });
     }
@@ -4714,7 +4716,6 @@ export async function registerRoutes(
 
       const { jobId } = req.params;
       const { agentId, error: jobError, results, leaseId } = req.body;
-      const networkReport = parseNetworkReport(req.body.networkReport);
 
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
@@ -4751,7 +4752,18 @@ export async function registerRoutes(
       if (job.evalAgentId !== agentId) {
         return res.status(403).json({ error: "Job not assigned to this agent" });
       }
+      // Execution identity is independent of optional telemetry. Older daemons
+      // supplied it only in their report; never accept that run's late result
+      // for a newer claim on the same lease.
+      const explicitStart = req.body.startedAt !== undefined;
+      const claimStart = z.string().datetime().safeParse(explicitStart ? req.body.startedAt
+        : req.body.networkReport?.jobId === job.id ? req.body.networkReport?.startedAt : undefined);
+      if (explicitStart && !claimStart.success) return res.status(400).json({ error: "Invalid execution start timestamp" });
+      if (claimStart.success && Date.parse(claimStart.data) !== job.startedAt?.getTime()) {
+        return res.status(409).json({ error: "Execution has been superseded" });
+      }
       let networkAck: import("@shared/network-events").NetworkAck | undefined;
+      let networkReportStatus: import("@shared/network-events").NetworkReportStatus | undefined;
       // Record a result only on SUCCESS. A failed completion (jobError set) is a
       // measurement failure — no result row, so failed runs never enter metrics.
       // A run that completed but got no agent response is NOT a failure: it comes
@@ -4821,7 +4833,8 @@ export async function registerRoutes(
       try {
         finalized = await storage.finalizeRunningJobWithResult(parseInt(jobId), jobError, resultRow, {
           agentId, leaseId, startedAt: job.startedAt,
-          network: { report: networkReport, ip: clientIp(req), onAck: (ack) => { networkAck = ack; } },
+          network: { report: req.body.networkReport, ip: clientIp(req), lastHeartbeatAt: agent.lastSeenAt,
+            onAck: (ack) => { networkAck = ack; }, onStatus: (status) => { networkReportStatus = status; } },
         });
       } catch (resultError) {
         if (resultError instanceof NetworkReportError) return res.status(resultError.status).json({ error: resultError.message });
@@ -4829,7 +4842,7 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Failed to save eval results" });
       }
       if (!finalized) {
-        return res.json({ message: "Job already finalized", networkAck });
+        return res.json({ message: "Job already finalized", networkAck, networkReportStatus });
       }
 
       await storage.updateEvalAgent(agentId, { state: "idle" });
@@ -4863,7 +4876,7 @@ export async function registerRoutes(
         console.error(`Settlement failed for job ${jobId}:`, settleErr);
       }
 
-      res.json({ message: "Job completed", networkAck });
+      res.json({ message: "Job completed", networkAck, networkReportStatus });
     } catch (error) {
       if (error instanceof NetworkReportError) return res.status(error.status).json({ error: error.message });
       console.error("Error completing job:", error);
@@ -6003,7 +6016,7 @@ export async function registerRoutes(
       const rateMap = await storage.getResponseRatesByJobIds(paged.map(j => j.id));
 
       const enriched = paged.map(job => ({
-        ...job,
+        ...publicEvalJob(job),
         creatorName: job.createdBy ? creatorMap.get(job.createdBy) || null : null,
         responseRate: rateMap.has(job.id) ? rateMap.get(job.id)! : null,
         // trigger_type: 1 = scheduled, 2 = manual (recorded at creation). Fall back
@@ -6040,7 +6053,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Not authorized to view this job" });
       }
 
-      res.json(job);
+      res.json(publicEvalJob(job));
     } catch (error) {
       console.error("Error fetching eval job:", error);
       res.status(500).json({ error: "Failed to fetch eval job" });
@@ -6140,7 +6153,7 @@ export async function registerRoutes(
       }
 
       res.json({
-        job,
+        job: publicEvalJob(job),
         result: result ? {
           ...result,
           artifactUrl: signedArtifactUrl,
@@ -6231,7 +6244,7 @@ export async function registerRoutes(
       // A paid job's hold goes back to its renter now, not at the next sweep.
       await settleEndedJobsNow([cancelledJob], "cancelled");
 
-      res.json({ message: "Job cancelled", job: cancelledJob });
+      res.json({ message: "Job cancelled", job: cancelledJob ? publicEvalJob(cancelledJob) : cancelledJob });
     } catch (error) {
       console.error("Error cancelling eval job:", error);
       res.status(500).json({ error: "Failed to cancel eval job" });
@@ -6242,7 +6255,7 @@ export async function registerRoutes(
   app.get("/api/admin/eval-jobs/stale", requireAuth, requireAdmin, async (req, res) => {
     try {
       const staleJobs = await storage.getStaleRunningJobs(5);
-      res.json(staleJobs);
+      res.json(staleJobs.map(publicEvalJob));
     } catch (error) {
       console.error("Error fetching stale jobs:", error);
       res.status(500).json({ error: "Failed to fetch stale jobs" });

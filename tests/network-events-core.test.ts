@@ -6,7 +6,7 @@ await vi.hoisted(async () => {
   }
 });
 import { storage, pool } from "../server/storage";
-import { recordAgentNetworkEvents, getJobNetworkHistory } from "../server/network-events";
+import { recordAgentNetworkEvents, receiveAgentNetworkEvents, getJobNetworkHistory } from "../server/network-events";
 import type { EvalJob } from "../shared/schema";
 import type { NetworkReport } from "../shared/network-events";
 
@@ -28,6 +28,7 @@ d("Core network history, claim fencing and strict metrics", () => {
     ] });
   const record = (r?: NetworkReport, final = false, ip = "80.150.1.1") => recordAgentNetworkEvents({ agentId, leaseId, ip, report: r, ...(final ? { finalJobId: job.id } : {}) });
   const current = () => storage.getEvalJob(job.id).then((j) => j!);
+  const receive = (rawReport?: unknown, final = false) => receiveAgentNetworkEvents({ agentId, leaseId, rawReport, ...(final ? { finalJobId: job.id } : {}) });
   beforeAll(async () => {
     await pool.query("INSERT INTO users(id,username,email,plan) VALUES(1,'network-events','events@test.local','principal')");
     providerId = (await pool.query("SELECT id FROM providers LIMIT 1")).rows[0].id;
@@ -125,6 +126,83 @@ d("Core network history, claim fencing and strict metrics", () => {
     const old = job.startedAt; await pool.query("UPDATE eval_jobs SET started_at=started_at+interval '1 millisecond' WHERE id=$1", [job.id]);
     expect(await storage.finalizeRunningJobWithResult(job.id, undefined, null, { agentId, leaseId, startedAt: old })).toBeUndefined();
     expect((await current()).status).toBe("running");
+  });
+  it("accepts valid events beside a conflict, preserves history, and keeps incompleteness sticky", async () => {
+    const r = report(); await record(r);
+    r.events[0].tags.link = "cellular";
+    r.lastSeq = 3; r.networkChanged = true; r.changeCount = 1;
+    r.events.push({ seq: 3, event: "network_change", timestamp: job.startedAt!.getTime() + 2000,
+      offsetMs: 2000, tags: { link: "cellular" }, changed: ["link"] });
+    const response = await receive(r);
+    expect(response.networkAck?.ackedEventSeqs).toEqual([2, 3]);
+    expect(response.networkReportStatus).toMatchObject({ status: "partial", incomplete: true,
+      rejectedEvents: [{ seq: 1, reason: "event_conflict" }] });
+    expect((await getJobNetworkHistory(await current())).events[1].tags.link).toBe("wifi");
+    expect((await current()).status).toBe("running");
+    const next = { ...r, events: [{ ...r.events[1], seq: 4 }], lastSeq: 4 };
+    expect((await receive(next, true)).networkReportStatus).toMatchObject({ status: "accepted", incomplete: true });
+    expect((await current()).networkMonitoring).toBe("incomplete");
+  });
+  it("rejects malformed events individually without blocking valid observations", async () => {
+    const r = report();
+    const response = await receive({ ...r, events: [{ ...r.events[0], privateIp: "10.1.1.1" }, r.events[1]] });
+    expect(response.networkAck?.ackedEventSeqs).toEqual([2]);
+    expect(response.networkReportStatus).toMatchObject({ status: "partial", incomplete: true,
+      rejectedEvents: [{ seq: 1, reason: "invalid_event" }] });
+    expect(JSON.stringify(response)).not.toContain("10.1.1.1");
+  });
+  it("recovers a missing pre-upgrade history without fabricating complete coverage", async () => {
+    await pool.query("DELETE FROM eval_job_network_state WHERE job_id=$1", [job.id]);
+    await pool.query("DELETE FROM eval_job_network_events WHERE job_id=$1", [job.id]);
+    const response = await receive(report(), true);
+    expect(response.networkAck?.ackedEventSeqs).toEqual([1, 2]);
+    expect(response.networkReportStatus).toMatchObject({ status: "accepted", incomplete: true });
+    expect((await current()).tags).toEqual(job.tags);
+    expect((await getJobNetworkHistory(await current())).events.map((event) => event.event)).toEqual(["monitoring_start", "monitoring_end"]);
+  });
+  it("offers sequence resynchronization and accepts subsequent events without restoring eligibility", async () => {
+    await record(report());
+    const response = await receive(report(10));
+    expect(response.networkReportStatus).toMatchObject({ status: "rejected", reason: "sequence_mismatch", expectedFirstSeq: 1 });
+    const r = report(); r.events = [{ ...r.events[1], seq: 12 }]; r.lastSeq = 12;
+    expect((await receive(r)).networkAck?.ackedEventSeqs).toEqual([12]);
+    expect((await current()).networkMonitoring).toBe("incomplete");
+  });
+  it("does not let stale execution feedback taint its successor and still rejects superseded leases", async () => {
+    const old = report(); await pool.query("UPDATE eval_jobs SET status='pending' WHERE id=$1", [job.id]);
+    job = (await storage.claimEvalJob(job.id, agentId, identity()))!;
+    expect((await receive(old)).networkReportStatus).toMatchObject({ status: "rejected", reason: "execution_mismatch", startedAt: old.startedAt });
+    expect((await current()).networkMonitoring).toBe("unknown");
+    await expect(receiveAgentNetworkEvents({ agentId, leaseId: "wrong", rawReport: report() })).rejects.toMatchObject({ status: 403 });
+  });
+  it("saves authorized results even when the network envelope is invalid", async () => {
+    const onAck = vi.fn(), onStatus = vi.fn();
+    const done = await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId, siteId: null }, {
+      agentId, leaseId, startedAt: job.startedAt, network: { report: { ...report(), version: 999 }, onAck, onStatus },
+    });
+    expect(done).toMatchObject({ status: "completed", networkMonitoring: "incomplete" });
+    expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+    expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ status: "rejected", reason: "invalid_report" }));
+    expect(onAck.mock.calls[0][0]?.ackedEventSeqs ?? []).toEqual([]);
+  });
+  it("rolls back only failed telemetry storage, saving the result and requesting a safe retry", async () => {
+    await pool.query(`CREATE FUNCTION network_test_storage_error() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'test network storage unavailable'; END $$`);
+    await pool.query(`CREATE TRIGGER network_test_storage_error BEFORE INSERT ON eval_job_network_events
+      FOR EACH ROW WHEN (NEW.source='agent') EXECUTE FUNCTION network_test_storage_error()`);
+    const onAck = vi.fn(), onStatus = vi.fn();
+    try {
+      const done = await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId, siteId: null }, {
+        agentId, leaseId, startedAt: job.startedAt, network: { report: report(), onAck, onStatus },
+      });
+      expect(done).toMatchObject({ status: "completed", networkMonitoring: "incomplete" });
+      expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+      expect(onAck).toHaveBeenCalledWith(undefined);
+      expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ status: "retry", rejectedEvents: [] }));
+    } finally {
+      await pool.query("DROP TRIGGER network_test_storage_error ON eval_job_network_events");
+      await pool.query("DROP FUNCTION network_test_storage_error()");
+    }
   });
   it("commits final events, eligibility, result and ack atomically", async () => {
     const ack = vi.fn();

@@ -39,6 +39,17 @@ and coverage summaries survive dropped details. Completion/failure flushes a
 final sample. No extra attempt ID is used: Core's claim timestamp scopes events
 alongside the existing job, agent and lease IDs and a lease-global sequence.
 
+Valid heartbeats succeed independently of network-event rejection. Core returns
+`networkReportStatus` separately from `networkAck`: accepted events are removed,
+explicitly rejected sequence IDs are discarded only from the submitted batch,
+and all other pending/in-flight observations are preserved for the next report.
+Transient network-event storage failures request retry without discarding data.
+A rejection or more than two minutes without delivery makes monitoring
+incomplete for that execution, permanently excluding it from strict benchmarks
+without failing an otherwise valid evaluation result. Authentication, lease and
+execution-timestamp failures are still rejected. The existing five-minute
+stale-agent recovery and 90-minute job deadline are unchanged.
+
 Native Linux/macOS processes detect the default route, interface and source
 address locally. Linux additionally uses `iw` for Wi-Fi BSSID when available.
 Private topology is hashed locally; only coarse link type and change dimensions

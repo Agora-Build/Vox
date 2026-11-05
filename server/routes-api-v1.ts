@@ -17,6 +17,7 @@ import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, ca
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
 import { startFlowLineRefresh, withLineLookupState } from "./number-lookup";
+import { publicEvalFlow, publicEvalJob } from "./network-response";
 import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
@@ -125,7 +126,7 @@ export function registerApiV1Routes(app: Express): void {
 
       const evalFlows = await storage.getEvalFlowsByOwner(user.id);
       res.json({
-        data: evalFlows,
+        data: evalFlows.map(publicEvalFlow),
         meta: {
           total: evalFlows.length,
         },
@@ -218,7 +219,7 @@ export function registerApiV1Routes(app: Express): void {
       // it's a no-op until v1 learns transport; kept so the paths can't drift.)
       const saved = withTags ?? evalFlow;
       const line = await startFlowLineRefresh(saved, user.id);
-      res.status(201).json({ data: withLineLookupState(saved, line) });
+      res.status(201).json({ data: publicEvalFlow(withLineLookupState(saved, line)) });
     } catch (error) {
       console.error("API v1 - Error creating evalFlow:", error);
       res.status(500).json({ error: "Failed to create evalFlow" });
@@ -248,7 +249,7 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ data: evalFlow });
+      res.json({ data: publicEvalFlow(evalFlow) });
     } catch (error) {
       console.error("API v1 - Error fetching evalFlow:", error);
       res.status(500).json({ error: "Failed to fetch evalFlow" });
@@ -311,7 +312,7 @@ export function registerApiV1Routes(app: Express): void {
       // (`lineLookupPending: true` on the response), never fails the save; a
       // changed number that can't be looked up clears the old answer.
       const line = updated ? await startFlowLineRefresh(updated, user.id) : null;
-      res.json({ data: updated && line ? withLineLookupState(updated, line) : updated });
+      res.json({ data: updated ? publicEvalFlow(line ? withLineLookupState(updated, line) : updated) : updated });
     } catch (error) {
       console.error("API v1 - Error updating evalFlow:", error);
       res.status(500).json({ error: "Failed to update evalFlow" });
@@ -654,7 +655,7 @@ export function registerApiV1Routes(app: Express): void {
       ]);
 
       res.json({
-        data: pagedJobs,
+        data: pagedJobs.map(publicEvalJob),
         meta: {
           total,
           scope,
@@ -692,7 +693,7 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ data: job });
+      res.json({ data: publicEvalJob(job) });
     } catch (error) {
       console.error("API v1 - Error fetching job:", error);
       res.status(500).json({ error: "Failed to fetch job" });
@@ -902,8 +903,8 @@ export function registerApiV1Routes(app: Express): void {
    * community, or mine), `transport` (web — the default — or phone; never
    * mixed) and an optional `hours` window. mainline and community are public;
    * mine is the caller's own private evals (the console's My Evals) and needs
-   * an API key or a signed-in session. With no parameters a request gets what
-   * it always got: mainline, web, all time.
+   * an API key or a signed-in session. No parameters means mainline, web,
+   * all time, network=strict. Historical/unverified runs require network=all.
    *
    * Network tags (design 2026-10-22 "Analysis"): `tag=key:value` (repeatable,
    * all must match the effective value on the tier's board) and `groupBy=key`

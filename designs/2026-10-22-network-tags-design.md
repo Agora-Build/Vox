@@ -711,7 +711,15 @@ summaries, the eviction high-water mark, and up to 128 events. Core returns
 `networkAck` with the same job/start identity and the committed event IDs. An
 agent removes only those IDs: events created while a request was in flight stay
 queued. Lost acknowledgments can retry identical events; the unique database
-identity deduplicates across Core instances and conflicting payloads return 409.
+identity deduplicates across Core instances. Authenticated, current-lease
+heartbeats return 200 even when their network report is rejected. A separate
+`networkReportStatus` distinguishes accepted, partial, rejected and retryable
+storage outcomes. Only saved events appear in `networkAck`; rejected events
+have explicit sequence/reason entries. The daemon removes only accepted or
+explicitly rejected entries from the submitted batch, preserving all other
+pending events and observations collected while the request was in flight.
+Sequence conflicts return a resynchronization hint when needed. Old-execution
+feedback never mutates a successor's buffer or history.
 
 The daemon samples every second; heartbeat delivery remains every 30 seconds.
 Only unacknowledged details are retained, for at most two monotonic minutes and
@@ -719,6 +727,16 @@ Only unacknowledged details are retained, for at most two monotonic minutes and
 events on that timer. Gaps/suspension/unsupported observations fail closed. A
 final sample and `monitoring_end` accompany success or failure. Final events,
 coverage, job status and result commit together before any acknowledgment.
+Telemetry storage uses a savepoint: malformed or conflicting network metadata
+cannot roll back an authorized measurement. Rejected or unavailable telemetry
+marks monitoring incomplete; database failures request retry without discarding
+pending events. Missing pre-upgrade history resumes at an incomplete checkpoint,
+never a fabricated fully monitored baseline. Completion carries a separate
+claim `startedAt` so old-execution results and superseded leases remain fenced.
+More than two minutes without delivery makes monitoring incomplete even if
+local sampling continued; incomplete is sticky after reconnection. This does
+not change the separate five-minute stale-agent job-recovery rule or 90-minute
+execution deadline.
 Complete coverage needs a continuous monitor and every sequence from start
 through end; summaries alone cannot manufacture it. Acknowledged events that
 have left the agent queue still count toward coverage in Core.
@@ -733,6 +751,9 @@ handoff or an egress-only change between heartbeats can always be detected.
 
 Leaderboard, metrics overview/hour/day buckets, zoom detail, region availability
 and public v1 default to `network=strict`: only complete, unchanged runs qualify.
+Uploaded Analyze recordings are exempt because the analyzing machine's network
+does not describe the recording; they remain visible in My Evals and are not
+counted as unstable or unverified network runs.
 Legacy, unsupported and incomplete runs are excluded, even when their change
 flag is false. `network=all` explicitly includes them without altering baseline
 grouping. All cache/query keys include policy. The console exposes an include

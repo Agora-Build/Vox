@@ -132,6 +132,19 @@ components:
       description: API key with prefix `vox_live_`
 
   parameters:
+    NetworkPolicy:
+      name: network
+      in: query
+      schema:
+        type: string
+        enum: [strict, all]
+        default: strict
+      description: >
+        Defaults to fully monitored evaluation runs with no detected network changes.
+        Use `all` to include unstable, historical and unverified runs. This deliberately
+        changes the default for older clients: historical results require `network=all`.
+        Uploaded analyses in `tier=mine` are exempt because network stability does not
+        apply to an uploaded recording.
     TagFilter:
       name: tag
       in: query
@@ -1534,6 +1547,7 @@ paths:
           description: Only results from the last N hours (omit for all time).
         - $ref: '#/components/parameters/TagFilter'
         - $ref: '#/components/parameters/TagGroupBy'
+        - $ref: '#/components/parameters/NetworkPolicy'
         - name: limit
           in: query
           schema:
@@ -1625,6 +1639,7 @@ paths:
           description: Only results from the last N hours (omit for all time).
         - $ref: '#/components/parameters/TagFilter'
         - $ref: '#/components/parameters/TagGroupBy'
+        - $ref: '#/components/parameters/NetworkPolicy'
         - name: siteId
           in: query
           schema:

@@ -24,4 +24,12 @@ describe("docs/openapi.yaml", () => {
     expect(typeof spec.paths).toBe("object");
     expect(spec.paths).not.toBeNull();
   });
+
+  it("documents strict/all policy on both v1 metrics endpoints", () => {
+    const spec = yaml.load(specContent) as any;
+    expect(spec.components.parameters.NetworkPolicy.schema).toMatchObject({ default: "strict", enum: ["strict", "all"] });
+    for (const route of ["/metrics/realtime", "/metrics/leaderboard"]) {
+      expect(spec.paths[route].get.parameters).toContainEqual({ $ref: "#/components/parameters/NetworkPolicy" });
+    }
+  });
 });

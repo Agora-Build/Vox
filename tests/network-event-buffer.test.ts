@@ -75,6 +75,57 @@ describe("acknowledged network-event buffer", () => {
     buffer.noteMissingChanges(10); buffer.finish(wifi);
     expect(buffer.report()).toMatchObject({ networkChanged: true, changeCount: 10, continuous: false });
   });
+  it("recovers only explicitly rejected submitted events, keeping in-flight observations", () => {
+    mono = 1000; buffer.observe(cellular);
+    const sent = buffer.report()!;
+    mono = 2000; buffer.observe(wifi);
+    buffer.acknowledge({ jobId: 1, startedAt: start, ackedEventSeqs: [1, 3] }, sent);
+    buffer.recover({ jobId: 1, startedAt: start, status: "partial", incomplete: true,
+      rejectedEvents: [{ seq: 2, reason: "event_conflict" }, { seq: 3, reason: "event_conflict" }] }, sent);
+    expect(buffer.report()!.events.map((event) => event.seq)).toEqual([3]);
+    expect(buffer.report()).toMatchObject({ continuous: false, networkChanged: true, changeCount: 2 });
+    mono = 3000; buffer.observe(cellular);
+    expect(buffer.report()!.events.map((event) => event.seq)).toEqual([3, 4]);
+  });
+  it("preserves other pending entries that were neither accepted nor rejected", () => {
+    mono = 1000; buffer.observe(cellular);
+    const sent = buffer.report()!;
+    buffer.recover({ jobId: 1, startedAt: start, status: "rejected", incomplete: true,
+      rejectedEvents: [{ seq: 1, reason: "invalid_event" }] }, sent);
+    expect(buffer.report()!.events.map((event) => event.seq)).toEqual([2]);
+  });
+  it("ignores rejection feedback from other jobs and claims", () => {
+    const sent = buffer.report()!;
+    const feedback = { jobId: 2, startedAt: start, status: "rejected" as const, incomplete: true,
+      rejectedEvents: [{ seq: 1, reason: "event_conflict" as const }] };
+    buffer.recover(feedback, sent);
+    buffer.recover({ ...feedback, jobId: 1, startedAt: "2026-11-04T00:00:00.000Z" }, sent);
+    expect(buffer.report()).toEqual(sent);
+  });
+  it("retains events for retryable storage problems and keeps incomplete sticky", () => {
+    const sent = buffer.report()!;
+    buffer.recover({ jobId: 1, startedAt: start, status: "retry", incomplete: true,
+      rejectedEvents: [{ seq: 1, reason: "event_conflict" }], reason: "storage_unavailable" }, sent);
+    expect(buffer.report()!.events).toEqual(sent.events);
+    buffer.recover({ jobId: 1, startedAt: start, status: "accepted", incomplete: false, rejectedEvents: [] }, sent);
+    expect(buffer.report()!.continuous).toBe(false);
+  });
+  it("resynchronizes the first sequence without reusing event identities", () => {
+    const sent = buffer.report()!;
+    buffer.recover({ jobId: 1, startedAt: start, status: "rejected", incomplete: true,
+      rejectedEvents: [{ seq: 1, reason: "sequence_mismatch" }], expectedFirstSeq: 10 }, sent);
+    mono = 1000; buffer.observe(cellular);
+    expect(buffer.report()).toMatchObject({ firstSeq: 10, lastSeq: 10, continuous: false });
+    expect(buffer.report()!.events[0].seq).toBe(10);
+    expect(networkReportSchema.safeParse(buffer.report()).success).toBe(true);
+  });
+  it("marks prolonged delivery silence incomplete even when local monitoring never stopped", () => {
+    for (mono = 1000; mono <= 120000; mono += 1000) buffer.observe(wifi);
+    const sent = buffer.report()!;
+    expect(sent.continuous).toBe(false);
+    buffer.acknowledge({ jobId: 1, startedAt: start, ackedEventSeqs: [] }, sent);
+    expect(buffer.report()!.continuous).toBe(false);
+  });
 });
 
 describe("network protocol validation and policy", () => {

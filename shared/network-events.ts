@@ -17,7 +17,7 @@ export const agentNetworkEventSchema = z.object({
   changed: z.array(z.enum(["link", "interface", "egress", "monitoring"])).max(4),
 }).strict();
 
-export const networkReportSchema = z.object({
+export const networkReportEnvelopeSchema = z.object({
   version: z.literal(1),
   jobId: z.number().int().positive().max(2_147_483_647),
   startedAt: z.string().datetime(),
@@ -27,8 +27,12 @@ export const networkReportSchema = z.object({
   changeCount: sequence.max(MAX_NETWORK_EVENTS_PER_RUN),
   continuous: z.boolean(),
   evictedThroughSeq: sequence,
+  events: z.array(z.unknown()).max(MAX_NETWORK_EVENT_BATCH),
+}).strict();
+
+export const networkReportSchema = networkReportEnvelopeSchema.extend({
   events: z.array(agentNetworkEventSchema).max(MAX_NETWORK_EVENT_BATCH),
-}).strict().superRefine((report, ctx) => {
+}).superRefine((report, ctx) => {
   if (report.lastSeq < report.firstSeq - 1 || report.lastSeq - report.firstSeq >= MAX_NETWORK_EVENTS_PER_RUN
     || report.evictedThroughSeq > report.lastSeq || report.events.some((event) => event.seq < report.firstSeq || event.seq > report.lastSeq)
     || new Set(report.events.map((event) => event.seq)).size !== report.events.length) {
@@ -42,6 +46,18 @@ export const networkReportSchema = z.object({
 export type AgentNetworkEvent = z.infer<typeof agentNetworkEventSchema>;
 export type NetworkReport = z.infer<typeof networkReportSchema>;
 export type NetworkAck = { jobId: number; startedAt: string; ackedEventSeqs: number[] };
+export type NetworkRejectionReason = "event_conflict" | "invalid_event" | "invalid_report" | "execution_mismatch" | "sequence_mismatch";
+export type NetworkRejectedEvent = { seq: number; reason: NetworkRejectionReason };
+export type NetworkReportStatus = {
+  jobId?: number;
+  startedAt?: string;
+  status: "accepted" | "partial" | "rejected" | "retry";
+  incomplete: boolean;
+  rejectedEvents: NetworkRejectedEvent[];
+  reason?: NetworkRejectionReason | "storage_unavailable";
+  expectedFirstSeq?: number;
+};
+export type NetworkReportResponse = { networkAck?: NetworkAck; networkReportStatus?: NetworkReportStatus };
 export type NetworkHistoryEvent = {
   id: number;
   event: "initial" | AgentNetworkEvent["event"];

@@ -10,7 +10,7 @@ state and safe job-level network/coverage flags. There is no backfill claiming
 historical runs were stable. The migration takes the normal short DDL locks;
 schedule it with the usual database migration precautions.
 
-Metrics and Leaderboard now default to strict network coverage. Old agents
+Metrics and Leaderboard, including public v1 metrics, now default to strict network coverage. Old agents
 remain compatible but unverified; historical/unsupported/incomplete runs are
 visible using Include unstable / unverified (`network=all` on metrics APIs).
 Watch `/api/metrics/network-coverage?tier=realtime` during rollout. This counts
