@@ -175,6 +175,50 @@ d("credential policy: isolated PostgreSQL and HTTP contracts", () => {
     const replay = await run({ requestId: key }).expect(200);
     expect(replay.body.job.id).toBe(results[0].id);
   });
+  it("normalizes numeric-string eval-set IDs before concurrent trial replay", async () => {
+    await enable(1);
+    const key = randomUUID();
+    const blocker = await pool.connect();
+    await blocker.query("BEGIN");
+    await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`credential-trials:${scope()}`]);
+    const pending = [String(set.id), String(set.id), set.id].map((evalSetId) =>
+      run({ requestId: key, evalSetId }).then((response) => response));
+    try {
+      // Force every HTTP request past the early lookup and into locked admission.
+      await vi.waitFor(async () => {
+        const waiting = await pool.query("SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE a.datname=current_database() AND l.locktype='advisory' AND NOT l.granted");
+        expect(waiting.rows[0].n).toBeGreaterThanOrEqual(pending.length);
+      }, { timeout: 5000 });
+    } finally {
+      await blocker.query("COMMIT");
+      blocker.release();
+    }
+    const responses = await Promise.all(pending);
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+    expect(new Set(responses.map((response) => response.body.job.id)).size).toBe(1);
+    expect(responses[0].body.job.evalSetId).toBe(set.id);
+    expect(await count()).toBe(1);
+    await run({ requestId: key, evalSetId: String(set.id) }).expect(200);
+  });
+  it.each([undefined, null, true, [], {}, 0, -1, 1.5, "not-id", "12.5", 2147483648])("rejects invalid eval-set IDs before replay or admission: %j", async (evalSetId) => {
+    await enable();
+    const key = randomUUID();
+    await run({ requestId: key }).expect(200);
+    const response = await run({ requestId: key, evalSetId }).expect(400);
+    expect(response.body.error).toMatch(/Eval set required|Invalid eval set id/);
+    expect(await count()).toBe(1);
+  });
+  it("rejects malformed flow IDs before the replay and lookup paths can disagree", async () => {
+    await enable();
+    const key = randomUUID();
+    await run({ requestId: key }).expect(200);
+    for (const id of [`${flow.id}suffix`, "0", "-1", "1.5", "1e3", "2147483648"]) {
+      await auth(request(app).post(`/api/eval-flows/${id}/run`)).send({
+        evalSetId: set.id, region, targetTier: "public", requestId: key,
+      }).expect(400);
+    }
+    expect(await count()).toBe(1);
+  });
   it("keeps a submission idempotent across an ownership transfer and rejects reusing it for a different flow", async () => {
     await enable();
     const key = randomUUID();

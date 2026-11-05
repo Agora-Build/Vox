@@ -213,6 +213,9 @@ owner schedules do not consume borrowed-trial allowance.
 - A browser submission UUID is unique per caller. Retrying a lost response
   returns the original job even at the quota limit or after ownership changes.
   Reusing it for a different/deleted job fails closed.
+  Flow/eval-set IDs are validated and normalized before either replay lookup;
+  numeric-string eval-set IDs cannot diverge from persisted numeric IDs when
+  concurrent retries reach the transactional replay path.
 - Borrowed credential release requires a durable usage record matching the
   exact job, caller, and frozen credential scope. Never trust a client stamp.
 

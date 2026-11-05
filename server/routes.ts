@@ -5456,8 +5456,20 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { evalFlowId } = req.params;
-      const { evalSetId } = req.body;
+      const evalFlowId = Number(req.params.evalFlowId);
+      if (!/^\d+$/.test(req.params.evalFlowId) || !Number.isSafeInteger(evalFlowId) || evalFlowId <= 0 || evalFlowId > 2147483647) {
+        return res.status(400).json({ error: "Invalid eval flow id" });
+      }
+      const evalSetIdInput = req.body.evalSetId;
+      if (evalSetIdInput == null || evalSetIdInput === "") {
+        return res.status(400).json({ error: "Eval set required" });
+      }
+      const evalSetId = typeof evalSetIdInput === "number" ||
+        (typeof evalSetIdInput === "string" && /^\d+$/.test(evalSetIdInput.trim()))
+        ? Number(evalSetIdInput) : NaN;
+      if (!Number.isSafeInteger(evalSetId) || evalSetId <= 0 || evalSetId > 2147483647) {
+        return res.status(400).json({ error: "Invalid eval set id" });
+      }
       // Pooled targeting: region baseId + tier (spec §5). Exactly one of
       // targetTokenId / (region+targetTier) may be supplied.
       const region = req.body.region != null ? String(req.body.region) : null;
@@ -5470,7 +5482,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Provide either targetTokenId or region+targetTier, not both" });
       }
 
-      const evalFlow = await storage.getEvalFlow(parseInt(evalFlowId));
+      const evalFlow = await storage.getEvalFlow(evalFlowId);
       
       if (!evalFlow) {
         return res.status(404).json({ error: "Eval Flow not found" });
@@ -5489,7 +5501,7 @@ export async function registerRoutes(
       if (requestId.success && req.session?.userId && req.apiKeyId == null && !req.headers.authorization) {
         // A lost response must not spend again after mutable owner/config changes.
         const replay = await findCredentialTrialJob({
-          createdBy: user.id, evalFlowId: Number(evalFlowId), evalSetId: Number(evalSetId),
+          createdBy: user.id, evalFlowId, evalSetId,
           targetRegion: region, targetTier: targetTier as "public" | null, targetTokenId,
         }, requestId.data);
         if (replay) return res.json({ message: "Job created", job: replay });
@@ -5555,9 +5567,6 @@ export async function registerRoutes(
       // cannot access or that does not exist. Hoisted above the targeting branch
       // per the A6 final-review finding (deviates from the plan's original order,
       // human-approved).
-      if (!evalSetId) {
-        return res.status(400).json({ error: "Eval set required" });
-      }
       const evalSet = await storage.getEvalSet(evalSetId);
       if (!evalSet) {
         return res.status(404).json({ error: "Eval set not found" });
@@ -5652,7 +5661,7 @@ export async function registerRoutes(
           }
           // All credential checks precede the marketplace credit hold.
           const authz = personalAgent ? { ok: true, settlementContext: undefined } : await marketplace!.authorizeDispatch(user.id, token.id, {
-            evalFlowId: parseInt(evalFlowId, 10),
+            evalFlowId,
             evalSetId: evalSetId ?? null,
             region: token.siteId,
             createdBy: user.id,
@@ -5737,7 +5746,7 @@ export async function registerRoutes(
           if (!borrowing) void ensureSession(scope, sessionNeed);
         }
         const jobValues = {
-          evalFlowId: parseInt(evalFlowId),
+          evalFlowId,
           triggerType: 2, // manual (Run EvalFlow)
           evalSetId,
           createdBy: user.id,
