@@ -142,7 +142,7 @@ test("an in-flight detail response cannot bleed across transport filters", async
 test("an in-flight detail response cannot bleed across strict/all network policy", async ({ page }) => {
   const requests: URL[] = [];
   await mockDashboard(page, requests);
-  await page.goto("/realtime");
+  await page.goto("/realtime?network=strict");
   await page.getByRole("combobox").filter({ hasText: "7 days" }).click();
   await page.getByRole("option", { name: "All time" }).click();
   const chart = page.locator(".recharts-wrapper").first();
@@ -150,7 +150,7 @@ test("an in-flight detail response cannot bleed across strict/all network policy
   await expect(status).toHaveText("Daily averages");
   await pinch(chart, -60, 8);
   await expect(status).toHaveText("Loading detail...");
-  await page.getByTestId("include-unstable-networks").click();
+  await page.getByRole("switch", { name: "Strict", exact: true }).click();
   await expect(status).toHaveText("Daily averages");
   await page.waitForTimeout(450);
   await expect(status).toHaveText("Daily averages");

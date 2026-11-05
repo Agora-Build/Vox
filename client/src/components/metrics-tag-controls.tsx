@@ -22,16 +22,17 @@ const KNOWN_KEY_LABELS: Record<string, string> = {
   sim: "SIM operator",
 };
 
-function readUrl(): { tagFilters: Tag[]; groupBy?: string; network: NetworkMode } {
+function readUrl(defaultNetwork: NetworkMode): { tagFilters: Tag[]; groupBy?: string; network: NetworkMode } {
   const p = new URLSearchParams(window.location.search);
   const tf = parseTagFilter(p.getAll("tag"));
   const gb = parseGroupBy(p.get("groupBy") ?? undefined);
-  return { tagFilters: "error" in tf ? [] : tf.filters, groupBy: "error" in gb ? undefined : gb.groupBy, network: p.get("network") === "all" ? "all" : "strict" };
+  const network = p.get("network");
+  return { tagFilters: "error" in tf ? [] : tf.filters, groupBy: "error" in gb ? undefined : gb.groupBy, network: network === "all" || network === "strict" ? network : defaultNetwork };
 }
 
 /** Tag filters + groupBy, initialised from and mirrored to the URL (replaceState: no history entry per keystroke). */
-export function useMetricsTagUrlState() {
-  const [initial] = useState(readUrl);
+export function useMetricsTagUrlState(defaultNetwork: NetworkMode = "strict") {
+  const [initial] = useState(() => readUrl(defaultNetwork));
   const [tagFilters, setTagFilters] = useState<Tag[]>(initial.tagFilters);
   const [groupBy, setGroupBy] = useState<string | undefined>(initial.groupBy);
   const [network, setNetwork] = useState<NetworkMode>(initial.network);
@@ -41,10 +42,11 @@ export function useMetricsTagUrlState() {
     for (const t of tagFilters) url.searchParams.append("tag", formatTag(t));
     if (groupBy) url.searchParams.set("groupBy", groupBy);
     else url.searchParams.delete("groupBy");
-    if (network === "all") url.searchParams.set("network", "all");
+    // Keep All explicit, and also persist Strict on pages that default to All.
+    if (network === "all" || network !== defaultNetwork) url.searchParams.set("network", network);
     else url.searchParams.delete("network");
     if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
-  }, [tagFilters, groupBy, network]);
+  }, [tagFilters, groupBy, network, defaultNetwork]);
   return { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork };
 }
 
@@ -89,7 +91,7 @@ export { accessView, showAccessSplit, withAccessView, type AccessView } from "@/
  * (design "Last mile vs datacenter" → Analysis), so it shares the tag
  * filter's URL state.
  */
-export function AccessToggle({ tagFilters, onTagFiltersChange }: { tagFilters: Tag[]; onTagFiltersChange: (tags: Tag[]) => void }) {
+export function AccessToggle({ tagFilters, onTagFiltersChange, showAll = true }: { tagFilters: Tag[]; onTagFiltersChange: (tags: Tag[]) => void; showAll?: boolean }) {
   const view = accessView(tagFilters);
   // With MAX_TAG_FILTERS other filters already set, picking an access class
   // would add one more than the server accepts.
@@ -101,12 +103,15 @@ export function AccessToggle({ tagFilters, onTagFiltersChange }: { tagFilters: T
       type="single"
       variant="outline"
       size="sm"
-      value={view === "other" ? "" : view}
-      onValueChange={(v) => { if (v) onTagFiltersChange(withAccessView(tagFilters, v as AccessView)); }}
+      value={view === "other" || (!showAll && view === "all") ? "" : view}
+      onValueChange={(v) => {
+        if (v) onTagFiltersChange(withAccessView(tagFilters, v as AccessView));
+        else if (!showAll) onTagFiltersChange(withAccessView(tagFilters, "all"));
+      }}
       aria-label="Connection"
       data-testid="access-toggle"
     >
-      <ToggleGroupItem value="all" data-testid="access-toggle-all" title="Every result">All</ToggleGroupItem>
+      {showAll && <ToggleGroupItem value="all" data-testid="access-toggle-all" title="Every result">All</ToggleGroupItem>}
       <ToggleGroupItem value="lastmile" data-testid="access-toggle-lastmile" disabled={full} title={LAST_MILE_HINT}>Last mile</ToggleGroupItem>
       <ToggleGroupItem value="datacenter" data-testid="access-toggle-datacenter" disabled={full} title={DATACENTER_HINT}>Datacenter</ToggleGroupItem>
     </ToggleGroup>
@@ -121,18 +126,20 @@ export function MetricsTagControls({
   groupBy,
   onGroupByChange,
   customKeys,
+  showAllAccessOption = true,
 }: {
   tagFilters: Tag[];
   onTagFiltersChange: (tags: Tag[]) => void;
   groupBy?: string;
   onGroupByChange: (key: string | undefined) => void;
   customKeys: string[];
+  showAllAccessOption?: boolean;
 }) {
   // `region` is offered once, on its own (it isn't a tag key) — never again as a "custom key".
   const keys = [...KNOWN_TAG_KEYS, ...customKeys.filter((k) => !(KNOWN_TAG_KEYS as readonly string[]).includes(k) && k !== REGION_GROUP_KEY)];
   return (
     <>
-      <AccessToggle tagFilters={tagFilters} onTagFiltersChange={onTagFiltersChange} />
+      <AccessToggle tagFilters={tagFilters} onTagFiltersChange={onTagFiltersChange} showAll={showAllAccessOption} />
       <TagInput
         value={tagFilters}
         onChange={onTagFiltersChange}

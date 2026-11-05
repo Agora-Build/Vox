@@ -6,6 +6,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Clock, Activity, RefreshCw, Lock, ChevronDown, Phone, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Toggle } from "@/components/ui/toggle";
 import {
   Popover,
   PopoverContent,
@@ -1238,7 +1239,9 @@ export default function Dashboard() {
   // Provider multi-select: hidden set (default empty = all shown).
   const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
   // Network tags: filters (all must match) + groupBy, kept in the URL.
-  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagUrlState();
+  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagUrlState("all");
+  // Keep shared filtered views expanded so an active constraint is never hidden.
+  const [networkFiltersVisible, setNetworkFiltersVisible] = useState(() => tagFilters.length > 0 || !!groupBy || network === "strict");
   const tagKey = tagParamsKey(tagFilters, groupBy, network);
   const { data: regionLocations } = useRegionLocations();
   const { data: providerList } = useQuery<Array<{ id: string; name: string }>>({
@@ -1499,13 +1502,38 @@ export default function Dashboard() {
             onChange={setRegionScopes}
             showUnverified={activeTab === "my-evals" && !!regionAvailability?.hasUnverified}
           />
-          <MetricsTagControls
-            tagFilters={tagFilters}
-            onTagFiltersChange={setTagFilters}
-            groupBy={groupBy}
-            onGroupByChange={setGroupBy}
-            customKeys={tagCustomKeys}
-          />
+          <Toggle
+            variant="outline"
+            size="sm"
+            pressed={!networkFiltersVisible}
+            onPressedChange={(selected) => {
+              setNetworkFiltersVisible(!selected);
+              if (selected) {
+                setTagFilters([]);
+                setGroupBy(undefined);
+                setNetwork("all");
+              }
+            }}
+            aria-expanded={networkFiltersVisible}
+            aria-controls="realtime-network-filters"
+            aria-label="All networks"
+            data-testid="access-toggle-all"
+            title={networkFiltersVisible ? "Show all networks and reset network filters" : "All networks (Strict off). Click to show network filters."}
+          >
+            All
+          </Toggle>
+          {networkFiltersVisible && (
+            <div id="realtime-network-filters" className="contents">
+              <MetricsTagControls
+                tagFilters={tagFilters}
+                onTagFiltersChange={setTagFilters}
+                groupBy={groupBy}
+                onGroupByChange={setGroupBy}
+                customKeys={tagCustomKeys}
+                showAllAccessOption={false}
+              />
+            </div>
+          )}
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
@@ -1581,7 +1609,7 @@ export default function Dashboard() {
         </TabsList>
 
         <TabsContent value="mainline" className="space-y-4 mt-4">
-          <NetworkPolicyControls network={network} onChange={setNetwork} tier="realtime" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />
+          {networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} tier="realtime" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />}
           <MetricsSection
             metrics={groupedMainline}
             isLoading={mainlineLoading}
@@ -1602,7 +1630,7 @@ export default function Dashboard() {
         </TabsContent>
 
         <TabsContent value="community" className="space-y-4 mt-4">
-          <NetworkPolicyControls network={network} onChange={setNetwork} tier="community" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />
+          {networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} tier="community" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />}
           <MetricsSection
             metrics={groupedCommunity}
             isLoading={communityLoading}
@@ -1624,7 +1652,7 @@ export default function Dashboard() {
         </TabsContent>
 
         <TabsContent value="my-evals" className="space-y-4 mt-4">
-          {isLoggedIn && <NetworkPolicyControls network={network} onChange={setNetwork} tier="my-evals" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} userId={authStatus?.user?.id} />}
+          {isLoggedIn && networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} tier="my-evals" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} userId={authStatus?.user?.id} />}
           {isLoggedIn ? (
             <MetricsSection
               metrics={groupedMyEvals}
