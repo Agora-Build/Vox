@@ -10,9 +10,24 @@ state and safe job-level network/coverage flags. There is no backfill claiming
 historical runs were stable. The migration takes the normal short DDL locks;
 schedule it with the usual database migration precautions.
 
-Metrics and Leaderboard, including public v1 metrics, now default to strict network coverage. Old agents
-remain compatible but unverified; historical/unsupported/incomplete runs are
-visible using Include unstable / unverified (`network=all` on metrics APIs).
+Leaderboard and metrics APIs, including public v1, default to strict network
+coverage. Old agents remain compatible but unverified;
+historical/unsupported/incomplete runs are visible with `network=all`.
+
+The Real-time UI deliberately defaults to **All networks**, sending `network=all`
+for Mainline, Community and My Evals. Advanced network controls and the **Strict**
+switch are hidden, with Strict off. Click the selected **All** button to reveal
+Last mile, Datacenter, tag filters, grouping and Strict; select All again to clear
+network filters/grouping, turn Strict off and collapse the controls. Time,
+region, transport and provider selections are preserved. The information icon
+before Strict explains coverage and the frozen baseline used for grouping.
+Filtered/grouped/explicit-Strict links start expanded so active constraints stay
+visible. To retain a strict benchmark, share `/realtime?network=strict` (or append
+`&network=strict` to an existing filtered URL). Older Real-time links that omit
+network now use All, even with tags/grouping. Use `network=all` when comparing API
+results with default Real-time; this UI choice does not change API or Leaderboard
+defaults.
+
 Watch `/api/metrics/network-coverage?tier=realtime` during rollout. This counts
 stable, changed and unverified results in the selected tier/window/filter scope.
 

@@ -1518,7 +1518,7 @@ export default function Dashboard() {
             aria-controls="realtime-network-filters"
             aria-label="All networks"
             data-testid="access-toggle-all"
-            title={networkFiltersVisible ? "Show all networks and reset network filters" : "Show network filters"}
+            title={networkFiltersVisible ? "Show all networks and reset network filters" : "All networks (Strict off). Click to show network filters."}
           >
             All
           </Toggle>

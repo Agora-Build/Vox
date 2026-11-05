@@ -144,7 +144,10 @@ components:
         Use `all` to include unstable, historical and unverified runs. This deliberately
         changes the default for older clients: historical results require `network=all`.
         Uploaded analyses in `tier=mine` are exempt because network stability does not
-        apply to an uploaded recording.
+        apply to an uploaded recording. Unlike this API and the Leaderboard UI, the
+        Real-time UI defaults to All networks and explicitly requests `network=all`.
+        Pass `network=all` to compare this API with that default view; share a Real-time
+        URL with `network=strict` to retain a strict benchmark.
     TagFilter:
       name: tag
       in: query

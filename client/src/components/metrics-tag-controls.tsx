@@ -42,6 +42,7 @@ export function useMetricsTagUrlState(defaultNetwork: NetworkMode = "strict") {
     for (const t of tagFilters) url.searchParams.append("tag", formatTag(t));
     if (groupBy) url.searchParams.set("groupBy", groupBy);
     else url.searchParams.delete("groupBy");
+    // Keep All explicit, and also persist Strict on pages that default to All.
     if (network === "all" || network !== defaultNetwork) url.searchParams.set("network", network);
     else url.searchParams.delete("network");
     if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);

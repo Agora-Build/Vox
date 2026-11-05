@@ -758,16 +758,26 @@ handoff or an egress-only change between heartbeats can always be detected.
 
 ### Strict dashboards and rollout
 
-Leaderboard, metrics overview/hour/day buckets, zoom detail, region availability
+Server-side metrics overview/hour/day buckets, zoom detail, region availability
 and public v1 default to `network=strict`: only complete, unchanged runs qualify.
+Leaderboard also keeps Strict as its UI default.
 Uploaded Analyze recordings are exempt because the analyzing machine's network
 does not describe the recording; they remain visible in My Evals and are not
 counted as unstable or unverified network runs.
 Legacy, unsupported and incomplete runs are excluded, even when their change
 flag is false. `network=all` explicitly includes them without altering baseline
-grouping. All cache/query keys include policy. The console exposes an include
-unstable/unverified toggle, scoped coverage counts, and authorized job timelines.
+grouping. All cache/query keys include policy. The console exposes a positive
+Strict switch, scoped coverage counts, and authorized job timelines.
 Normal job/result history is not filtered away.
+
+**Real-time UI follow-up (2026-11-05):** Real-time deliberately defaults to All
+networks, explicitly passing `network=all` for overview, zoom detail and region
+availability. The All button starts selected with advanced filters and Strict
+hidden/off; clicking it reveals the controls, and reselecting it resets network
+tags/grouping and Strict without changing primary selections. Filtered/grouped
+or explicit-Strict URLs start expanded. An information popover precedes Strict.
+API and Leaderboard defaults remain unchanged. Older Real-time links without a
+network parameter now use All; add `network=strict` to preserve strict results.
 
 Deploy Core schema 66 first, then updated daemons. Older daemons still run but
 remain unverified. Docker startup overrides cannot prove continuous monitoring:
