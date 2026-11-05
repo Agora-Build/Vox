@@ -192,8 +192,9 @@ from 0 to 10,000 (zero disables). Organization limit edits require secret-manage
 rights. PostgreSQL admission/usage are atomic and request-UUID idempotent;
 failures/cancellations count and history deletion never refunds usage. API keys
 and borrower schedules have no borrowing exception. Admission locks/rechecks the
-eval set as well as the flow. Scope opt-out blocks future trial credential delivery,
-including queued/running jobs, without retracting delivered values or sessions;
+eval set as well as the flow. Scope opt-out denies new trial credential checks
+after the policy update commits, including queued/running jobs. Already-authorized
+requests may finish; delivered values or sessions cannot be retracted;
 an exhausted positive budget only stops new admissions. Schema 67 and upgrade effects
 are documented in `docs/DEPLOYMENT.md#credential-policy-rollout-schema-67`.
 

@@ -221,8 +221,12 @@ owner schedules do not consume borrowed-trial allowance.
 - Borrowed credential release requires a durable usage record matching the
   exact job, caller, and frozen credential scope. Never trust a client stamp.
   The scope's current policy must still be enabled with a positive budget.
-  Disabling it stops future Runtime/session/REST credential delivery for queued
-  and running trials, but cannot retract values/sessions already delivered.
+  Disabling it denies new Runtime/session/REST credential authorization checks
+  for queued and running trials after the policy update commits. A request
+  already authorized before that commit may finish afterward; this is
+  point-in-time authorization, not an atomic revocation barrier around database
+  reads, response delivery or external provider calls. Already delivered
+  values/sessions cannot be retracted.
   An exhausted positive admission budget does not revoke admitted jobs.
   Re-enabling permits their remaining authorized requests again. Flow/eval-set
   edits after admission do not rewrite frozen authorization; cancel a specific

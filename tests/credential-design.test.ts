@@ -17,8 +17,9 @@ describe("living credential design", () => {
     expect(deployment).toContain("Borrowing stays **off by default**");
     expect(deployment).toContain("../designs/agent-credentials-design.md");
     expect(design).toContain("docs/DEPLOYMENT.md#credential-policy-rollout-schema-67");
-    expect(design).toContain("Disabling it stops future Runtime/session/REST credential delivery");
-    expect(deployment).toContain("Disabling the scope's trials blocks subsequent credential delivery");
+    expect(design).toContain("Disabling it denies new Runtime/session/REST credential authorization checks");
+    expect(deployment).toContain("Disabling the scope's trials denies new credential authorization checks");
+    expect(design).toContain("already authorized before that commit may finish afterward");
   });
   it("documents the broker environment names used by both binaries", () => {
     for (const variable of ["BROKER_REG_TOKEN", "VOX_CORE_URL", "BROKER_ADVERTISE_URL"]) {

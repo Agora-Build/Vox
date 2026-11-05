@@ -128,7 +128,7 @@ export async function jobMayUseCredentials(job: EvalJob): Promise<boolean> {
   if (ownsCredentialScope(frozenFlow, { id: job.createdBy, organizationId: membership?.organizationId ?? null })) return true;
   const stamp = job.snapshot?.credentialTrial;
   if (!stamp || stamp.callerId !== job.createdBy || stamp.scopeKey !== credentialScopeKey(frozenFlow) || job.targetTier !== "public") return false;
-  // Scope opt-out revokes delivery; exhausting a positive cap only stops admission.
+  // Point-in-time authorization: opt-out denies new checks, not in-flight requests.
   const [usage] = await db.select({ id: credentialTrialUsage.id }).from(credentialTrialUsage)
     .innerJoin(credentialTrialPolicies, eq(credentialTrialPolicies.scopeKey, credentialTrialUsage.scopeKey)).where(and(
       eq(credentialTrialUsage.jobId, job.id), eq(credentialTrialUsage.callerId, job.createdBy), eq(credentialTrialUsage.scopeKey, stamp.scopeKey),

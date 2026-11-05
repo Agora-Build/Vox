@@ -302,6 +302,30 @@ d("credential policy: isolated PostgreSQL and HTTP contracts", () => {
         .send({ leaseId: "credential-lease", stepIndex: 0 }).expect(403);
     }
   });
+  it("allows an already authorized credential request to finish but rejects checks after opt-out commits", async () => {
+    await enable();
+    const job = await claim(await createCredentialTrialJob(values()));
+    const readSecrets = storage.getSecretsForJob.bind(storage);
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { resume = resolve; });
+    const read = vi.spyOn(storage, "getSecretsForJob").mockImplementationOnce(async (id) => {
+      await paused;
+      return readSecrets(id);
+    });
+    const pending = request(app).get(`/api/eval-agent/jobs/${job.id}/secrets?leaseId=credential-lease`)
+      .set("Authorization", "Bearer credential-test-agent").then((response) => response);
+    try {
+      // The read starts only after this request's point-in-time authorization.
+      await vi.waitFor(() => expect(read).toHaveBeenCalledWith(job.id));
+      await setCredentialTrialPolicy(scope(), { enabled: false, maxRuns30Days: 100 });
+    } finally {
+      resume();
+      read.mockRestore();
+    }
+    expect((await pending).status).toBe(200);
+    await request(app).get(`/api/eval-agent/jobs/${job.id}/secrets?leaseId=credential-lease`)
+      .set("Authorization", "Bearer credential-test-agent").expect(403);
+  });
   it("web trials use an immutable, durable credential scope, not caller-supplied overrides", async () => {
     await enable();
     const response = await run({ config: { stepsPrefix: "evil" }, snapshot: { credentialTrial: { scopeKey: "user:3", callerId: 3 } } }).expect(200);

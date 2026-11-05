@@ -93,14 +93,19 @@ schedules to work around the policy.
 
 Borrowing stays **off by default**. To enable it, the credential owner opens
 Secrets, enables Public flow trials and saves a positive aggregate 30-day run
-budget. Organization settings require that organization's owner/admin. Each
+budget. Previously permitted cross-owner runs of public credential-bearing
+flows now require this opt-in; public visibility alone no longer authorizes
+credential spending. Organization settings require that organization's owner/admin. Each
 public flow has separately editable per-user limits; setting either to zero
 disables its borrowed trials. Borrowing requires a signed-in browser session,
 an owner-controlled eval set and pooled Mainline. API keys and borrower
 schedules never gain access. Admitted failures/cancellations count; deleting
 history does not refund usage. These are run caps, not provider-dollar caps.
-Disabling the scope's trials blocks subsequent credential delivery to queued
-and running trials; it cannot retract values or sessions already delivered.
+Disabling the scope's trials denies new credential authorization checks for
+queued and running trials after the policy update commits. Already-authorized
+requests may finish, including in-flight external provider calls; values or
+sessions already delivered cannot be retracted. This is point-in-time
+authorization, not an atomic revocation barrier around an entire request.
 An exhausted positive budget blocks new admissions, not admitted jobs.
 Re-enabling permits remaining requests again. Post-admission flow/eval-set
 edits do not revoke their frozen authorization; cancel individual jobs to stop
