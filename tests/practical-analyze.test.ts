@@ -113,7 +113,7 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     expect(detail.result.providerId).toBe(provider.id);
 
     // In My Evals under that region; not in the Eval Jobs list.
-    const mine = await storage.getMyEvalMetrics(userId, 24, { baseIds: [region] }, "web");
+    const mine = await storage.getMyEvalMetrics(userId, 24, { baseIds: [region] }, "web", { network: "all" });
     expect(mine.some((r) => r.evalJobId === id)).toBe(true);
     const jobs = await (await fetch(`${BASE_URL}/api/eval-jobs?scope=mine&limit=100`, { headers: { Cookie: cookie } })).json();
     const listed = (Array.isArray(jobs) ? jobs : jobs.jobs ?? jobs.data ?? []) as Array<{ id: number }>;
@@ -177,7 +177,7 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
     });
     // Web and phone never mix; each result sits under its own region.
     const inView = async (transport: "web" | "phone", baseIds?: string[]) =>
-      (await storage.getMyEvalMetrics(userId, 24, baseIds ? { baseIds } : undefined, transport)).map((r) => r.evalJobId);
+      (await storage.getMyEvalMetrics(userId, 24, baseIds ? { baseIds } : undefined, transport, { network: "all" })).map((r) => r.evalJobId);
     const web = await inView("web");
     const phone = await inView("phone");
     expect(web).toEqual(expect.arrayContaining([ids[0], ids[2]]));

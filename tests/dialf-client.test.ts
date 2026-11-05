@@ -3,7 +3,7 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { DialfClient, probeDialf, REQUIRED_DIALF_STEPS } from "../vox_eval_agentd/dialf-client";
+import { DialfClient, probeDialf, REQUIRED_DIALF_STEPS, simReportFrom, withSim } from "../vox_eval_agentd/dialf-client";
 
 // Fake dialfd: a Unix-socket line-JSON server scripted per-op (DialF
 // docs/INTEGRATION.md contract shapes, v0.3.8).
@@ -116,6 +116,29 @@ describe("probeDialf", () => {
     rig.server.close();
   });
 
+  it("reports the default SIM's operator (name + MCC/MNC) when DialF exposes it", async () => {
+    const rig = fakeDialfd({
+      ...HEALTHY,
+      "sims.list": () => ({
+        sims: [
+          { slot: 0, number: "+15550001111", is_default: false, operator_name: "AT&T", mcc: "310", mnc: "410" },
+          { slot: 1, number: "+15550009999", is_default: true, operator: "Mint", mcc: "310", mnc: "260" },
+        ],
+      }),
+    });
+    const out = await probeDialf(rig.sockPath);
+    expect(out.sim).toEqual({ number: "+15550009999", mcc: "310", mnc: "260", operatorName: "Mint" });
+    rig.server.close();
+  });
+
+  it("today's DialF (slot / number / default only) → no sim report at all", async () => {
+    const rig = fakeDialfd({ ...HEALTHY, "sims.list": () => ({ sims: [{ slot: 0, number: "+15550009999", is_default: true }] }) });
+    const out = await probeDialf(rig.sockPath);
+    expect(out.phoneNumber).toBe("+15550009999");
+    expect(out.sim).toBeUndefined();
+    rig.server.close();
+  });
+
   it("fails closed on: unreachable socket, stub VAD, wrong spec, missing step, no phone", async () => {
     const un = await probeDialf(path.join(os.tmpdir(), "definitely-missing.sock"));
     expect(un.ok).toBe(false);
@@ -138,5 +161,35 @@ describe("probeDialf", () => {
     const nophone = fakeDialfd({ ...HEALTHY, "devices.list": () => [] });
     expect((await probeDialf(nophone.sockPath)).reason).toBe("no phone connected");
     nophone.server.close();
+  });
+});
+
+describe("simReportFrom / withSim (the register/heartbeat `sim` field)", () => {
+  it("needs a number and both codes; accepts operator or operator_name; a numeric operator is the code pair", () => {
+    expect(simReportFrom([{ number: "+15550009999", is_default: true, operator_name: "T-Mobile", mcc: "310", mnc: "260" }]))
+      .toEqual({ number: "+15550009999", mcc: "310", mnc: "260", operatorName: "T-Mobile" });
+    expect(simReportFrom([{ number: "+15550009999", operator: "310260" }]))
+      .toEqual({ number: "+15550009999", mcc: "310", mnc: "260" });
+    expect(simReportFrom([{ number: "+1 555 000 9999", mcc: "310", mnc: "26" }]))
+      .toEqual({ number: "+15550009999", mcc: "310", mnc: "26" });
+    expect(simReportFrom([{ number: "+15550009999", operator: "Mint" }])).toBeUndefined(); // name alone: no code
+    expect(simReportFrom([{ number: "+15550009999", mcc: "310" }])).toBeUndefined();
+    expect(simReportFrom([{ number: "+15550009999", mcc: 310, mnc: 260 }])).toBeUndefined();
+    expect(simReportFrom([{ number: "5550009999", mcc: "310", mnc: "260" }])).toBeUndefined();
+    expect(simReportFrom([{ mcc: "310", mnc: "260" }])).toBeUndefined();
+    expect(simReportFrom([])).toBeUndefined();
+  });
+
+  it("uses the default SIM, like the number lookup", () => {
+    expect(simReportFrom([
+      { number: "+15550001111", mcc: "310", mnc: "410" },
+      { number: "+15550009999", is_default: true, mcc: "310", mnc: "260" },
+    ])?.number).toBe("+15550009999");
+  });
+
+  it("withSim adds `sim` only when there is a report", () => {
+    expect(withSim({ agentId: 1 }, undefined)).toEqual({ agentId: 1 });
+    expect(withSim({ agentId: 1 }, { number: "+15550009999", mcc: "310", mnc: "260" }))
+      .toEqual({ agentId: 1, sim: { number: "+15550009999", mcc: "310", mnc: "260" } });
   });
 });

@@ -19,6 +19,9 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { load as loadYaml } from "js-yaml";
 import type { EvalFlow as EvalFlowType, Provider, Project } from "@shared/schema";
+import type { Tag } from "@shared/tags";
+import { TagInput } from "@/components/tag-input";
+import { LineLookupPanel, LINE_LOOKUP_DISCLOSURE, LINE_LOOKUP_PENDING_TEXT, trackLineLookupPending } from "@/components/line-lookup";
 
 // missingSecrets (#130): set by the server only on flows the caller can fix;
 // null = couldn't be checked (organizations unavailable).
@@ -94,6 +97,8 @@ export default function ConsoleEvalFlows() {
   const [transport, setTransport] = useState("web");
   const [stepsPrefix, setStepsPrefix] = useState("");
   const [stepsSuffix, setStepsSuffix] = useState("");
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [editTags, setEditTags] = useState<Tag[]>([]);
   const [editStepsPrefix, setEditStepsPrefix] = useState("");
   const [editStepsSuffix, setEditStepsSuffix] = useState("");
 
@@ -146,10 +151,12 @@ export default function ConsoleEvalFlows() {
         transport,
         providerId: overrideProviderId ?? providerId,
         config,
+        tags,
       });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      trackLineLookupPending(saved);
       setCreateOpen(false);
       setName("");
       setDescription("");
@@ -158,9 +165,10 @@ export default function ConsoleEvalFlows() {
       setTransport("web");
       setStepsPrefix("");
       setStepsSuffix("");
+      setTags([]);
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
-      toast({ title: "Eval Flow created" });
+      toast({ title: "Eval Flow created", ...(saved?.lineLookupPending ? { description: LINE_LOOKUP_PENDING_TEXT } : {}) });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to create Eval Flow", description: error.message, variant: "destructive" });
@@ -182,15 +190,17 @@ export default function ConsoleEvalFlows() {
       if (editStepsPrefix) config.stepsPrefix = editStepsPrefix;
       if (editStepsSuffix) config.stepsSuffix = editStepsSuffix;
       body.config = config;
+      body.tags = editTags;
       const res = await apiRequest("PATCH", `/api/eval-flows/${editEvalFlow.id}`, body);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      trackLineLookupPending(saved);
       setEditOpen(false);
       setEditEvalFlow(null);
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows?includePublic=true"] });
       queryClient.invalidateQueries({ queryKey: ["/api/eval-flows"] });
-      toast({ title: "Eval Flow updated" });
+      toast({ title: "Eval Flow updated", ...(saved?.lineLookupPending ? { description: LINE_LOOKUP_PENDING_TEXT } : {}) });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update Eval Flow", description: error.message, variant: "destructive" });
@@ -266,6 +276,7 @@ export default function ConsoleEvalFlows() {
     setEditStepsSuffix(cfg.stepsSuffix || "");
     setEditProviderId(evalFlow.providerId);
     setEditTransport(evalFlow.transport || "web");
+    setEditTags(evalFlow.tags ?? []);
     setEditOpen(true);
   };
 
@@ -479,7 +490,7 @@ export default function ConsoleEvalFlows() {
               New Eval Flow
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Create Eval Flow</DialogTitle>
               <DialogDescription>
@@ -549,6 +560,23 @@ export default function ConsoleEvalFlows() {
                 </Select>
               </div>
               <div className="space-y-2">
+                <Label>Tags</Label>
+                <TagInput
+                  value={tags}
+                  onChange={setTags}
+                  preferredKeys={transport === "phone" ? ["line"] : []}
+                  end="flow"
+                  testId="eval-flow-tags"
+                  aria-label="Eval flow tags"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Which network path this flow tests, e.g. line:twilio for the agent's phone line provider. Results can be filtered and grouped by them.
+                </p>
+                {transport === "phone" && (
+                  <p className="text-xs text-muted-foreground" data-testid="eval-flow-lookup-disclosure">{LINE_LOOKUP_DISCLOSURE}</p>
+                )}
+              </div>
+              <div className="space-y-2">
                 <Label>Setup Steps (stepsPrefix, YAML)</Label>
                 <Textarea
                   className="font-mono text-sm min-h-[120px]"
@@ -598,7 +626,7 @@ export default function ConsoleEvalFlows() {
           setEditEvalFlow(null);
         }
       }}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Eval Flow</DialogTitle>
             <DialogDescription>
@@ -665,6 +693,23 @@ export default function ConsoleEvalFlows() {
               <p className="text-xs text-muted-foreground">
                 Past runs keep the mode they ran with — changing this affects future runs only.
               </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Tags</Label>
+              <TagInput
+                value={editTags}
+                onChange={setEditTags}
+                preferredKeys={editTransport === "phone" ? ["line"] : []}
+                end="flow"
+                testId="edit-eval-flow-tags"
+                aria-label="Eval flow tags"
+              />
+              {editTransport === "phone" && (
+                <p className="text-xs text-muted-foreground" data-testid="edit-eval-flow-lookup-disclosure">{LINE_LOOKUP_DISCLOSURE}</p>
+              )}
+              {editEvalFlow && editEvalFlow.transport === "phone" && (
+                <LineLookupPanel flowId={editEvalFlow.id} lineLookup={editEvalFlow.lineLookup} canLookUp />
+              )}
             </div>
             <div className="space-y-2">
               <Label>Setup Steps (stepsPrefix, YAML)</Label>

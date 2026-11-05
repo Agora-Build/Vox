@@ -136,9 +136,50 @@ export interface DialfProbe {
    * from DialF's sims.list — the default SIM's number, else the first SIM that
    * has one. Undefined when the carrier didn't provision it on any SIM. */
   phoneNumber?: string;
+  /** Our SIM's number + operator network code, for Core's `sim` match
+   * (register/heartbeat `sim`). Only when DialF exposes the operator's
+   * MCC/MNC — today's sims.list doesn't, so this is usually undefined. */
+  sim?: SimReport;
 }
 
-interface SimInfo { slot?: number; sub_id?: number; number?: string; is_default?: boolean }
+/** One sims.list entry. Operator fields are a requested DialF addition; accepted under either name. */
+interface SimInfo {
+  slot?: number; sub_id?: number; number?: string; is_default?: boolean;
+  operator?: unknown; operator_name?: unknown; mcc?: unknown; mnc?: unknown;
+}
+
+/** The register/heartbeat `sim` field — parsed strictly again by Core (server/sim-carrier.ts). */
+export interface SimReport { number: string; mcc: string; mnc: string; operatorName?: string }
+
+/**
+ * The `sim` report for the default SIM (else the first with a number — the
+ * same choice as `phoneNumber`): its E.164 number, the operator's MCC + MNC
+ * and, when given, the operator's name. No number or no code pair → undefined
+ * (nothing is sent; Core can't match without both). A numeric `operator`
+ * ("310260", Android's getSimOperator form) is read as the code pair.
+ */
+export function simReportFrom(entries: SimInfo[]): SimReport | undefined {
+  const sim = entries.find((s) => s.is_default && s.number) ?? entries.find((s) => s.number);
+  if (!sim || typeof sim.number !== 'string') return undefined;
+  const number = sim.number.trim().replace(/[\s().-]/g, '');
+  if (!/^\+[1-9][0-9]{6,14}$/.test(number)) return undefined;
+  let mcc = typeof sim.mcc === 'string' ? sim.mcc.trim() : undefined;
+  let mnc = typeof sim.mnc === 'string' ? sim.mnc.trim() : undefined;
+  const names = [sim.operator_name, sim.operator].filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+  const numericOperator = names.find((n) => /^[0-9]{5,6}$/.test(n.trim()));
+  if ((!mcc || !mnc) && numericOperator) {
+    mcc = numericOperator.trim().slice(0, 3);
+    mnc = numericOperator.trim().slice(3);
+  }
+  if (!mcc || !/^[0-9]{3}$/.test(mcc) || !mnc || !/^[0-9]{2,3}$/.test(mnc)) return undefined;
+  const operatorName = names.find((n) => !/^[0-9]{5,6}$/.test(n.trim()))?.trim().slice(0, 64);
+  return { number, mcc, mnc, ...(operatorName ? { operatorName } : {}) };
+}
+
+/** Add `sim` to a register/heartbeat body only when there is a report (like withLinkType). */
+export function withSim<T extends Record<string, unknown>>(body: T, sim: SimReport | undefined): T & { sim?: SimReport } {
+  return sim ? { ...body, sim } : body;
+}
 
 /**
  * Why the dialfd socket couldn't be opened, in words an operator can act on —
@@ -195,12 +236,14 @@ export async function probeDialf(
     // SIM's own number from DialF (best-effort — a snapshot op; absence is not
     // a probe failure, the number only matters for the trigger mode).
     let phoneNumber: string | undefined;
+    let sim: SimReport | undefined;
     try {
       const sims = (await client.call('sims.list')) as { sims?: SimInfo[] };
       const entries = Array.isArray(sims?.sims) ? sims.sims : [];
       phoneNumber = (entries.find((s) => s.is_default && s.number) ?? entries.find((s) => s.number))?.number;
+      sim = simReportFrom(entries);
     } catch { /* older builds / phone slow to answer — leave undefined */ }
-    return { ok: true, version: info?.version, phoneNumber };
+    return { ok: true, version: info?.version, phoneNumber, ...(sim ? { sim } : {}) };
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : 'probe failed' };
   } finally {

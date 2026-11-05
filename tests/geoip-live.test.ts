@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { existsSync } from "fs";
 import path from "path";
 import { open, type Reader, type CityResponse, type AsnResponse } from "maxmind";
-import { detectLocation, type DetectionDeps, type GeoLookup, type AsnLookup } from "../server/location";
+import { detectLocation, accessSignalsFrom, type DetectionDeps, type GeoLookup, type AsnLookup } from "../server/location";
+import { loadAccessDataFromDir, networkClassOf } from "../server/access-data";
 
 /**
  * Live-database smoke test for the zero-trust detection pipeline.
@@ -44,12 +45,11 @@ describeGeo("detection pipeline against live GeoIP databases", () => {
   beforeAll(async () => {
     cityReader = await open<CityResponse>(cityDbPath!);
     asnReader = await open<AsnResponse>(asnDbPath!);
-    // Mirror liveDeps() from server/location.ts, minus Tor (network) and with
-    // the checked-in ASN classification so hosting detection is exercised.
-    const asnClass = (await import("../server/data/asn-classification.json")).default as Record<
-      string,
-      "vpn" | "hosting"
-    >;
+    // Mirror liveDeps() from server/location.ts, minus Tor (network), with the
+    // downloaded access data in the same directory (VPN/datacenter ranges). If
+    // it hasn't been downloaded yet, detection fails closed (low_confidence),
+    // which every assertion below accepts.
+    const access = await loadAccessDataFromDir(GEOIP_DIR);
     const geo = (ip: string): GeoLookup | null => {
       const hit = cityReader.get(ip);
       if (!hit) return null;
@@ -69,7 +69,12 @@ describeGeo("detection pipeline against live GeoIP databases", () => {
         ? { asn: hit.autonomous_system_number, org: hit.autonomous_system_organization }
         : null;
     };
-    deps = { geo, asn, torExits: new Set(), asnClass, asnClassLoaded: true };
+    deps = {
+      geo, asn, torExits: new Set(),
+      networkClass: (ip, asnNumber) => networkClassOf(access, ip, asnNumber),
+      networkClassLoaded: access.loaded.datacenter && access.loaded.vpn,
+      accessSignals: accessSignalsFrom(access),
+    };
   });
 
   it("database schema carries the fields the ladder reads (country/continent/coords/ASN)", () => {
@@ -83,7 +88,7 @@ describeGeo("detection pipeline against live GeoIP databases", () => {
   });
 
   it("a known hosting IP classifies datacenter WITH a region candidate", () => {
-    // 8.8.8.8: ASN 15169 is in asn-classification.json as hosting. City-level
+    // 8.8.8.8: Google, listed in the X4BNet datacenter ranges. City-level
     // geo for anycast can be present or absent depending on edition — accept
     // datacenter (city resolved) or low_confidence (no city), never trusted
     // or anonymized.

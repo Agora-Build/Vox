@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { BASE_NA } from './helpers/regions';
 
 const S3_ENDPOINT = process.env.S3_ENDPOINT;
 const S3_BUCKET = process.env.S3_BUCKET;
@@ -135,22 +136,50 @@ describe.skipIf(!isConfigured)('S3/R2 Direct Operations', () => {
 
 // ==================== Vox API Artifact Tests ====================
 
+// Other suites running concurrently against the same dev DB (notably
+// network-tags-metrics.test.ts) create and delete their own completed jobs.
+// Listing "the newest completed job" and opening it later races those
+// deletes — a job that's listed can be gone by the time we open it, which is
+// a state change, not a bug in the endpoint under test. So this suite makes
+// and completes its own job once, up front, and every test below reads only
+// that fixture.
+async function createCompletedJob(session: AuthSession): Promise<number> {
+  const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
+  const providerId = providers[0].id;
+  const project = await (await authFetch(session, `${BASE_URL}/api/projects`, {
+    method: 'POST', body: JSON.stringify({ name: `s3-test-${Date.now()}` }),
+  })).json();
+  const flow = await (await authFetch(session, `${BASE_URL}/api/eval-flows`, {
+    method: 'POST',
+    body: JSON.stringify({ name: `s3-test-flow-${Date.now()}`, visibility: 'public', projectId: project.id, providerId }),
+  })).json();
+  const evalSet = await (await authFetch(session, `${BASE_URL}/api/eval-sets`, {
+    method: 'POST', body: JSON.stringify({ name: `s3-test-set-${Date.now()}`, visibility: 'public', config: {} }),
+  })).json();
+  const run = await authFetch(session, `${BASE_URL}/api/eval-flows/${flow.id}/run`, {
+    method: 'POST', body: JSON.stringify({ evalSetId: evalSet.id, region: BASE_NA, targetTier: 'public' }),
+  });
+  if (!run.ok) throw new Error(`run: ${run.status} ${await run.text()}`);
+  const jobId = (await run.json()).job.id as number;
+
+  const { pool } = await import('../server/storage');
+  await pool.query(
+    `UPDATE eval_jobs SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = $1`,
+    [jobId],
+  );
+  return jobId;
+}
+
 describe.skipIf(!isConfigured)('Vox Artifact API Integration', () => {
   let adminSession: AuthSession;
+  let jobId: number;
 
   beforeAll(async () => {
     adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    jobId = await createCompletedJob(adminSession);
   });
 
   it('should store artifact metadata via eval-agent API', async () => {
-    // Get a completed job to test with
-    const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?scope=visible&status=completed&limit=1`);
-    if (!jobsRes.ok) return;
-    const { data: jobs } = await jobsRes.json();
-    if (jobs.length === 0) return;
-
-    const jobId = jobs[0].id;
-
     // Upload a test file to R2
     const client = new S3Client({
       endpoint: S3_ENDPOINT!,
@@ -201,12 +230,7 @@ describe.skipIf(!isConfigured)('Vox Artifact API Integration', () => {
   });
 
   it('should return job detail with signed artifact URL', async () => {
-    const jobsRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs?scope=visible&status=completed&limit=1`);
-    if (!jobsRes.ok) return;
-    const { data: jobs } = await jobsRes.json();
-    if (jobs.length === 0) return;
-
-    const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobs[0].id}/detail`);
+    const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${jobId}/detail`);
     expect(detailRes.ok).toBe(true);
     const detail = await detailRes.json();
     expect(detail.job).toBeDefined();

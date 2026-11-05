@@ -592,9 +592,17 @@ describe('buildJobSnapshot (immutable per-job provenance)', () => {
   it('captures evalFlow + eval-set metadata, config, and tier flags', () => {
     const s = buildJobSnapshot(wf, es, provider, 'principal');
     expect(s.provider).toEqual({ id: 'abc123def456', name: 'Agora ConvoAI Engine', platformId: 'agora' });
-    expect(s.evalFlow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7, organizationId: null });
+    // Network tags: a flow without tags/lineLookup freezes [] / null.
+    expect(s.evalFlow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7, organizationId: null, tags: [], lineLookup: null });
     expect(s.evalSet).toEqual({ name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9 });
     expect(s.creatorPlan).toBe('principal');
+  });
+
+  it('freezes the flow\'s hand-set tags and line lookup', () => {
+    const lineLookup = { value: 'twilio', carrierName: 'Twilio', lineType: 'nonFixedVoip', lookedUpAt: '2026-10-22T00:00:00.000Z', number: '…1234' };
+    const s = buildJobSnapshot({ ...wf, tags: [{ key: 'line', value: 'twilio' }], lineLookup }, es, provider, 'principal');
+    expect(s.evalFlow?.tags).toEqual([{ key: 'line', value: 'twilio' }]);
+    expect(s.evalFlow?.lineLookup).toEqual(lineLookup);
   });
 
   it('is decoupled from the source objects (immutable snapshot)', () => {

@@ -30,6 +30,7 @@ async function mockDashboard(page: Page, requests: URL[], truncated = false, acc
     else if (url.pathname === "/api/health") data = { status: "operational", agents: { total: 1, online: 1, offline: 0 } };
     else if (url.pathname === "/api/providers") data = [{ id: "alpha", name: "Alpha", brandColor: "#f97316" }];
     else if (url.pathname === "/api/metrics/available-regions") data = { availableRegions: [], hasUnverified: false };
+    else if (url.pathname === "/api/metrics/network-coverage") data = { stable: 100, changed: 2, unverified: 3 };
     else if (url.pathname.endsWith("/detail")) {
       requests.push(url);
       const from = Number(url.searchParams.get("from"));
@@ -136,6 +137,26 @@ test("an in-flight detail response cannot bleed across transport filters", async
   await pinch(chart, -60, 8);
   await expect(status).toHaveText("Hourly averages");
   expect(requests.at(-1)?.searchParams.get("transport")).toBe("phone");
+});
+
+test("an in-flight detail response cannot bleed across strict/all network policy", async ({ page }) => {
+  const requests: URL[] = [];
+  await mockDashboard(page, requests);
+  await page.goto("/realtime");
+  await page.getByRole("combobox").filter({ hasText: "7 days" }).click();
+  await page.getByRole("option", { name: "All time" }).click();
+  const chart = page.locator(".recharts-wrapper").first();
+  const status = page.getByTestId("chart-detail-status");
+  await expect(status).toHaveText("Daily averages");
+  await pinch(chart, -60, 8);
+  await expect(status).toHaveText("Loading detail...");
+  await page.getByTestId("include-unstable-networks").click();
+  await expect(status).toHaveText("Daily averages");
+  await page.waitForTimeout(450);
+  await expect(status).toHaveText("Daily averages");
+  await pinch(chart, -60, 8);
+  await expect(status).toHaveText("Hourly averages");
+  expect(requests.at(-1)?.searchParams.get("network")).toBe("all");
 });
 
 test("an incomplete detail response keeps the complete cached overview", async ({ page }) => {

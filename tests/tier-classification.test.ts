@@ -30,6 +30,7 @@ d("frozen agent tier gates the leaderboard bucket (tier as restriction)", () => 
     const [job] = await db.insert(evalJobs).values({
       siteId,
       status: "completed",
+      networkMonitoring: "complete",
       createdBy: 1,
       config: {},
       snapshot: mainlineSnapshot(1) as any,

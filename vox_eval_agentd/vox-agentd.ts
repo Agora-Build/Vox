@@ -25,7 +25,7 @@
  *   node vox-agentd.js  (compiled by esbuild, configured via env vars)
  */
 
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { createServer, type Server as HttpServer } from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -39,11 +39,15 @@ import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
 import { normalizeDialableNumber } from '../shared/steps';
-import { DialfClient, probeDialf, resolveDialfSocketPath, type DialfProbe } from './dialf-client';
+import { DialfClient, probeDialf, resolveDialfSocketPath, withSim, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
 import { runAnalyzeUpload, capabilitiesFor, aevalOnPath, writeLimited } from './analyze-upload';
+import { detectLinkType, withLinkType } from './link-type';
+import { NetSignalsDetector, withNetSignals } from './net-signals';
 import { claimFirstAvailable, claimOutcome, type ClaimOutcome } from './job-pick';
 import { UNMEASURED_DEFAULTS } from './result-defaults';
+import { NetworkEventBuffer } from './network-events';
+import { NetworkObserver } from './network-observer';
 import { Readable } from 'stream';
 import {
   CHUNK_SIZE,
@@ -81,6 +85,7 @@ interface EvalAgent {
 
 interface EvalJob {
   id: number;
+  startedAt?: string;
   evalFlowId: number;
   evalSetId: number | null;
   siteId: string | null;
@@ -240,6 +245,25 @@ class VoxEvalAgentDaemon {
   private healthServer: HttpServer | null = null;
   private startTime = Date.now();
   private currentJobId: number | null = null;
+  private claimedJob: EvalJob | null = null;
+  private networkEvents = new NetworkEventBuffer();
+  private networkObserver = new NetworkObserver();
+  private networkTimer: NodeJS.Timeout | null = null;
+
+  private sampleNetwork() {
+    const sample = this.networkObserver.sample();
+    if (sample.gap) this.networkEvents.gap();
+    let observedChanges = 0;
+    for (const observation of sample.observations) if (this.networkEvents.observe(observation)) observedChanges++;
+    if ((sample.transitionCount ?? 0) > observedChanges) this.networkEvents.noteMissingChanges(sample.transitionCount! - observedChanges);
+    return sample.observations.at(-1);
+  }
+
+  private finishNetwork(): void {
+    if (this.networkTimer) clearInterval(this.networkTimer);
+    this.networkTimer = null;
+    this.networkEvents.finish(this.sampleNetwork());
+  }
   // Decrypted values of the ACTIVE job's secrets, used only to scrub them out of
   // any error text we persist. The daemon runs one job at a time.
   private activeSecretValues: string[] = [];
@@ -247,6 +271,10 @@ class VoxEvalAgentDaemon {
   // each pay 4 socket round-trips. A vanished DialF/phone drops the capability
   // on the next refresh (self-healing, Phase A semantics).
   private dialfProbeCache: { at: number; probe: DialfProbe } | null = null;
+
+  // Holds the cloud-metadata 10-minute cache across register + every
+  // heartbeat (design "Where it's computed and stored", Part-2 Task 3).
+  private netSignalsDetector = new NetSignalsDetector();
   // callMetadata from the current phone job, sent with completeJob.
   private lastCallMetadata: Record<string, unknown> | null = null;
 
@@ -368,6 +396,48 @@ class VoxEvalAgentDaemon {
     return capabilitiesFor({ dialf: this.dialfProbeCache.probe.ok, aeval: aevalOnPath() });
   }
 
+  /** Our SIM's number + operator code for Core's `sim` match (design "`sim`
+   *  is system-only") — from the probe `currentCapabilities` just refreshed,
+   *  and only while that probe is OK; undefined (field omitted) otherwise,
+   *  including on today's DialF, whose sims.list carries no operator. */
+  private currentSim() {
+    const probe = this.dialfProbeCache?.probe;
+    return probe?.ok ? probe.sim : undefined;
+  }
+
+  /** Current network link type (design "Detection" → link), refreshed on every
+   *  register/heartbeat like capabilities — cheap, one `ip route get` exec.
+   *  `VOX_LINK_TYPE` (vox-upgrade.sh's host-side answer, since a container
+   *  only sees its own veth) wins; undefined on failure, never thrown. */
+  private currentLinkType(): ReturnType<typeof detectLinkType> {
+    if (process.env.VOX_NETWORK_STATUS_FILE) return this.sampleNetwork()?.link ?? undefined;
+    return detectLinkType({
+      env: process.env,
+      platform: process.platform,
+      sysRoot: '',
+      // No shell: program + argument array (interface names come from OS output).
+      exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    });
+  }
+
+  /** Current network signals (design "Last mile vs datacenter"): cloud
+   *  metadata (cached 10 min) + whether the default-route interface itself
+   *  holds a public address. `VOX_PUBLIC_IP_ON_IFACE` (vox-upgrade.sh's
+   *  host-side answer, since a container only sees its own veth) wins for
+   *  the latter; neither probe ever throws. */
+  private async currentNetSignals() {
+    const signals = await this.netSignalsDetector.detect({
+      fetch: (url, init) => fetch(url, init),
+      now: () => Date.now(),
+      env: process.env.VOX_NETWORK_STATUS_FILE ? { ...process.env, VOX_PUBLIC_IP_ON_IFACE: undefined } : process.env,
+      platform: process.platform,
+      sysRoot: '',
+      // No shell: program + argument array (interface names come from OS output).
+      exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    });
+    return process.env.VOX_NETWORK_STATUS_FILE ? { ...signals, publicIpOnInterface: this.networkObserver.publicIpOnInterface } : signals;
+  }
+
   async register(): Promise<boolean> {
     console.log(`[Daemon] Registering with Vox server: ${this.config.serverUrl}`);
 
@@ -377,7 +447,7 @@ class VoxEvalAgentDaemon {
       const response = await this.fetch('/api/eval-agent/register', {
         method: 'POST',
         signal: AbortSignal.timeout(30_000), // never hang startup on a silent server
-        body: JSON.stringify({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }),
+        body: JSON.stringify(withSim(withNetSignals(withLinkType({ name: this.config.name, metadata, capabilities: await this.currentCapabilities() }, this.currentLinkType()), await this.currentNetSignals()), this.currentSim())),
       });
 
       if (!response.ok) {
@@ -439,22 +509,27 @@ class VoxEvalAgentDaemon {
     if (!this.agentId) return;
 
     try {
+      const networkReport = this.networkEvents.report();
       const response = await this.fetch('/api/eval-agent/heartbeat', {
         method: 'POST',
         // Bounded (#246 review): a Vox that accepts the connection but never
         // answers would otherwise leave one pending request per interval.
         signal: AbortSignal.timeout(15_000),
-        body: JSON.stringify({
+        body: JSON.stringify(withSim(withNetSignals(withLinkType({
           agentId: this.agentId,
           leaseId: this.leaseId,
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
           capabilities: await this.currentCapabilities(),
-        }),
+          networkReport,
+        }, this.currentLinkType()), await this.currentNetSignals()), this.currentSim())),
       });
 
       await this.exitIfSuperseded(response);
       if (response.ok) {
+        const body = await response.json();
+        this.networkEvents.acknowledge(body.networkAck, networkReport);
+        this.networkEvents.recover(body.networkReportStatus, networkReport);
         console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       } else {
         console.error(`[Daemon] Heartbeat rejected by Vox: ${await describeHttpFailure(response)}`);
@@ -493,9 +568,10 @@ class VoxEvalAgentDaemon {
 
   async claimJob(jobId: number): Promise<ClaimOutcome> {
     try {
+      const baseline = this.networkObserver.sample();
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/claim`, {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId }),
+        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, linkType: baseline.observations.at(-1)?.link }),
       });
 
       await this.exitIfSuperseded(response);
@@ -505,6 +581,12 @@ class VoxEvalAgentDaemon {
         return outcome;
       }
 
+      this.claimedJob = await response.json();
+      if (this.claimedJob?.kind !== 'analyze' && this.claimedJob?.startedAt) {
+        this.networkEvents.start(jobId, this.claimedJob.startedAt, baseline.gap ? undefined : baseline.observations.at(-1));
+        this.sampleNetwork();
+        this.networkTimer = setInterval(() => this.sampleNetwork(), 1000);
+      }
       console.log(`[Daemon] Claimed job ${jobId}`);
       return 'claimed';
     } catch (error: unknown) {
@@ -515,51 +597,44 @@ class VoxEvalAgentDaemon {
   }
 
   async completeJob(jobId: number, results: EvalResult): Promise<boolean> {
-    try {
-      console.log(`[Daemon] Completing job ${jobId}...`);
-      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: this.agentId, leaseId: this.leaseId, results,
-          // Phone jobs attach call detail (design §7); null/absent for web.
-          ...(this.lastCallMetadata ? { callMetadata: this.lastCallMetadata } : {}),
-        }),
-      });
-
-      await this.exitIfSuperseded(response);
-      if (response.ok) {
-        console.log(`[Daemon] Job ${jobId} completed successfully`);
-        return true;
-      } else {
-        console.error(`[Daemon] Failed to complete job ${jobId}: ${await describeHttpFailure(response)}`);
-        return false;
-      }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Error completing job:`, msg);
-      return false;
-    }
+    return this.reportJobCompletion(jobId, { results,
+      // Phone jobs attach call detail (design §7); absent for web.
+      ...(this.lastCallMetadata ? { callMetadata: this.lastCallMetadata } : {}),
+    });
   }
 
   async failJob(jobId: number, reason: string): Promise<boolean> {
-    try {
-      console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
-      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
-        method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, error: reason }),
-      });
+    console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
+    return this.reportJobCompletion(jobId, { error: reason });
+  }
 
-      await this.exitIfSuperseded(response);
-      if (response.ok) {
-        console.log(`[Daemon] Job ${jobId} marked as failed`);
+  private async reportJobCompletion(jobId: number, payload: Record<string, unknown>): Promise<boolean> {
+    try {
+      this.finishNetwork();
+      const failure = await sendWithRetry(async () => {
+        const networkReport = this.networkEvents.report();
+        const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
+          method: 'POST',
+          body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, startedAt: this.claimedJob?.startedAt, ...payload, networkReport }),
+        });
+        await this.exitIfSuperseded(response);
+        if (response.ok) {
+          const body = await response.clone().json();
+          this.networkEvents.acknowledge(body.networkAck, networkReport);
+          this.networkEvents.recover(body.networkReportStatus, networkReport);
+        }
+        return response;
+      });
+      if (!failure) {
+        console.log(`[Daemon] Job ${jobId} completion accepted`);
         return true;
       } else {
-        console.error(`[Daemon] Failed to report job failure ${jobId}: ${await describeHttpFailure(response)}`);
+        console.error(`[Daemon] Failed to report job ${jobId}: ${failure}`);
         return false;
       }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Error reporting job failure:`, msg);
+      console.error(`[Daemon] Error reporting job ${jobId}:`, msg);
       return false;
     }
   }
@@ -2248,8 +2323,14 @@ class VoxEvalAgentDaemon {
 
     // The first job that accepts the claim, not always jobs[0]: a refused
     // claim must not stall this agent on one row (#216).
-    const job = await claimFirstAvailable(jobs, (j) => this.claimJob(j.id));
-    if (!job) return;
+    // Reserve locally while claiming too: a slow poll/claim must not start
+    // two runs (and two monitoring queues) on this daemon.
+    if (this.isRunningJob) return;
+    this.isRunningJob = true;
+    this.claimedJob = null;
+    const pendingJob = await claimFirstAvailable(jobs, (j) => this.claimJob(j.id));
+    if (!pendingJob) { this.isRunningJob = false; return; }
+    const job = this.claimedJob ?? pendingJob;
 
     this.isRunningJob = true;
     this.currentJobId = job.id;
@@ -2305,6 +2386,10 @@ class VoxEvalAgentDaemon {
         this.activeSecretValues = []; // don't retain decrypted values past the job
         this.isRunningJob = false;
         this.currentJobId = null;
+        if (this.networkTimer) clearInterval(this.networkTimer);
+        this.networkTimer = null;
+        this.networkEvents.clear();
+        this.claimedJob = null;
       }
     }
   }

@@ -76,26 +76,31 @@ d("analyze results: where they show (real SQL)", () => {
   });
 
   it("is in its creator's My Evals, in the transport they chose only", async () => {
-    expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web"))).toBe(true);
-    expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "phone"))).toBe(false);
-    expect(has(await storage.getMyEvalMetrics(OTHER, 24, undefined, "web"))).toBe(false);
+    expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web"))).toBe(true); // network stability does not apply to uploaded recordings
+    expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web", { network: "all" }))).toBe(true);
+    expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "phone", { network: "all" }))).toBe(false);
+    expect(has(await storage.getMyEvalMetrics(OTHER, 24, undefined, "web", { network: "all" }))).toBe(false);
   });
 
   it("never reaches Mainline or Community, however public it looks", async () => {
-    expect(has(await storage.getMainlineMetrics(24, undefined, "web"))).toBe(false);
-    expect(has(await storage.getCommunityMetrics(24, undefined, "web"))).toBe(false);
+    expect(has(await storage.getMainlineMetrics(24, undefined, "web", { network: "all" }))).toBe(false);
+    expect(has(await storage.getCommunityMetrics(24, undefined, "web", { network: "all" }))).toBe(false);
     // Community is public but NOT fully mainline: look like that, too.
     await pool.query(`UPDATE eval_jobs SET snapshot = jsonb_set(snapshot, '{evalFlow,isMainline}', 'false') WHERE id = $1`, [analyzeJobId]);
     try {
-      expect(has(await storage.getCommunityMetrics(24, undefined, "web"))).toBe(false);
+      expect(has(await storage.getCommunityMetrics(24, undefined, "web", { network: "all" }))).toBe(false);
     } finally {
       await pool.query(`UPDATE eval_jobs SET snapshot = jsonb_set(snapshot, '{evalFlow,isMainline}', 'true') WHERE id = $1`, [analyzeJobId]);
     }
   });
 
   it("the My Evals region picker offers the stated region", async () => {
-    const { baseIds } = await storage.getAvailableRegions("myEvals", 24, ME);
+    const { baseIds } = await storage.getAvailableRegions("myEvals", 24, ME, "web");
     expect(baseIds).toContain(REGION);
+  });
+
+  it("does not count uploaded recordings as unstable or unverified network runs", async () => {
+    expect(await storage.getNetworkCoverage("myEvals", 24, ME)).toEqual({ stable: 0, changed: 0, unverified: 0 });
   });
 
   it("the /api/v1 results list keeps to eval runs", async () => {
@@ -106,7 +111,7 @@ d("analyze results: where they show (real SQL)", () => {
   it("a deleted analysis leaves My Evals, even if its result arrived after the delete", async () => {
     await pool.query("UPDATE eval_jobs SET deleted_at = now() WHERE id = $1", [analyzeJobId]);
     try {
-      expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web"))).toBe(false);
+      expect(has(await storage.getMyEvalMetrics(ME, 24, undefined, "web", { network: "all" }))).toBe(false);
     } finally {
       await pool.query("UPDATE eval_jobs SET deleted_at = NULL WHERE id = $1", [analyzeJobId]);
     }
@@ -145,8 +150,8 @@ d("analyze results: where they show (real SQL)", () => {
   });
 
   it("files under the region the uploader stated, and not under Unverified", async () => {
-    expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: [REGION] }, "web"))).toBe(true);
-    expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: ["eu-de-frankfurt"] }, "web"))).toBe(false);
-    expect(has(await storage.getMyEvalMetrics(ME, 24, { unverified: true }, "web"))).toBe(false);
+    expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: [REGION] }, "web", { network: "all" }))).toBe(true);
+    expect(has(await storage.getMyEvalMetrics(ME, 24, { baseIds: ["eu-de-frankfurt"] }, "web", { network: "all" }))).toBe(false);
+    expect(has(await storage.getMyEvalMetrics(ME, 24, { unverified: true }, "web", { network: "all" }))).toBe(false);
   });
 });

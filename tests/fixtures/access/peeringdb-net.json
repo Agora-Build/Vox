@@ -1,0 +1,9 @@
+{"data": [
+  {"name": "Comcast", "asn": 7922, "info_type": "Cable/DSL/ISP", "info_types": ["Cable/DSL/ISP"]},
+  {"name": "Example CDN", "asn": 64500, "info_type": "Content", "info_types": ["Content"]},
+  {"name": "Amazon.com", "asn": 16509, "info_type": "Enterprise", "info_types": ["Enterprise"]},
+  {"name": "Example Transit", "asn": 64501, "info_type": "NSP", "info_types": ["NSP"]},
+  {"name": "CELLCO", "asn": 22394, "info_type": "", "info_types": []},
+  {"name": "Undisclosed", "asn": 64502, "info_type": "Not Disclosed"},
+  {"name": "Broken", "asn": "x", "info_type": "Content"}
+], "meta": {}}

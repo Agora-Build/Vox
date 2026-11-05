@@ -185,6 +185,10 @@ COPY vox_eval_agentd/analyze-upload.ts /app/
 COPY vox_eval_agentd/job-pick.ts /app/
 COPY vox_eval_agentd/result-defaults.ts /app/
 COPY vox_eval_agentd/net-errors.ts /app/
+COPY vox_eval_agentd/link-type.ts /app/
+COPY vox_eval_agentd/net-signals.ts /app/
+COPY vox_eval_agentd/network-events.ts /app/
+COPY vox_eval_agentd/network-observer.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
 COPY shared/credentials.ts /shared/credentials.ts
@@ -192,6 +196,8 @@ COPY shared/metrics.ts /shared/metrics.ts
 COPY shared/steps.ts /shared/steps.ts
 COPY shared/placeholders.ts /shared/placeholders.ts
 COPY shared/wav.ts /shared/wav.ts
+COPY shared/tags.ts /shared/tags.ts
+COPY shared/network-event-protocol.ts /shared/network-event-protocol.ts
 
 # Install daemon dependencies (esbuild for TS compilation)
 RUN npm install

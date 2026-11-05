@@ -1,6 +1,7 @@
 import type { Response } from "express";
 import { pipeline } from "stream/promises";
 import type { EvalJob } from "@shared/schema";
+import { publicEvalJob } from "./network-response";
 
 // Tools → Analyze (design 2026-09-30).
 
@@ -12,7 +13,7 @@ import type { EvalJob } from "@shared/schema";
  * fetches the file through the lease-fenced /upload endpoint.
  */
 export function forAgentJobList(job: EvalJob): EvalJob {
-  if (job.kind !== "analyze") return job;
+  if (job.kind !== "analyze") return publicEvalJob(job);
   return { id: job.id, kind: job.kind, transport: job.transport, status: job.status, config: {} } as unknown as EvalJob;
 }
 
