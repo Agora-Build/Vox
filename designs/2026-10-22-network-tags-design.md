@@ -767,7 +767,7 @@ counted as unstable or unverified network runs.
 Legacy, unsupported and incomplete runs are excluded, even when their change
 flag is false. `network=all` explicitly includes them without altering baseline
 grouping. All cache/query keys include policy. The console exposes a positive
-Strict switch, scoped coverage counts, and authorized job timelines.
+Strict switch, a scoped coverage API, and authorized job timelines.
 Normal job/result history is not filtered away.
 
 **Real-time UI follow-up (2026-11-05):** Real-time deliberately defaults to All
@@ -775,7 +775,9 @@ networks, explicitly passing `network=all` for overview, zoom detail and region
 availability. The All button starts selected with advanced filters and Strict
 hidden/off; clicking it reveals the controls, and reselecting it resets network
 tags/grouping and Strict without changing primary selections. Filtered/grouped
-or explicit-Strict URLs start expanded. An information popover precedes Strict.
+or explicit-Strict URLs start expanded. Extended controls occupy their own row,
+leaving the original header selectors in place. An information popover precedes
+the compact Strict switch; the UI no longer displays or polls coverage counts.
 API and Leaderboard defaults remain unchanged. Older Real-time links without a
 network parameter now use All; add `network=strict` to preserve strict results.
 

@@ -31,6 +31,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.goto("/realtime");
       const all = page.getByTestId("access-toggle-all");
       const toggle = page.getByRole("switch", { name: "Strict", exact: true });
+      const primary = page.getByTestId("realtime-primary-filters");
+      const extended = page.getByTestId("realtime-network-filters");
+      const primaryLayout = () => primary.locator("button").evaluateAll((buttons) => buttons.map((button) => {
+        const { x, y, width, height } = button.getBoundingClientRect();
+        return { x, y, width, height };
+      }));
       await expect(all).toHaveAttribute("data-state", "on");
       await expect(all).toHaveAttribute("aria-expanded", "false");
       await expect(page.getByTestId("access-toggle-lastmile")).toHaveCount(0);
@@ -39,6 +45,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByTestId("network-policy")).toHaveCount(0);
       await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && url.searchParams.get("network") === "all")).toBe(true);
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
+      const originalLayout = await primaryLayout();
       await all.click();
       await expect(all).toHaveAttribute("data-state", "off");
       await expect(all).toHaveAttribute("aria-expanded", "true");
@@ -46,7 +53,15 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByTestId("metrics-tag-filter")).toBeVisible();
       await expect(page.getByTestId("select-group-by")).toBeVisible();
       await expect(toggle).not.toBeChecked();
-      await expect(page.getByTestId("network-policy")).toContainText("12 verified stable");
+      await expect(page.getByTestId("network-policy")).toHaveText("Strict");
+      await expect(extended.getByTestId("access-toggle-lastmile")).toBeVisible();
+      await expect(extended.getByTestId("metrics-tag-filter")).toBeVisible();
+      await expect(extended.getByTestId("select-group-by")).toBeVisible();
+      await expect(extended.getByTestId("strict-network-mode")).toBeVisible();
+      expect(await primaryLayout()).toEqual(originalLayout);
+      const primaryBounds = await primary.boundingBox();
+      const extendedBounds = await extended.boundingBox();
+      expect(extendedBounds!.y).toBeGreaterThanOrEqual(primaryBounds!.y + primaryBounds!.height);
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
       await page.keyboard.press("Escape");
@@ -57,6 +72,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/available-regions" && url.searchParams.get("network") === "strict")).toBe(true);
       await page.reload(); await expect(toggle).toBeChecked();
       await expect(all).toHaveAttribute("data-state", "off");
+      await expect(page.getByTestId("network-policy")).toHaveText("Strict");
+      expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
       expect(await page.locator("body").evaluate((element) => element.scrollWidth <= window.innerWidth)).toBe(true);
     });
     test("All resets network filters and Strict without changing time, transport or providers", async ({ page }) => {
@@ -115,6 +132,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(toggle).not.toBeChecked();
       await page.goto("/leaderboard");
       await expect(toggle).toBeChecked();
+      await expect(page.getByTestId("network-policy")).toHaveText("Strict");
       await page.goto("/leaderboard?network=all");
       await expect(toggle).not.toBeChecked();
       await toggle.click();

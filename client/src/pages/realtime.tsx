@@ -1482,7 +1482,7 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2" data-testid="realtime-primary-filters">
           <Select value={timeRange} onValueChange={setTimeRange}>
             <SelectTrigger className="w-[100px]">
               <SelectValue placeholder="Time" />
@@ -1522,18 +1522,6 @@ export default function Dashboard() {
           >
             All
           </Toggle>
-          {networkFiltersVisible && (
-            <div id="realtime-network-filters" className="contents">
-              <MetricsTagControls
-                tagFilters={tagFilters}
-                onTagFiltersChange={setTagFilters}
-                groupBy={groupBy}
-                onGroupByChange={setGroupBy}
-                customKeys={tagCustomKeys}
-                showAllAccessOption={false}
-              />
-            </div>
-          )}
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
@@ -1598,6 +1586,20 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {networkFiltersVisible && (
+        <div id="realtime-network-filters" className="flex flex-wrap items-center gap-2 sm:justify-end" data-testid="realtime-network-filters">
+          <MetricsTagControls
+            tagFilters={tagFilters}
+            onTagFiltersChange={setTagFilters}
+            groupBy={groupBy}
+            onGroupByChange={setGroupBy}
+            customKeys={tagCustomKeys}
+            showAllAccessOption={false}
+          />
+          <NetworkPolicyControls network={network} onChange={setNetwork} />
+        </div>
+      )}
+
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="mainline">Mainline</TabsTrigger>
@@ -1609,7 +1611,6 @@ export default function Dashboard() {
         </TabsList>
 
         <TabsContent value="mainline" className="space-y-4 mt-4">
-          {networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} tier="realtime" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />}
           <MetricsSection
             metrics={groupedMainline}
             isLoading={mainlineLoading}
@@ -1630,7 +1631,6 @@ export default function Dashboard() {
         </TabsContent>
 
         <TabsContent value="community" className="space-y-4 mt-4">
-          {networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} tier="community" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />}
           <MetricsSection
             metrics={groupedCommunity}
             isLoading={communityLoading}
@@ -1652,7 +1652,6 @@ export default function Dashboard() {
         </TabsContent>
 
         <TabsContent value="my-evals" className="space-y-4 mt-4">
-          {isLoggedIn && networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} tier="my-evals" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} userId={authStatus?.user?.id} />}
           {isLoggedIn ? (
             <MetricsSection
               metrics={groupedMyEvals}

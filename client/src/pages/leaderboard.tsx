@@ -221,7 +221,7 @@ export default function Leaderboard() {
         </div>
       </div>
 
-      <NetworkPolicyControls network={network} onChange={setNetwork} tier="realtime" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} />
+      <NetworkPolicyControls network={network} onChange={setNetwork} />
       <Card>
         <CardHeader>
           <CardTitle>Performance Rankings</CardTitle>
