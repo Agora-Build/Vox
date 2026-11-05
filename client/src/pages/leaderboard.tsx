@@ -19,9 +19,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRegionLocations } from "@/hooks/use-regions";
-import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, showAccessSplit } from "@/components/metrics-tag-controls";
+import { useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, showAccessSplit } from "@/components/metrics-tag-controls";
 import { ACCESS_TEXT } from "@/lib/access-text";
-import { NetworkPolicyControls } from "@/components/network-policy-controls";
+import { MetricsFilterBar } from "@/components/metrics-filter-bar";
 import { formatTag } from "@shared/tags";
 
 interface LeaderboardEntry {
@@ -161,7 +161,7 @@ export default function Leaderboard() {
 
   return (
     <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,46rem)]">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-leaderboard-title">Global Leaderboard</h1>
@@ -194,7 +194,16 @@ export default function Leaderboard() {
             Ranked by weighted composite score across 6 performance metrics.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <MetricsFilterBar
+          idPrefix="leaderboard"
+          tagFilters={tagFilters}
+          onTagFiltersChange={setTagFilters}
+          groupBy={groupBy}
+          onGroupByChange={setGroupBy}
+          network={network}
+          onNetworkChange={setNetwork}
+          customKeys={customTagKeys(undefined, [...tagFilters.map((t) => t.key), groupBy])}
+        >
           <Select value={timeRange} onValueChange={setTimeRange}>
             <SelectTrigger className="w-[130px]">
               <SelectValue placeholder="Time range" />
@@ -211,17 +220,9 @@ export default function Leaderboard() {
             value={regionScopes}
             onChange={setRegionScopes}
           />
-          <MetricsTagControls
-            tagFilters={tagFilters}
-            onTagFiltersChange={setTagFilters}
-            groupBy={groupBy}
-            onGroupByChange={setGroupBy}
-            customKeys={customTagKeys(undefined, [...tagFilters.map((t) => t.key), groupBy])}
-          />
-        </div>
+        </MetricsFilterBar>
       </div>
 
-      <NetworkPolicyControls network={network} onChange={setNetwork} />
       <Card>
         <CardHeader>
           <CardTitle>Performance Rankings</CardTitle>

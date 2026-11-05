@@ -80,6 +80,8 @@ Monorepo: **client/** (React + Vite), **server/** (Express), **shared/** (Drizzl
 - API docs: Swagger UI at `/api/docs`, spec at `/api/v1/openapi.json`, source `docs/openapi.yaml`. Don't enumerate routes here — read `server/routes.ts`.
 - **Real-time UI network policy (2026-11-05):** `/realtime` deliberately defaults to All networks (`network=all`) across Mainline, Community and My Evals, with advanced network filters hidden and Strict off. Click the selected All button to reveal Last mile, Datacenter, tags, grouping and Strict; selecting All again clears network filters/grouping, disables Strict and collapses them without changing time/region/transport/provider selections. Filtered/grouped/explicit-Strict URLs start expanded. The Strict switch is positive (checked = strict), with an information popover. Leaderboard and API defaults remain strict; pass `network=all` to compare API results with default Real-time. Older Real-time links that omit network now use All, even if they contain tags/grouping; add `network=strict` to retain a strict benchmark.
 
+- **Shared metrics filters:** Real-time and Leaderboard compose `client/src/components/metrics-filter-bar.tsx` for the same compact Strict/All controls, extended-filter row and reset/collapse behavior. Leaderboard keeps its Strict-on default and starts expanded; an unfiltered `/leaderboard?network=all` link starts collapsed. On either page, All clears every network tag and grouping (not just the access filter) and turns Strict off. Pages supply their own time/region selectors and optional trailing actions.
+
 ### Plugins
 Optional, additive backends load through `server/plugins/loader.ts` from
 `VOX_PLUGINS`. Builtins under `plugins/<id>/`, registered in `plugins/index.ts`:

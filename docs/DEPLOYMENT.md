@@ -32,6 +32,14 @@ network now use All, even with tags/grouping. Use `network=all` when comparing A
 results with default Real-time; this UI choice does not change API or Leaderboard
 defaults.
 
+Leaderboard uses the same compact controls: information icon, Strict label and
+switch before the time range, and extended network filters on the next row.
+Selecting All clears tags/grouping, turns Strict off and collapses the extended
+controls; deselecting All reveals them without changing the time or region.
+Filtered/grouped links stay expanded. Its existing Strict-on default remains
+unchanged, so a fresh Leaderboard opens expanded rather than hiding an active
+benchmark constraint.
+
 Watch `/api/metrics/network-coverage?tier=realtime` during rollout. This counts
 stable, changed and unverified results in the selected tier/window/filter scope.
 
