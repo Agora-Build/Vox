@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Switch } from "@/components/ui/switch";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Info } from "lucide-react";
 import { appendRegionScopes } from "@/lib/utils";
 import { appendTagParams, tagParamsKey } from "./metrics-tag-controls";
 import type { Tag } from "@shared/tags";
@@ -33,10 +35,24 @@ export function NetworkPolicyControls({ network, onChange, tier, timeRange, regi
           ? `${data.stable.toLocaleString()} verified stable / ${data.changed.toLocaleString()} changed / ${data.unverified.toLocaleString()} unverified`
           : isError ? "Network coverage counts unavailable" : "Loading network coverage..."}</p>}
       </div>
-      <label className="flex shrink-0 items-center gap-2 cursor-pointer">
-        <Switch checked={network === "all"} onCheckedChange={(checked) => onChange(checked ? "all" : "strict")} aria-label="Include unstable and unverified networks" data-testid="include-unstable-networks" />
-        Include unstable / unverified
-      </label>
+      <div className="flex shrink-0 items-center gap-2">
+        <Popover>
+          <PopoverTrigger asChild>
+            <button type="button" aria-label="About strict mode" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <Info className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="max-w-[calc(100vw-2rem)] space-y-2 text-sm" align="end" data-testid="strict-network-info">
+            <p className="font-medium">Strict network benchmarks</p>
+            <p>Only fully monitored runs without a detected network change are included. Changed, legacy and incompletely monitored runs are excluded.</p>
+            <p className="text-muted-foreground">Turn Strict off to include every run. Grouping always uses each run&apos;s initial network tags.</p>
+          </PopoverContent>
+        </Popover>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <Switch checked={network === "strict"} onCheckedChange={(checked) => onChange(checked ? "strict" : "all")} aria-label="Strict" data-testid="strict-network-mode" />
+          Strict
+        </label>
+      </div>
     </div>
   );
 }
