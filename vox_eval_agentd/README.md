@@ -88,10 +88,11 @@ signal supersedes the startup override while the live sampler is configured.
 Core independently observes the request IP, without exposing it in events.
 
 Deploy Core's schema-66 migration before rolling out this daemon. Old agents
-continue to run, but do not qualify for Strict benchmarks. Real-time defaults
-to All networks with Strict off, so it includes older data; click All to reveal
-the Strict switch and advanced filters. Leaderboard still defaults to Strict:
-turn Strict off to inspect older data (or use `network=all` on metrics APIs).
+continue to run, but do not qualify for Strict benchmarks. Real-time and
+Leaderboard default to All networks with Strict off, so they include older data;
+click All to reveal the Strict switch and advanced filters. These selections
+reset to All on refresh and are not saved in the page URL. Metrics APIs still
+default to Strict; use `network=all` to include older data.
 Timestamp-less old daemons can complete a job's first execution, but cannot
 complete a retried/reclaimed job: Core cannot distinguish their delayed result
 from a successor on the same lease. Upgrade to echo the claim `startedAt`.

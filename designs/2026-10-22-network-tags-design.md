@@ -760,7 +760,7 @@ handoff or an egress-only change between heartbeats can always be detected.
 
 Server-side metrics overview/hour/day buckets, zoom detail, region availability
 and public v1 default to `network=strict`: only complete, unchanged runs qualify.
-Leaderboard also keeps Strict as its UI default.
+The Real-time and Leaderboard UIs instead default to All, as described below.
 Uploaded Analyze recordings are exempt because the analyzing machine's network
 does not describe the recording; they remain visible in My Evals and are not
 counted as unstable or unverified network runs.
@@ -774,24 +774,25 @@ Normal job/result history is not filtered away.
 networks, explicitly passing `network=all` for overview, zoom detail and region
 availability. The All button starts selected with advanced filters and Strict
 hidden/off; clicking it reveals the controls, and reselecting it resets network
-tags/grouping and Strict without changing primary selections. Filtered/grouped
-or explicit-Strict URLs start expanded. Extended controls sit immediately below
-the header selectors. The information icon, Strict label and switch precede the
+tags/grouping and Strict without changing primary selections. Extended controls
+sit immediately below the header selectors. The information icon, Strict label and switch precede the
 time range. Desktop tabs remain anchored beneath the status line when the second
 filter row opens. The UI no longer displays or polls coverage counts.
-API and Leaderboard defaults remain unchanged. Older Real-time links without a
-network parameter now use All; add `network=strict` to preserve strict results.
+API defaults remain strict. Network policy, tags and grouping are local page state
+and reset to All on refresh; they are never written to the page URL. Legacy
+`network`, `tag` and `groupBy` URL parameters are ignored and removed without
+discarding unrelated URL state. Strict benchmarks are selected via the UI switch.
 
 **Leaderboard UI follow-up (2026-11-05):** Leaderboard shares the compact Strict
 placement, extended-filter row and All reset/collapse behavior with Real-time.
-It retains its Strict-on benchmark default, leaving those active controls
-expanded on a fresh page. An explicit unfiltered `network=all` link starts
-collapsed; tags/grouping keep shared links expanded. Ranking calculations and
-server defaults are unchanged.
+It also defaults to All networks with controls collapsed and Strict off. Filter
+selections are temporary and reset on refresh, just like Real-time. Ranking
+calculations and server defaults are unchanged.
 
 Both pages compose `client/src/components/metrics-filter-bar.tsx`. It owns the
 two-row layout, initial expansion and All reset behavior, and renders the shared
-Strict/tag controls. Pages retain their URL/query state and supply their own
+Strict/tag controls. Pages share `useMetricsTagState` for temporary network filter
+state and retain their own API query keys. They supply their own
 primary selectors and optional trailing actions (providers/refresh on Real-time).
 
 Deploy Core schema 66 first, then updated daemons. Older daemons still run but

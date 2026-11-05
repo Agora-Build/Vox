@@ -5,13 +5,13 @@ import { TagInput } from "@/components/tag-input";
 import { formatRegion } from "@/lib/utils";
 import { LAST_MILE_HINT, DATACENTER_HINT } from "@/lib/access-text";
 import { accessView, withAccessView, type AccessView } from "@/lib/access-view";
-import { KNOWN_TAG_KEYS, MAX_TAG_FILTERS, REGION_GROUP_KEY, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
+import { KNOWN_TAG_KEYS, MAX_TAG_FILTERS, REGION_GROUP_KEY, formatTag, type Tag } from "@shared/tags";
 import type { NetworkMode } from "@shared/network-events";
 
 /**
  * The network-tag knobs of a metrics view (designs/2026-10-22-network-tags-design.md
  * "Analysis"): `tag=key:value` filters (all must match) and `groupBy=key`.
- * Both live in the page URL, so a filtered, grouped view can be shared.
+ * Selections are local to the page and reset to All networks on reload.
  */
 
 const KNOWN_KEY_LABELS: Record<string, string> = {
@@ -22,31 +22,19 @@ const KNOWN_KEY_LABELS: Record<string, string> = {
   sim: "SIM operator",
 };
 
-function readUrl(defaultNetwork: NetworkMode): { tagFilters: Tag[]; groupBy?: string; network: NetworkMode } {
-  const p = new URLSearchParams(window.location.search);
-  const tf = parseTagFilter(p.getAll("tag"));
-  const gb = parseGroupBy(p.get("groupBy") ?? undefined);
-  const network = p.get("network");
-  return { tagFilters: "error" in tf ? [] : tf.filters, groupBy: "error" in gb ? undefined : gb.groupBy, network: network === "all" || network === "strict" ? network : defaultNetwork };
-}
-
-/** Tag filters + groupBy, initialised from and mirrored to the URL (replaceState: no history entry per keystroke). */
-export function useMetricsTagUrlState(defaultNetwork: NetworkMode = "strict") {
-  const [initial] = useState(() => readUrl(defaultNetwork));
-  const [tagFilters, setTagFilters] = useState<Tag[]>(initial.tagFilters);
-  const [groupBy, setGroupBy] = useState<string | undefined>(initial.groupBy);
-  const [network, setNetwork] = useState<NetworkMode>(initial.network);
+/** Transient network filters; every page load starts with All and Strict off. */
+export function useMetricsTagState() {
+  const [tagFilters, setTagFilters] = useState<Tag[]>([]);
+  const [groupBy, setGroupBy] = useState<string | undefined>();
+  const [network, setNetwork] = useState<NetworkMode>("all");
   useEffect(() => {
+    // Retire saved filter URLs without touching other page state, e.g. the active tab.
     const url = new URL(window.location.href);
     url.searchParams.delete("tag");
-    for (const t of tagFilters) url.searchParams.append("tag", formatTag(t));
-    if (groupBy) url.searchParams.set("groupBy", groupBy);
-    else url.searchParams.delete("groupBy");
-    // Keep All explicit, and also persist Strict on pages that default to All.
-    if (network === "all" || network !== defaultNetwork) url.searchParams.set("network", network);
-    else url.searchParams.delete("network");
+    url.searchParams.delete("groupBy");
+    url.searchParams.delete("network");
     if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
-  }, [tagFilters, groupBy, network, defaultNetwork]);
+  }, []);
   return { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork };
 }
 
@@ -89,7 +77,7 @@ export { accessView, showAccessSplit, withAccessView, type AccessView } from "@/
 /**
  * All / Last mile / Datacenter — a shortcut for the `access` tag filter
  * (design "Last mile vs datacenter" → Analysis), so it shares the tag
- * filter's URL state.
+ * filter's local state.
  */
 export function AccessToggle({ tagFilters, onTagFiltersChange, showAll = true }: { tagFilters: Tag[]; onTagFiltersChange: (tags: Tag[]) => void; showAll?: boolean }) {
   const view = accessView(tagFilters);

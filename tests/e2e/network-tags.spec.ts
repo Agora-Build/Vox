@@ -3,7 +3,7 @@ import { test, expect, type Page } from "@playwright/test";
 /**
  * E2E: network tags in the console (designs/2026-10-22-network-tags-design.md
  * "Console UI"): tag an eval flow and see it saved; filter and group the
- * leaderboard by a tag, from the URL and from the controls; the admin Twilio
+ * leaderboard by a tag using the controls; the admin Twilio
  * Lookup card renders (no credentials are saved).
  */
 
@@ -159,8 +159,12 @@ test.describe("network tags", () => {
       await seed([{ key: "isp", value: STARLINK, source: "detected" }, { key: "line", value: TELNYX, source: "detected" }], 1400);
       await seed([{ key: "line", value: TWILIO, source: "detected" }], 2000); // no isp: filtered out
 
-      // From the URL: filtered to the starlink jobs, one row per line provider.
-      await page.goto(`/leaderboard?tag=${encodeURIComponent(`isp:${STARLINK}`)}&groupBy=line`);
+      // Filter to the starlink jobs, one row per line provider.
+      await page.goto("/leaderboard");
+      await page.getByTestId("access-toggle-all").click();
+      await page.getByTestId("metrics-tag-filter-field").fill(`isp:${STARLINK}`);
+      await page.getByTestId("metrics-tag-filter-field").press("Enter");
+      await selectOption(page, "select-group-by", "Group by line (line provider)");
       const rows = page.getByRole("row").filter({ hasText: name });
       await expect(rows).toHaveCount(2);
       await expect(page.getByTestId("header-group")).toHaveText("line");
@@ -168,8 +172,9 @@ test.describe("network tags", () => {
       await expect(rows.filter({ hasText: `line:${TELNYX}` })).toContainText("1400");
       await expect(page.getByTestId("metrics-tag-filter-chip-isp")).toHaveText(`isp:${STARLINK}`);
 
-      // From the controls: a different filter, then grouping, mirrored into the URL.
+      // A fresh load clears the filters; apply a different filter and grouping.
       await page.goto("/leaderboard");
+      await page.getByTestId("access-toggle-all").click();
       const field = page.getByTestId("metrics-tag-filter-field");
       // The filter (no end) still takes the system keys, and suggests access's values.
       await field.fill("access:");
@@ -184,14 +189,14 @@ test.describe("network tags", () => {
       await expect(rows).toHaveCount(2);
       await expect(rows.filter({ hasText: `isp:${STARLINK}` })).toContainText("1000");
       await expect(rows.filter({ hasText: "isp: untagged" })).toContainText("2000");
-      await expect(page).toHaveURL(new RegExp(`tag=line%3A${TWILIO}.*groupBy=isp`));
+      await expect(page).toHaveURL(/\/leaderboard$/);
     } finally {
       await pool.query("DELETE FROM eval_jobs WHERE id = ANY($1)", [jobIds]);
       await pool.query("DELETE FROM providers WHERE id = $1", [provider.id]);
     }
   });
 
-  test("the access toggle filters the leaderboard and real-time views through the URL", async ({ page }) => {
+  test("the access toggle filters the leaderboard and real-time views without changing the URL", async ({ page }) => {
     test.skip(!process.env.DATABASE_URL, "needs the dev DB");
     test.setTimeout(60_000);
     const { storage, pool } = await import("../../server/storage");
@@ -220,11 +225,14 @@ test.describe("network tags", () => {
       await seed("lastmile", 1010);
       await seed("datacenter", 2030);
 
-      await page.goto(`/leaderboard?tag=run%3A${RUN}`);
+      await page.goto("/leaderboard");
+      await page.getByTestId("access-toggle-all").click();
+      await page.getByTestId("metrics-tag-filter-field").fill(`run:${RUN}`);
+      await page.getByTestId("metrics-tag-filter-field").press("Enter");
       const rows = page.getByRole("row").filter({ hasText: name });
       await expect(rows).toHaveCount(1);
       // No access constraint: the row averages both and shows the split.
-      // The custom run filter keeps the extended controls expanded.
+      // Extended controls remain expanded while selecting individual filters.
       await expect(page.getByTestId("access-toggle-all")).toHaveAttribute("data-state", "off");
       await expect(page.getByTestId("access-toggle-lastmile")).toHaveAttribute("data-state", "off");
       await expect(page.getByTestId("access-toggle-datacenter")).toHaveAttribute("data-state", "off");
@@ -232,44 +240,49 @@ test.describe("network tags", () => {
       await expect(rows.locator('[data-testid^="text-response-access-"]')).toHaveText("1010 / 2030");
       await expect(rows.locator('[data-testid^="text-access-count-"]')).toHaveText("1 / 1");
 
-      // Last mile: the filter lands in the URL and the tag chips; the split column goes.
+      // Last mile: the tag chip updates and the split column goes; the URL stays clean.
       await page.getByTestId("access-toggle-lastmile").click();
-      await expect(page).toHaveURL(/tag=access%3Alastmile/);
+      await expect(page).toHaveURL(/\/leaderboard$/);
       await expect(page.getByTestId("metrics-tag-filter-chip-access")).toHaveText("access:lastmile");
       await expect(rows).toContainText("1010");
       await expect(rows).not.toContainText("2030");
       await expect(page.getByTestId("header-access")).toHaveCount(0);
 
       await page.getByTestId("access-toggle-datacenter").click();
-      await expect(page).toHaveURL(/tag=access%3Adatacenter/);
-      await expect(page).not.toHaveURL(/access%3Alastmile/);
+      await expect(page.getByTestId("metrics-tag-filter-chip-access")).toHaveText("access:datacenter");
       await expect(rows).toContainText("2030");
 
       // Deselect only the access shortcut; All would reset every network filter.
       await page.getByTestId("access-toggle-datacenter").click();
-      await expect(page).not.toHaveURL(/tag=access/);
-      await expect(page).toHaveURL(new RegExp(`tag=run%3A${RUN}`)); // other filters stay
+      await expect(page.getByTestId("metrics-tag-filter-chip-access")).toHaveCount(0);
+      await expect(page.getByTestId("metrics-tag-filter-chip-run")).toHaveText(`run:${RUN}`); // other filters stay
       await expect(rows).toContainText("1520");
 
       // A filter the toggle has no button for (access:unknown): no button is
       // pressed — not All — and the split columns stay hidden.
-      await page.goto(`/leaderboard?tag=run%3A${RUN}&tag=access%3Aunknown`);
+      await page.getByTestId("metrics-tag-filter-field").fill("access:unknown");
+      await page.getByTestId("metrics-tag-filter-field").press("Enter");
       await expect(page.getByTestId("metrics-tag-filter-chip-access")).toHaveText("access:unknown");
       for (const v of ["all", "lastmile", "datacenter"]) {
         await expect(page.getByTestId(`access-toggle-${v}`)).toHaveAttribute("data-state", "off");
       }
       await expect(page.getByTestId("header-access")).toHaveCount(0);
 
-      // Real-time reads the same URL state.
-      await page.goto("/realtime?tag=access%3Adatacenter");
+      // Real-time uses the same local filter controls.
+      await page.goto("/realtime");
+      await page.getByTestId("access-toggle-all").click();
+      await page.getByTestId("access-toggle-datacenter").click();
       await expect(page.getByTestId("access-toggle-datacenter")).toHaveAttribute("data-state", "on");
       await page.getByTestId("access-toggle-all").click();
-      await expect(page).not.toHaveURL(/tag=access/);
+      await expect(page).toHaveURL(/\/realtime$/);
 
       // "Region" in Group by: the leaderboard splits each row by the site's region.
-      await page.goto(`/leaderboard?tag=run%3A${RUN}`);
+      await page.goto("/leaderboard");
+      await page.getByTestId("access-toggle-all").click();
+      await page.getByTestId("metrics-tag-filter-field").fill(`run:${RUN}`);
+      await page.getByTestId("metrics-tag-filter-field").press("Enter");
       await selectOption(page, "select-group-by", "Group by region");
-      await expect(page).toHaveURL(/groupBy=region/);
+      await expect(page).toHaveURL(/\/leaderboard$/);
       await expect(page.getByTestId("header-group")).toHaveText("region");
       await expect(rows).toHaveCount(1);
     } finally {

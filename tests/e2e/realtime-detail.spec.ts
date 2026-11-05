@@ -142,7 +142,9 @@ test("an in-flight detail response cannot bleed across transport filters", async
 test("an in-flight detail response cannot bleed across strict/all network policy", async ({ page }) => {
   const requests: URL[] = [];
   await mockDashboard(page, requests);
-  await page.goto("/realtime?network=strict");
+  await page.goto("/realtime");
+  await page.getByTestId("access-toggle-all").click();
+  await page.getByRole("switch", { name: "Strict", exact: true }).click();
   await page.getByRole("combobox").filter({ hasText: "7 days" }).click();
   await page.getByRole("option", { name: "All time" }).click();
   const chart = page.locator(".recharts-wrapper").first();

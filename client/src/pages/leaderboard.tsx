@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRegionLocations } from "@/hooks/use-regions";
-import { useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, showAccessSplit } from "@/components/metrics-tag-controls";
+import { useMetricsTagState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, showAccessSplit } from "@/components/metrics-tag-controls";
 import { ACCESS_TEXT } from "@/lib/access-text";
 import { MetricsFilterBar } from "@/components/metrics-filter-bar";
 import { formatTag } from "@shared/tags";
@@ -84,7 +84,7 @@ export default function Leaderboard() {
   const [timeRange, setTimeRange] = useState<string>("168"); // 7 days default
   const [selectedEntry, setSelectedEntry] = useState<LeaderboardEntry | null>(null);
   const { data: regionLocations } = useRegionLocations();
-  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagUrlState();
+  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagState();
 
   const regionScopeKey = [...regionScopes].sort().join(",");
   // All (no access filter): each row also shows its last-mile / datacenter split.
