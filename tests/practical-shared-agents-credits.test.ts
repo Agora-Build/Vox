@@ -541,7 +541,7 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
   });
 
   // ── 5. Session-eval-flow gate interplay ───────────
-  describe("5. Session-eval-flow gate interplay: consent + attestation gates precede the hold", () => {
+  describe("5. Credential trust and session consent precede the hold", () => {
     const PRICE_PER_UNIT = 250;
     const charge = computeCharge(PRICE_PER_UNIT, 1);
 
@@ -581,21 +581,23 @@ describe("Task 13: practical shared-agents marketplace + credits e2e", () => {
       expect(await getBalance(rich.session)).toBe(before); // gate fired BEFORE any hold
     });
 
-    it("5b. rejects with consent but unattested secrets (403) — balance unchanged", async () => {
-      const before = await getBalance(rich.session);
-      const res = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
-        method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: sessionTokenId, credentialConsent: true }),
+    it("5b. Runtime is blocked even with consent — balance unchanged", async () => {
+      const runtimeName = `T13_RUNTIME_${stamp.toUpperCase()}`;
+      await createSecret(rich.session, runtimeName, "runtime-test-value", { brokerType: null });
+      const runtimeFlowId = await createEvalFlow(rich.session, `t13-runtime-wf-${stamp}`, providerId, {
+        framework: "aeval", stepsPrefix: `- type: control.log\n  message: \${secrets.${runtimeName}}`,
       });
-      expect(res.status).toBe(403);
+      const before = await getBalance(rich.session);
+      const res = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${runtimeFlowId}/run`, {
+        method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: sessionTokenId, runtimeSecretConsent: true }),
+      });
+      expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toBe("Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)");
+      expect(body.error).toMatch(/Shared agents require Brokered secrets/);
       expect(await getBalance(rich.session)).toBe(before);
     });
 
-    it("5c. attested + consent: dispatch proceeds, hold placed, sessionInjection stamped", async () => {
-      await createSecret(rich.session, emailSecret, "t13-test-user@example.com", { isTestAccount: true });
-      await createSecret(rich.session, passwordSecret, "t13-test-password-1", { isTestAccount: true });
-
+    it("5c. owner consent without attestation: dispatch proceeds and holds once", async () => {
       const before = await getBalance(rich.session);
       const res = await authFetch(rich.session, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST", body: JSON.stringify({ evalSetId, targetTokenId: sessionTokenId, credentialConsent: true }),

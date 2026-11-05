@@ -10,10 +10,11 @@
 import { Express, Request, Response } from "express";
 import { storage, mergeEvalConfig, buildJobSnapshot, validateEvalFlowConfig, validateEvalSetConfig, unsupportedFrameworkError } from "./storage";
 import { requireAuthOrApiKey, getCurrentUserOrApiKeyUser } from "./auth";
-import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, secretGate } from "./auth-session";
+import { parsePlatformSetup, sessionScopeForEvalFlow, evaluateSessionRequirement, getBrokeredSecretNames, ensureSession, secretGate, ownedCredentialPoolViolation } from "./auth-session";
+import { flowTrialLimitsSchema } from "@shared/credential-trials";
 import { regionSiteSequence } from "@shared/regions";
 import { parseTags, effectiveTags, formatTag, type Tag } from "@shared/tags";
-import { hasOrg, sameOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter } from "./permissions";
+import { hasOrg, isOwnerOrOrgManager, canAccessResource, canViewJob, canCancelJob, parseJobScope, jobListFilter, canCreateEvalFlowSecrets } from "./permissions";
 import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
 import { startFlowLineRefresh, withLineLookupState } from "./number-lookup";
@@ -149,6 +150,8 @@ export function registerApiV1Routes(app: Express): void {
       }
 
       const { name, description, providerId, projectId, visibility } = req.body;
+      const trialLimits = flowTrialLimitsSchema.safeParse(req.body);
+      if (!trialLimits.success) return res.status(400).json({ error: "Trial limits must be whole numbers from 0 to 10,000" });
       const config = req.body.config;
 
       if (!name) {
@@ -205,6 +208,7 @@ export function registerApiV1Routes(app: Express): void {
         projectId,
         ownerId: user.id,
         visibility: evalFlowVisibility,
+        ...trialLimits.data,
         config: config || {},
       });
 
@@ -277,6 +281,11 @@ export function registerApiV1Routes(app: Express): void {
       if (evalFlow.ownerId !== user.id) {
         return res.status(403).json({ error: "Not authorized to update this evalFlow" });
       }
+      const trialLimits = flowTrialLimitsSchema.safeParse(req.body);
+      if (!trialLimits.success) return res.status(400).json({ error: "Trial limits must be whole numbers from 0 to 10,000" });
+      if (Object.values(trialLimits.data).some((v) => v !== undefined) && !canCreateEvalFlowSecrets(user, evalFlow)) {
+        return res.status(403).json({ error: "Only credential owners or organization secret managers can change trial limits" });
+      }
 
       const { name, description, visibility } = req.body;
       const config = req.body.config;
@@ -303,6 +312,7 @@ export function registerApiV1Routes(app: Express): void {
         name: name ?? evalFlow.name,
         description: description ?? evalFlow.description,
         visibility: visibility ?? evalFlow.visibility,
+        ...trialLimits.data,
         config: config ?? evalFlow.config,
         ...(req.body.tags !== undefined ? { tags: parsedTags.tags } : {}),
       });
@@ -439,18 +449,6 @@ export function registerApiV1Routes(app: Express): void {
         return res.status(400).json({ error: sessionReq.reason });
       }
       const sessionNeed = sessionReq.kind === "need" ? sessionReq.need : null;
-      // Session-injection composition (spec §5 + item 2 tightening): the serve
-      // gate admits owner + team agents only, so a public-pool claim would take
-      // the job and then be refused the session; and a team-pool claim on a
-      // personal (non-org) evalFlow is a guaranteed-failure dispatch.
-      if (sessionNeed && targetTier === "public") {
-        return res.status(403).json({ error: "Credential-injected evalFlows can only use your own or team agent pools" });
-      }
-      if (sessionNeed && targetTier === "team" &&
-          !(evalFlow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalFlow.organizationId }))) {
-        return res.status(403).json({ error: "Credential-injected evalFlows can only use a team pool when the evalFlow belongs to your organization" });
-      }
-
       // Same backstop as the console run route and the scheduler: an evalFlow
       // on a framework this build can't run only produces jobs that fail at
       // the daemon. Unreachable today (0041 deleted those rows and the
@@ -467,6 +465,10 @@ export function registerApiV1Routes(app: Express): void {
       // the console.
       const gate = await secretGate(evalFlow, evalSet);
       if (gate.error) return res.status(400).json({ error: gate.error });
+      const violation = await ownedCredentialPoolViolation(evalFlow, evalSet, targetTier, {
+        id: user.id, organizationId: user.membership?.organizationId ?? null,
+      });
+      if (violation) return res.status(403).json({ error: violation });
 
       // Create eval job (merge configs + capture the immutable snapshot, same as the
       // console run path — otherwise these jobs lose provenance/attribution/tiering).

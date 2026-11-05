@@ -1,5 +1,9 @@
 # Secret Class "Protected / Runtime" + Shared-Agent Exposure Gate — Implementation Plan
 
+> Historical archive, not current policy. The single maintained
+> [credential and dispatch design](agent-credentials-design.md) supersedes this
+> plan's classes and Runtime-on-Shared consent bypass. Update the living design.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rename the secret class `login` → `protected` end-to-end (DB enum + server + client), default the secret picker to Protected, add a run-flow agent picker, and gate runtime-secret exposure to shared agents behind an explicit acknowledgement.

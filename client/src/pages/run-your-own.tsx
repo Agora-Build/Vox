@@ -12,10 +12,11 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
-import { Checkbox } from "@/components/ui/checkbox";
+import { RunCredentialNotice, type RunCredentialPolicy } from "@/components/run-credential-notice";
 import { Play, Loader2, XCircle, CheckCircle, Clock, AlertCircle, Rocket, Eye, Terminal, ArrowRight, ChevronDown, ChevronUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { submissionId, type EvalRunSubmission } from "@/lib/run-submission";
 import { Link } from "wouter";
 import generatedImage from '@/assets/network-visualization.png';
 import { useRegionLocationOptions } from "@/hooks/use-regions";
@@ -63,6 +64,7 @@ interface EvalSetFull {
 }
 
 interface RunTargetAgent {
+  ownCredentialAgent?: boolean;
   tokenId: number;
   name: string;
   siteId: string;
@@ -70,7 +72,7 @@ interface RunTargetAgent {
   price: number | null;
 }
 
-interface RunTargetsResponse {
+interface RunTargetsResponse extends RunCredentialPolicy {
   agents: { mine: RunTargetAgent[]; shared: RunTargetAgent[] };
   referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean; resolvable?: boolean }>;
   /** Why the run would refuse the chosen eval set (it may not use this flow's secrets), or null. */
@@ -90,7 +92,8 @@ export default function SelfTest() {
   const [selectedEvalFlowId, setSelectedEvalFlowId] = useState<string>("");
   const [selectedEvalSetId, setSelectedEvalSetId] = useState<string>("");
   const [targetTokenId, setTargetTokenId] = useState<string>("any");
-  const [ackRuntime, setAckRuntime] = useState(false);
+  const [sessionConsent, setSessionConsent] = useState(false);
+  const [requestId, setRequestId] = useState(submissionId);
   const [activeJobId, setActiveJobId] = useState<number | null>(() => {
     const saved = sessionStorage.getItem("runYourOwn_activeJobId");
     return saved ? parseInt(saved) : null;
@@ -187,6 +190,7 @@ export default function SelfTest() {
     queryFn: async () => (await apiRequest("GET",
       `/api/eval-flows/${selectedEvalFlowId}/run-targets?region=${encodeURIComponent(region)}&evalSetId=${selectedEvalSetId}`)).json(),
     enabled: !!selectedEvalFlowId && !!region && !!selectedEvalSetId,
+    staleTime: 15000,
   });
 
   // Fallback tier list (no online counts yet) so the "Run on" selector is
@@ -221,6 +225,13 @@ export default function SelfTest() {
   const pickerShared = (runTargets?.agents.shared ?? []).filter(
     (s) => !(runTargets?.agents.mine ?? []).some((m) => m.tokenId === s.tokenId)
   );
+  const [preferredFor, setPreferredFor] = useState("");
+  useEffect(() => {
+    const key = `${selectedEvalFlowId}:${region}`;
+    if (!runTargets || preferredFor === key) return;
+    setPreferredFor(key);
+    setTargetTokenId(runTargets.preferredTokenId != null ? String(runTargets.preferredTokenId) : "any");
+  }, [runTargets, selectedEvalFlowId, region, preferredFor]);
   // Pooled dispatch with every tier unavailable (e.g. a non-owner on a
   // credential-injected public evalFlow) can only 403 — gate the submit.
   const noPoolAvailable = targetTokenId === "any" &&
@@ -229,8 +240,6 @@ export default function SelfTest() {
 
   const selectedAgent = targetTokenId === "any" ? null :
     [...(runTargets?.agents.mine ?? []), ...pickerShared].find((a) => String(a.tokenId) === targetTokenId);
-  const runtimeExposed = (runTargets?.referencedSecrets ?? [])
-    .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
   // Referenced but not configured for the evalFlow owner → the run would fail
   // with an unresolved ${secrets.X} placeholder. The server rejects it too;
   // surfacing it here means the user never spends an agent run to find out.
@@ -238,24 +247,30 @@ export default function SelfTest() {
     // `resolvable` mirrors the server gate exactly — a placeholder in a config
     // key the daemon never substitutes must NOT disable the Run button.
     .filter((s) => !s.present && s.resolvable !== false).map((s) => s.name);
-  const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
+  const sharedSelected = selectedAgent?.dispatchTier === "shared";
+  const ownCredentialAgent = selectedAgent?.ownCredentialAgent === true;
+  const credentialBlocked = (sharedSelected && !ownCredentialAgent && (!!runTargets?.runtimeSecretNames?.length || (runTargets?.requiresSessionConsent && !sessionConsent))) ||
+    (runTargets?.trial?.required && !runTargets.trial.available);
+  useEffect(() => { setSessionConsent(false); }, [targetTokenId, selectedEvalFlowId, selectedEvalSetId, runTargets?.requiresSessionConsent]);
+  useEffect(() => { setRequestId(submissionId()); }, [targetTokenId, targetTier, region, selectedEvalFlowId, selectedEvalSetId]);
 
   const runEvalMutation = useMutation({
-    mutationFn: async (evalFlowId: number) => {
-      const res = await apiRequest("POST", `/api/eval-flows/${evalFlowId}/run`, {
-        evalSetId: parseInt(selectedEvalSetId),
-        ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : { region, targetTier }),
-        ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
-      });
+    retry: (count, error) => !!runTargets?.trial?.required && count < 1 && (error instanceof TypeError || /^5\d\d:/.test(error.message)),
+    retryDelay: 500,
+    mutationFn: async ({ flowId, ...body }: EvalRunSubmission) => {
+      const res = await apiRequest("POST", `/api/eval-flows/${flowId}/run`, body);
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data, submission) => {
       setActiveJobId(data.job.id);
       setTargetTokenId("any");
-      setAckRuntime(false);
+      setSessionConsent(false);
+      setRequestId(submissionId());
+      queryClient.invalidateQueries({ queryKey: [`/api/eval-flows/${submission.flowId}/run-targets`] });
       toast({ title: "Evaluation started", description: "Your evaluation tests is now running" });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, submission) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/eval-flows/${submission.flowId}/run-targets`] });
       toast({ title: "Failed to start evaluation", description: error.message, variant: "destructive" });
     },
   });
@@ -349,7 +364,11 @@ export default function SelfTest() {
       toast({ title: "Please select or create an Eval Flow first", variant: "destructive" });
       return;
     }
-    runEvalMutation.mutate(evalFlowId);
+    runEvalMutation.mutate({
+      flowId: evalFlowId, evalSetId: parseInt(selectedEvalSetId), requestId,
+      ...(targetTokenId !== "any" ? { targetTokenId: Number(targetTokenId) } : { region, targetTier }),
+      ...(sharedSelected && runTargets?.requiresSessionConsent ? { credentialConsent: sessionConsent } : {}),
+    });
   };
 
   const isLoggedIn = !!authStatus?.user;
@@ -627,23 +646,13 @@ export default function SelfTest() {
                   </AlertDescription>
                 </Alert>
               )}
-              {showRuntimeWarning && (
-                <Alert variant="destructive">
-                  <AlertTitle>This Eval Flow uses runtime secrets</AlertTitle>
-                  <AlertDescription>
-                    The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
-                    <label className="mt-2 flex items-center gap-2">
-                      <Checkbox checked={ackRuntime} onCheckedChange={(v) => setAckRuntime(v === true)} />
-                      I understand
-                    </label>
-                  </AlertDescription>
-                </Alert>
-              )}
+              <RunCredentialNotice flowId={Number(selectedEvalFlowId)} shared={!!sharedSelected} ownAgent={ownCredentialAgent} policy={runTargets}
+                consent={sessionConsent} onConsent={setSessionConsent} />
               <Button
                 className="w-full"
                 size="lg"
                 onClick={handleRunEval}
-                disabled={runEvalMutation.isPending || isJobRunning || !selectedEvalFlowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || !!runTargets?.evalSetProblem || (showRuntimeWarning && !ackRuntime)}
+                disabled={runEvalMutation.isPending || isJobRunning || !selectedEvalFlowId || !selectedEvalSetId || !region || runTargetsFetching || noPoolAvailable || missingSecrets.length > 0 || !!runTargets?.evalSetProblem || !!credentialBlocked || !runTargets}
               >
                 {runEvalMutation.isPending ? (
                   <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Starting...</>

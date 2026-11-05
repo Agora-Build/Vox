@@ -118,7 +118,7 @@ export function canEditResource(user: AuthUser, resource: OrgResource): boolean 
 }
 
 // Run-once rights IN THE CONSOLE: a public evalFlow can be run by anyone (a
-// one-off on the owner's key, which they opted into by publishing). This is a
+// one-off; spending owner credentials additionally requires trial admission). This is a
 // deliberate console-only exception so people can try Vox with an easy test
 // run; the public API (/api/v1/eval-flows/:id/run) is stricter — owner only —
 // and does not use this function. Decision: #200. A PRIVATE evalFlow can be
@@ -170,14 +170,10 @@ export function hasOrg(user: { membership: Membership | null }): boolean {
 }
 
 /**
- * Pool-tier composition gate for session-injected dispatch (spec §5): a
- * session-injected job may only enter the dispatcher's own pool, or a team
- * pool when the evalFlow belongs to that same org. The routes enforce this at
- * write time, but the evalFlow's secrets/config are MUTABLE afterward — a
- * public-tier schedule whose evalFlow later gains a login-class secret would
- * emit an unclaimable session job every tick. The scheduler re-checks through
- * here each tick and disables violating schedules. Returns null when allowed,
- * else a human-readable reason.
+ * Compatibility pool-composition predicate. Mainline is trusted; Private
+ * accepts personal credentials and Team requires matching org ownership.
+ * New dispatch paths use ownedCredentialPoolViolation for caller authorization
+ * and Runtime/Brokered parity as well.
  */
 // SCOPE: encodes only the pool-composition arm; the dispatcher owner-or-org
 // gate for session evalFlows is separate (see the run route).
@@ -188,7 +184,7 @@ export function sessionPoolViolation(
 ): string | null {
   // Allowlist shape: only tiers we affirmatively trust return null, so a
   // future enum member (or the reserved 'shared') fails CLOSED here.
-  if (targetTier === "private") return null;
+  if (targetTier === "private") return evalFlow.organizationId == null ? null : "Organization credentials require a Team or Mainline agent";
   if (targetTier === "team") {
     if (evalFlow.organizationId != null &&
         sameOrg({ organizationId: creator?.organizationId ?? null }, { organizationId: evalFlow.organizationId })) {
@@ -196,6 +192,7 @@ export function sessionPoolViolation(
     }
     return "credential-injected jobs can use a team pool only when the evalFlow belongs to the creator's organization";
   }
+  if (targetTier === "public") return null; // Admin-operated Mainline is trusted.
   return `credential-injected jobs cannot use the ${targetTier} pool`;
 }
 
@@ -223,13 +220,9 @@ export function canDispatchToToken(
  * `getClaimableJobsForToken` mirror this exact logic in SQL for atomicity;
  * keep the two in lockstep.
  *
- * `sessionInjected` = the job carries a Core-minted login session (its config
- * has `sessionInjection`). Such a job must never land on a PUBLIC (stranger's)
- * agent picked up from the region pool: only the dispatcher's own agents claim
- * it untargeted, or the aimed token if targeted. The /session serve gate
- * (`isSessionServable`) is the second, credential-authoritative check — but we
- * gate the claim too so a stranger's public agent can't even take the job
- * off the queue and sit on it.
+ * Mainline is the admin-operated trusted fleet. Credential-bearing jobs also
+ * apply the frozen owner/org scope here; delivery independently rechecks the
+ * lease, caller authorization and credential class.
  */
 export function isClaimable(
   job: {
@@ -241,6 +234,7 @@ export function isClaimable(
     sessionInjected?: boolean;
     transport?: "web" | "phone" | null;
     kind?: "eval" | "analyze";
+    snapshot?: { requiresCredentials?: boolean; sessionInjection?: unknown; credentialConsent?: boolean; evalFlow?: { ownerId: number; organizationId: number | null } | null } | null;
   },
   token: Pick<DispatchToken, "id" | "dispatchTier" | "createdBy"> & { region?: string; siteId?: string; phoneCapable?: boolean; analyzeCapable?: boolean },
   orgs?: { tokenOwnerOrgId: number | null; creatorOrgId: number | null },
@@ -263,6 +257,13 @@ export function isClaimable(
   // Phone-transport jobs require the phone capability (design 2026-09-21 §8) —
   // applies to every arm below, targeted included. Absent transport = web.
   if (job.transport === "phone" && token.phoneCapable !== true) return false;
+  const owner = job.snapshot?.evalFlow;
+  if (job.snapshot?.requiresCredentials || job.snapshot?.sessionInjection) {
+    if (token.dispatchTier === "private" && (!owner || owner.organizationId != null || owner.ownerId !== token.createdBy)) return false;
+    if (token.dispatchTier === "team" && (!owner || !sameOrg({ organizationId: owner.organizationId }, { organizationId: orgs?.tokenOwnerOrgId ?? null }))) return false;
+    const personalAgent = owner?.organizationId == null && owner?.ownerId === token.createdBy;
+    if (token.dispatchTier === "shared" && !personalAgent && (job.targetTokenId !== token.id || (job.snapshot.sessionInjection && job.snapshot.credentialConsent !== true))) return false;
+  }
 
   // Targeted: only the aimed token, ever.
   if (job.targetTokenId != null) return job.targetTokenId === token.id;
@@ -281,7 +282,7 @@ export function isClaimable(
             { organizationId: orgs?.creatorOrgId ?? null },
           );
       case "public":
-        return token.dispatchTier === "public" && !job.sessionInjected;
+        return token.dispatchTier === "public";
       default:
         return false; // 'shared' reserved; null malformed
     }
@@ -291,28 +292,27 @@ export function isClaimable(
   // + the old public-or-mine arm.
   if (job.siteId == null || job.siteId !== token.siteId) return false;
   if (job.createdBy === token.createdBy) return true;
-  return token.dispatchTier === "public" && !job.sessionInjected;
+  return token.dispatchTier === "public";
 }
 
 /**
  * Session serve gate — who may RECEIVE a Core-minted session bundle
  * for a session-injected job. Derived entirely from the job's IMMUTABLE stamped
  * snapshot (never the live evalFlow — the owner can edit it post-dispatch).
- * Policy: owner + team + attested-shared.
- *  - owner: the evalFlow owner's own agents (token.createdBy === evalFlow owner).
- *  - team:  an agent whose owner shares the evalFlow's organization.
- *  - attested-shared: consent + test-account attestation were verified at
- *    dispatch (job.consent) AND the job was aimed at exactly this token.
- * Public/community and non-attested shared agents are excluded.
+ * Mainline is trusted. Private accepts its owner's personal scope, Team only
+ * its own organization. Third-party Shared requires per-run consent and targeting;
+ * the owner's own Shared agent may receive their personal session directly.
  */
 export function isSessionServable(
   job: { targetTokenId: number | null; evalFlowOwnerId: number | null; evalFlowOrgId: number | null; consent: boolean },
-  token: { id: number; createdBy: number },
+  token: { id: number; createdBy: number; dispatchTier: string },
   tokenOwner: { organizationId: number | null },
 ): boolean {
-  if (isOwnerOperatedAgent(job, token, tokenOwner)) return true;
-  // Third arm: a consented, attested marketplace agent this job was aimed at.
-  if (job.consent === true && job.targetTokenId != null && job.targetTokenId === token.id) return true;
+  if (token.dispatchTier === "public") return true;
+  if (token.dispatchTier === "shared") return (job.evalFlowOrgId == null && job.evalFlowOwnerId === token.createdBy) ||
+    (job.targetTokenId === token.id && job.consent === true);
+  if (token.dispatchTier === "private") return job.evalFlowOrgId == null && job.evalFlowOwnerId === token.createdBy;
+  if (token.dispatchTier === "team") return sameOrg({ organizationId: job.evalFlowOrgId }, tokenOwner);
   return false;
 }
 
@@ -321,7 +321,7 @@ export function isSessionServable(
  * evalFlow's owner, or to their organization.
  *
  * Separate from isSessionServable because the third arm is different in kind. A
- * consented attested shared agent may legitimately receive a storageState — but
+ * consented shared agent may legitimately receive a storageState — but
  * it is still a THIRD PARTY, so it must not receive login-failure DETAIL, which
  * can quote page state (a Playwright error naming a selector, a DOM fragment
  * with a hidden token). Serving the session and explaining why minting it

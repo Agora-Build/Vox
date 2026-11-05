@@ -43,6 +43,7 @@ async function createSecret(
 
 describe("dispatch integration — session stamping, pre-warm, shared-tier gates", () => {
   let admin: AuthSession;
+  let operator: AuthSession;
   let providerId: string;
   const stamp = Date.now();
 
@@ -60,6 +61,19 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
 
   beforeAll(async () => {
     admin = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    // These Shared gates concern a THIRD-PARTY operator. The flow owner's own
+    // Shared agents accept their personal Runtime/Brokered credentials.
+    const operatorEmail = `sd-operator-${stamp}@example.com`;
+    const invite = await authFetch(admin, `${BASE_URL}/api/admin/invite`, {
+      method: "POST", body: JSON.stringify({ email: operatorEmail, plan: "premium" }),
+    });
+    expect(invite.ok).toBe(true);
+    const registered = await fetch(`${BASE_URL}/api/auth/register`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: `sd-operator-${stamp}`, password: "sd-operator-pass-123", token: (await invite.json()).token }),
+    });
+    expect(registered.ok).toBe(true);
+    operator = await login(operatorEmail, "sd-operator-pass-123");
 
     const providers = await (await fetch(`${BASE_URL}/api/providers`)).json();
     providerId = providers[0].id;
@@ -160,21 +174,18 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     expect(body.job.config.sessionInjection).toEqual({ platformId: "vapi" });
   });
 
-  describe("4-5. shared-tier dispatch: consent + attestation gates", () => {
+  describe("4-5. third-party Shared dispatch: owner session consent, never Runtime", () => {
     let sharedTokenId: number;
 
     beforeAll(async () => {
-      const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+      const tRes = await authFetch(operator, `${BASE_URL}/api/eval-agent-tokens`, {
         method: "POST",
-        // Public tier: still mints WITH a region (zero trust is public-tier-only
-        // at mint — region is admin-configured/trusted here). `dispatchTier` is
-        // the live field the route reads; `visibility` was a dead legacy name.
-        body: JSON.stringify({ name: `shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, dispatchTier: "public" }),
+        body: JSON.stringify({ name: `shared-agent-${stamp}` }),
       });
       expect(tRes.ok).toBe(true);
       sharedTokenId = (await tRes.json()).id;
 
-      const patchRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}`, {
+      const patchRes = await authFetch(operator, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}`, {
         method: "PATCH",
         body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 100 }),
       });
@@ -188,7 +199,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     // Revoke it (which also takes its listing off the marketplace, #93): these
     // leaked ~2 active listings per run, which slowed every listing scan.
     afterAll(async () => {
-      if (sharedTokenId) await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}/revoke`, { method: "POST" });
+      if (sharedTokenId) await authFetch(operator, `${BASE_URL}/api/eval-agent-tokens/${sharedTokenId}/revoke`, { method: "POST" });
     });
 
     it("4a. rejects targeted dispatch to a shared agent without credentialConsent", async () => {
@@ -201,26 +212,23 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       expect(body.error).toBe("credentialConsent is required to dispatch credential-injected jobs to a shared agent");
     });
 
-    it("4b. rejects targeted dispatch when login secrets are not attested as test accounts", async () => {
-      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
+    it("4b. blocks Runtime secrets even with the old runtime consent flag", async () => {
+      const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run`, {
         method: "POST",
-        body: JSON.stringify({ evalSetId, targetTokenId: sharedTokenId, credentialConsent: true }),
+        body: JSON.stringify({ evalSetId, targetTokenId: sharedTokenId, runtimeSecretConsent: true }),
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toBe("Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)");
+      expect(body.error).toMatch(/Shared agents require Brokered secrets/);
     });
 
-    it("5. passes the gates once secrets are attested and consent is given", async () => {
-      await createSecret(admin, emailSecret, "sd-test-user@example.com", { isTestAccount: true });
-      await createSecret(admin, passwordSecret, "sd-test-password-1", { isTestAccount: true });
-
+    it("5. owner consent suffices without test-account attestation", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${sessionEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: sharedTokenId, credentialConsent: true }),
       });
       const body = await res.json();
-      // The consent + attestation gates no longer block. What happens next depends
+      // The owner consent gate no longer blocks. What happens next depends
       // on the marketplace's own decision (credit balance, listing state), which is
       // out of scope here: 200 (authorized), 402 (e.g. insufficient credits), or a
       // 400 "not available" (no marketplace plugin loaded) all prove the point.
@@ -282,7 +290,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
   });
 
-  describe("7. credential-injection dispatch guards (owner + team + attested-shared)", () => {
+  describe("7. credential-injection dispatch guards (Mainline + owner + team + consented Shared)", () => {
     let stranger: AuthSession;
     let strangerPublicTokenId: number;
     let guardEvalFlowId: number; // public, admin-owned, references a login-class pair
@@ -369,7 +377,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toBe(
-        "Credential-injected evalFlows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere",
+        "Borrowed credentials can only be used on Mainline. Copy this flow to bring your own credentials.",
       );
     });
 
@@ -400,19 +408,14 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       );
     });
 
-    it("7d. owner untargeted public-pool dispatch of a session-injected evalFlow -> 403", async () => {
-      // Even the owner can't pool a credential-injected job into the public
-      // tier — a public-pool claim would be admitted by the untargeted-owner
-      // check above but then refused the minted session by the serve gate.
-      // Reject up front instead. Only private/team pools (or a targeted
-      // shared agent with consent) may carry a session-injected job.
+    it("7d. owner can run a Brokered-login flow in the trusted Mainline pool", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${guardEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ region: BASE_NA, targetTier: "public", evalSetId }),
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.error).toBe("Credential-injected evalFlows: credential-injected jobs cannot use the public pool");
+      expect(body.job.snapshot.sessionInjection).toBeDefined();
     });
 
     it("7e. owner team-pool dispatch of a session-injected PERSONAL (non-org) evalFlow -> 403", async () => {
@@ -471,7 +474,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       });
       expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.error).toBe("Credential-injected evalFlows: credential-injected jobs can use a team pool only when the evalFlow belongs to the creator's organization");
+      expect(body.error).toBe("Credential-injected evalFlows: Team agents can only use secrets belonging to their organization, never personal secrets.");
 
       await authFetch(orgOwner, `${BASE_URL}/api/eval-flows/${personalWfId}`, { method: "DELETE" });
       for (const name of [oEmail, oPass]) {
@@ -520,20 +523,18 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
   });
 
-  describe("9. runtime-on-shared consent gate", () => {
+  describe("9. Runtime is forbidden on third-party Shared agents", () => {
     let runtimeSharedTokenId: number;
 
     beforeAll(async () => {
-      const tRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens`, {
+      const tRes = await authFetch(operator, `${BASE_URL}/api/eval-agent-tokens`, {
         method: "POST",
-        // Public tier: still mints WITH a region — `dispatchTier` is the live
-        // field the route reads; `visibility` was a dead legacy name.
-        body: JSON.stringify({ name: `runtime-shared-agent-${stamp}`, regionLocationBaseId: BASE_NA, dispatchTier: "public" }),
+        body: JSON.stringify({ name: `runtime-shared-agent-${stamp}` }),
       });
       expect(tRes.ok).toBe(true);
       runtimeSharedTokenId = (await tRes.json()).id;
 
-      const patchRes = await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${runtimeSharedTokenId}`, {
+      const patchRes = await authFetch(operator, `${BASE_URL}/api/eval-agent-tokens/${runtimeSharedTokenId}`, {
         method: "PATCH",
         body: JSON.stringify({ dispatchTier: "shared", pricePerUnit: 100 }),
       });
@@ -543,7 +544,7 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
     });
 
     afterAll(async () => {
-      if (runtimeSharedTokenId) await authFetch(admin, `${BASE_URL}/api/eval-agent-tokens/${runtimeSharedTokenId}/revoke`, { method: "POST" });
+      if (runtimeSharedTokenId) await authFetch(operator, `${BASE_URL}/api/eval-agent-tokens/${runtimeSharedTokenId}/revoke`, { method: "POST" });
     });
 
     it("9a. blocks a shared run exposing runtime secrets without consent", async () => {
@@ -557,21 +558,15 @@ describe("dispatch integration — session stamping, pre-warm, shared-tier gates
       expect(body.error).toContain(runtimeEmailSecret);
     });
 
-    it("9b. allows it with runtimeSecretConsent, recording it on the snapshot when authorized", async () => {
+    it("9b. the legacy runtimeSecretConsent flag cannot bypass the Shared block", async () => {
       const res = await authFetch(admin, `${BASE_URL}/api/eval-flows/${noSessionEvalFlowId}/run`, {
         method: "POST",
         body: JSON.stringify({ evalSetId, targetTokenId: runtimeSharedTokenId, runtimeSecretConsent: true }),
       });
       const body = await res.json();
-      // consent unblocked the runtime gate: it is NOT a 400 whose error is the
-      // runtime-exposure message. `marketplace.authorizeDispatch` needs an active
-      // listing + credits, so a 200 is not guaranteed in dev (may be 402/400) —
-      // mirrors case 5's tolerance for the same reason.
-      const gateOpened = !(res.status === 400 && /runtime secret/i.test(body.error ?? ""));
-      expect(gateOpened).toBe(true);
-      if (res.status === 200) {
-        expect(body.job.snapshot.runtimeSecretConsent).toBe(true);
-      }
+      expect(res.status).toBe(400);
+      expect(body.error).toMatch(/Shared agents require Brokered secrets/);
+      expect(body.job).toBeUndefined();
     });
   });
 

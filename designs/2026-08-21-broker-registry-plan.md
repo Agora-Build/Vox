@@ -1,5 +1,9 @@
 # Broker Registry Redesign — Implementation Plan
 
+> Historical archive, not current policy. Refer to the single maintained
+> [credential and dispatch design](agent-credentials-design.md). Its current
+> broker capabilities and ownership rules supersede this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the secret `class` enum with a nullable `brokerType` reference, and replace the single hardcoded `SESSION_BROKER_URL` broker with a dynamic, self-registering broker registry — shipping exactly one real broker type end-to-end (`auth-session`).

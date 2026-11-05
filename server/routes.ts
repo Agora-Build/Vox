@@ -32,7 +32,11 @@ import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpS
 import { parseNetSignalsUpdate } from "./net-signals-update";
 import { noteSimReport } from "./sim-carrier";
 import { receiveAgentNetworkEvents, getJobNetworkHistory, NetworkReportError } from "./network-events";
-import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
+import { sessionScopeForEvalFlow, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets, runtimeSecretsForRun, ownedCredentialPoolViolation } from "./auth-session";
+import { credentialAgentViolation, credentialPoolViolation, ownsCredentialScope, isPersonalCredentialAgent } from "./credential-policy";
+import { createCredentialTrialJob, findCredentialTrialJob, getCredentialTrialAllowance, CredentialTrialError, jobMayUseCredentials } from "./credential-trials";
+import { registerCredentialTrialRoutes } from "./routes-credential-trials";
+import { flowTrialLimitsSchema } from "@shared/credential-trials";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
@@ -117,7 +121,6 @@ import {
   sameOrg,
   isSessionServable, isOwnerOperatedAgent,
   hasOrg,
-  sessionPoolViolation,
   canViewJob,
   canCancelJob,
   parseJobScope,
@@ -418,7 +421,10 @@ export async function orgRuntimeSecretsForJob(jobId: number): Promise<Record<str
   const creatorMembership = scope.createdBy != null
     ? await orgs.getMembership(scope.createdBy)
     : null;
-  if (creatorMembership?.organizationId !== scope.evalFlowOrgId) return {};
+  if (creatorMembership?.organizationId !== scope.evalFlowOrgId) {
+    const job = await storage.getEvalJob(jobId);
+    if (!job || !await jobMayUseCredentials(job)) return {};
+  }
   return decryptOrgRuntimeRows(await orgs.listOrgSecrets(scope.evalFlowOrgId));
 }
 
@@ -438,7 +444,10 @@ export async function orgAllSecretsForTrustedExec(jobId: number): Promise<Record
   const creatorMembership = scope.createdBy != null
     ? await orgs.getMembership(scope.createdBy)
     : null;
-  if (creatorMembership?.organizationId !== scope.evalFlowOrgId) return {};
+  if (creatorMembership?.organizationId !== scope.evalFlowOrgId) {
+    const job = await storage.getEvalJob(jobId);
+    if (!job || !await jobMayUseCredentials(job)) return {};
+  }
   const result: Record<string, string> = {};
   for (const s of await orgs.listOrgSecrets(scope.evalFlowOrgId)) {
     result[s.name] = decryptValue(s.encryptedValue);
@@ -450,6 +459,7 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  registerCredentialTrialRoutes(app);
   registerArtifactPreviewRoutes(app, {
     user: getCurrentUser,
     job: (id) => storage.getEvalJob(id),
@@ -2277,6 +2287,11 @@ export async function registerRoutes(
 
       const { name, description, projectId, providerId, visibility, organizationId, transport } = req.body;
       const config = req.body.config;
+      const trialLimits = flowTrialLimitsSchema.safeParse(req.body);
+      if (!trialLimits.success) return res.status(400).json({ error: "Trial limits must be whole numbers from 0 to 10,000" });
+      if (Object.values(trialLimits.data).some((v) => v !== undefined) && !canCreateEvalFlowSecrets(user, { ownerId: user.id, organizationId: organizationId || null })) {
+        return res.status(403).json({ error: "Only credential owners or organization secret managers can change trial limits" });
+      }
 
       if (!name || !String(name).trim()) {
         return res.status(400).json({ error: "Name required" });
@@ -2338,6 +2353,7 @@ export async function registerRoutes(
         isMainline: false,
         transport: transport || "web",
         config: config || {},
+        ...trialLimits.data,
       });
 
       // tags is omitted from InsertEvalFlow (drizzle-zod typing, see schema.ts)
@@ -2381,6 +2397,11 @@ export async function registerRoutes(
 
       const { name, description, visibility, projectId, providerId, transport } = req.body;
       const config = req.body.config;
+      const trialLimits = flowTrialLimitsSchema.safeParse(req.body);
+      if (!trialLimits.success) return res.status(400).json({ error: "Trial limits must be whole numbers from 0 to 10,000" });
+      if (Object.values(trialLimits.data).some((v) => v !== undefined) && !canCreateEvalFlowSecrets(user, evalFlow)) {
+        return res.status(403).json({ error: "Only credential owners or organization secret managers can change trial limits" });
+      }
       if (transport !== undefined && !["web", "phone"].includes(transport)) {
         return res.status(400).json({ error: "Invalid transport" });
       }
@@ -2406,7 +2427,7 @@ export async function registerRoutes(
           return res.status(400).json({ error: `${v.error}${hint}` });
         }
       }
-      const updates: Record<string, unknown> = {};
+      const updates: Record<string, unknown> = { ...trialLimits.data };
       if (transport !== undefined) {
         // Live-row edit only — every existing job froze its own copy (design §3).
         updates.transport = transport;
@@ -2976,13 +2997,10 @@ export async function registerRoutes(
       // enforce. (canScheduleEvalFlow above already guarantees creator ==
       // owner, so the dispatcher gate the helper deliberately omits holds.)
       {
-        const schedSessionReq = await detectSessionNeed(evalFlow);
-        if (schedSessionReq.kind === "need") {
-          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", evalFlow, { organizationId: user.membership?.organizationId ?? null });
-          if (violation) {
-            return res.status(403).json({ error: `Credential-injected evalFlows: ${violation}` });
-          }
-        }
+        const violation = await ownedCredentialPoolViolation(evalFlow, evalSet, targetTier, {
+          id: user.id, organizationId: user.membership?.organizationId ?? null,
+        });
+        if (violation) return res.status(403).json({ error: violation });
       }
 
       // Same secret gate as the run route: a schedule referencing an
@@ -3126,13 +3144,11 @@ export async function registerRoutes(
         }
         if (tierChanged || wantsEnable) {
           const effectiveTier = (targetTier ?? schedule.targetTier) as "private" | "team" | "public" | "shared";
-          const schedSessionReq = await detectSessionNeed(wf);
-          if (schedSessionReq.kind === "need") {
-            const violation = sessionPoolViolation(effectiveTier, wf, { organizationId: user.membership?.organizationId ?? null });
-            if (violation) {
-              return res.status(403).json({ error: `Credential-injected evalFlows: ${violation}. Change the schedule's tier before re-enabling.` });
-            }
-          }
+          const schedEvalSet = schedule.evalSetId != null ? await storage.getEvalSet(schedule.evalSetId) : undefined;
+          const violation = await ownedCredentialPoolViolation(wf, schedEvalSet, effectiveTier, {
+            id: user.id, organizationId: user.membership?.organizationId ?? null,
+          });
+          if (violation) return res.status(403).json({ error: `${violation}. Change the schedule's tier before re-enabling.` });
         }
       }
 
@@ -3264,17 +3280,15 @@ export async function registerRoutes(
       const jobConfig = mergeEvalConfig(evalFlow.config, evalSet?.config, { evalSetSecrets: gate.evalSetSecrets });
       // Same TOCTOU as the scheduler tick: the schedule's targetTier was
       // validated at write time, but the evalFlow's secrets are mutable — a
-      // later-added login-class secret makes a public/team pool invalid. Check
+      // later-added credentials may invalidate a Private/Team pool. Check
       // with the PURE detector BEFORE stampOwnerSession (which pre-warms a
       // broker mint) and reject interactively instead of minting + queueing an
       // unclaimable job.
       const runNowSessionReq = await detectSessionNeed(evalFlow);
-      if (runNowSessionReq.kind === "need") {
-        const violation = sessionPoolViolation(schedule.targetTier, evalFlow, { organizationId: user.membership?.organizationId ?? null });
-        if (violation) {
-          return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
-        }
-      }
+      const violation = await ownedCredentialPoolViolation(evalFlow, evalSet, schedule.targetTier, {
+        id: user.id, organizationId: user.membership?.organizationId ?? null,
+      });
+      if (violation) return res.status(400).json({ error: `This schedule's pool is no longer valid: ${violation}. Edit the schedule's tier first.` });
       const stamp = await stampOwnerSession(evalFlow, jobConfig as Record<string, unknown>, runNowSessionReq);
       if (stamp.kind === "misconfigured") {
         return res.status(400).json({ error: stamp.reason });
@@ -5145,9 +5159,12 @@ export async function registerRoutes(
       // This is what makes org-member run/extend safe — they never spend an
       // individual's personal credentials.
       const decrypted: Record<string, string> = {};
-      const jobEvalFlow = auth.job.evalFlowId != null ? await storage.getEvalFlow(auth.job.evalFlowId) : undefined;
+      const frozenOwner = auth.job.snapshot?.evalFlow;
+      if (!frozenOwner) return res.json({});
+      if (collectSecretRefs([auth.job.config]).size === 0) return res.json({});
+      if (!await jobMayUseCredentials(auth.job)) return res.status(403).json({ error: "This run is not authorized to use the flow's credentials" });
 
-      if (jobEvalFlow?.organizationId) {
+      if (frozenOwner.organizationId != null) {
         // Org evalFlow → org secrets only. orgRuntimeSecretsForJob fences by the
         // job creator's org membership (resolved through the vox.organizations
         // seam), so a non-member running a *public* org evalFlow deliberately
@@ -5176,6 +5193,14 @@ export async function registerRoutes(
       // Least privilege (#203): release only what this job will fill — computed
       // from its frozen config by the same function the agent fills with.
       const released = secretsJobFills(auth.job.config, decrypted);
+      if (Object.keys(released).length > 0) {
+        const membership = await getOrganizations()?.getMembership(evalAgentToken.createdBy);
+        const violation = credentialAgentViolation(frozenOwner, {
+          createdBy: evalAgentToken.createdBy, dispatchTier: evalAgentToken.dispatchTier,
+          organizationId: membership?.organizationId ?? null,
+        }, true);
+        if (violation) return res.status(403).json({ error: violation });
+      }
       console.log(`[Secrets] Job ${jobId}: releasing ${Object.keys(released).length} of ${Object.keys(decrypted).length} secret(s)`);
       res.json(released);
     } catch (error) {
@@ -5219,8 +5244,9 @@ export async function registerRoutes(
         // Core-minted login. Never fall back to minting from live data.
         return res.json({ required: false });
       }
+      if (!await jobMayUseCredentials(auth.job)) return res.status(403).json({ error: "This run is not authorized to use the flow's credentials" });
 
-      // Serve gate (owner + team + attested-shared), enforced against the
+      // Serve gate (Mainline + owner + team + consented Shared), against the
       // CLAIMING token from snapshot-frozen owner/org + consent. This is the
       // credential-authoritative check; the claim-SQL gate is the first line.
       const ownerMembership = (await getOrganizations()?.getMembership(evalAgentToken.createdBy)) ?? null;
@@ -5230,11 +5256,14 @@ export async function registerRoutes(
         evalFlowOrgId: snapEvalFlow.organizationId ?? null,
         consent: snap?.credentialConsent === true,
       };
-      const serveToken = { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy };
+      const serveToken = { id: evalAgentToken.id, createdBy: evalAgentToken.createdBy, dispatchTier: evalAgentToken.dispatchTier };
       const serveTokenOwner = { organizationId: ownerMembership?.organizationId ?? null };
       const servable = isSessionServable(serveJob, serveToken, serveTokenOwner);
-      if (!servable) {
-        console.warn(`[Session] Job ${auth.job.id}: DENIED session bundle to token ${evalAgentToken.id} (not owner/team/attested-shared)`);
+      const sessionViolation = credentialAgentViolation(snapEvalFlow, {
+        ...serveToken, organizationId: ownerMembership?.organizationId ?? null,
+      }, false);
+      if (!servable || sessionViolation) {
+        console.warn(`[Session] Job ${auth.job.id}: DENIED session bundle to token ${evalAgentToken.id} (credential trust policy)`);
         return res.status(403).json({ error: "This agent is not authorized to receive the login session for this job" });
       }
 
@@ -5244,6 +5273,10 @@ export async function registerRoutes(
         passwordSecret: injection.passwordSecret,
       };
       const scope = sessionScopeForEvalFlow({ ownerId: snapEvalFlow.ownerId, organizationId: snapEvalFlow.organizationId ?? null });
+      const loginClasses = await classifyReferencedSecrets(scope, new Set([need.emailSecret, need.passwordSecret]));
+      if (loginClasses.some((s) => !s.present || s.brokerType !== "auth-session")) {
+        return res.status(403).json({ error: "The login credential classification changed. Start a new run." });
+      }
 
       const session = await storage.getWebSession(scope, need.platformId, credentialKeyFor(need));
       const fresh = session?.status === "ready" && session.expiresAt &&
@@ -5263,7 +5296,7 @@ export async function registerRoutes(
         // lastError now carries the broker's own diagnosis, which can quote page
         // state (a Playwright error naming a selector, a DOM fragment) — see the
         // boundary note in auth-session-broker.ts. An agent the owner or their
-        // org operates may see it; a consented attested MARKETPLACE agent — the
+        // org operates may see it; a consented MARKETPLACE agent — the
         // third arm of isSessionServable — may receive the storageState but not
         // an explanation quoting the login page. Serving the session and
         // explaining why minting it failed are different disclosures. The full
@@ -5352,11 +5385,29 @@ export async function registerRoutes(
       // Defense against malformed legacy snapshots — same shape rule as creation.
       const shape = validateRestfulTrigger(trigger);
       if (!shape.valid) return res.status(400).json({ error: shape.error });
+      const needsCredentials = collectSecretRefs([trigger]).size > 0;
+      if (needsCredentials) {
+        if (!await jobMayUseCredentials(auth.job)) return res.status(403).json({ error: "This run is not authorized to use the flow's credentials" });
+        const membership = await getOrganizations()?.getMembership(evalAgentToken.createdBy);
+        const violation = credentialAgentViolation(snapEvalFlow, {
+          createdBy: evalAgentToken.createdBy, dispatchTier: evalAgentToken.dispatchTier,
+          organizationId: membership?.organizationId ?? null,
+        }, false);
+        if (violation) return res.status(403).json({ error: violation });
+        if (evalAgentToken.dispatchTier === "shared" && !isPersonalCredentialAgent(snapEvalFlow, evalAgentToken)) {
+          const classes = await classifyReferencedSecrets(sessionScopeForEvalFlow(snapEvalFlow), collectSecretRefs([trigger]));
+          if (classes.some((s) => s.present && s.brokerType == null)) {
+            return res.status(403).json({ error: "Shared agents require Brokered secrets, including for REST operations" });
+          }
+        }
+      }
 
       // Secret scope follows evalFlow ownership (org → fenced org rows; personal
       // → owner rows). ALL classes resolve here — Core-only path.
       const secretMap: Record<string, string> = {};
-      if (snapEvalFlow.organizationId != null) {
+      if (!needsCredentials) {
+        // Secret-free broker operations remain runnable without borrowing.
+      } else if (snapEvalFlow.organizationId != null) {
         Object.assign(secretMap, await orgAllSecretsForTrustedExec(auth.job.id));
       } else {
         for (const s of await storage.getSecretsByUserId(snapEvalFlow.ownerId)) {
@@ -5432,6 +5483,16 @@ export async function registerRoutes(
       // owner-only (#200).
       if (!canRunEvalFlow(user, evalFlow)) {
         return res.status(403).json({ error: "Not authorized to run this evalFlow" });
+      }
+
+      const requestId = z.string().uuid().safeParse(req.body.requestId);
+      if (requestId.success && req.session?.userId && req.apiKeyId == null && !req.headers.authorization) {
+        // A lost response must not spend again after mutable owner/config changes.
+        const replay = await findCredentialTrialJob({
+          createdBy: user.id, evalFlowId: Number(evalFlowId), evalSetId: Number(evalSetId),
+          targetRegion: region, targetTier: targetTier as "public" | null, targetTokenId,
+        }, requestId.data);
+        if (replay) return res.json({ message: "Job created", job: replay });
       }
 
       // An evalFlow on a framework this build can't run (a removed one, e.g.
@@ -5520,7 +5581,7 @@ export async function registerRoutes(
 
       // Enumerate every ${secrets.NAME} the evalFlow + eval set reference, with
       // class + presence. Drives the Brokered-misuse gate here and the
-      // Runtime-on-shared consent gate in the targeted branch below.
+      // Brokered-only Shared gate in the targeted branch below.
       const classified = await classifyReferencedSecrets(
         scope,
         collectSecretRefs([evalFlow.config, evalSet.config]),
@@ -5545,44 +5606,52 @@ export async function registerRoutes(
       // actually fills, so the gate and the daemon agree by construction.
       const gate = await secretGate(evalFlow, evalSet);
       if (gate.error) return res.status(400).json({ error: gate.error });
+      const runtimeRequired = await runtimeSecretsForRun(evalFlow, evalSet, gate.evalSetSecrets);
+      const hasCredentials = collectSecretRefs([evalFlow.config, evalSet.config]).size > 0;
+      const borrowing = hasCredentials && !ownsCredentialScope(evalFlow, { id: user.id, organizationId: user.membership?.organizationId ?? null });
+      if (borrowing) {
+        if (!req.session?.userId || req.apiKeyId != null || req.headers.authorization) {
+          return res.status(403).json({ error: "Borrowed credentials are only available through manual web trials, not API keys." });
+        }
+        if (targetTokenId != null || targetTier !== "public" || evalFlow.visibility !== "public") {
+          return res.status(403).json({ error: "Borrowed credentials can only be used on Mainline. Copy this flow to bring your own credentials." });
+        }
+        if (!gate.evalSetSecrets) {
+          return res.status(403).json({ error: "Borrowed-credential trials require an eval set controlled by the credential owner. Copy the flow to use your own eval set and credentials." });
+        }
+        if (!requestId.success) return res.status(400).json({ error: "A valid submission requestId is required for a borrowed-credential trial" });
+      }
 
       let jobRegion: string | null;
       let targeting: number | null = null;
       let settlementContext: unknown = undefined;
       let consentRecorded = false;
-      let runtimeConsentRecorded = false;
 
       if (targetTokenId != null) {
         const token = await storage.getEvalAgentToken(targetTokenId);
         if (!token || token.isRevoked) return res.status(404).json({ error: "Target agent token not found" });
 
         if (token.dispatchTier === "shared") {
+          const personalAgent = isPersonalCredentialAgent(evalFlow, token) && token.createdBy === user.id;
           const marketplace = getMarketplace();
-          if (!marketplace) return res.status(400).json({ error: "Shared dispatch is not available" });
-          if (sessionNeed) {
+          if (!personalAgent && !marketplace) return res.status(400).json({ error: "Shared dispatch is not available" });
+          if (!ownsCredentialScope(evalFlow, { id: user.id, organizationId: user.membership?.organizationId ?? null }) && classified.some((s) => s.present)) {
+            return res.status(403).json({ error: "Borrowed credentials can only be used on Mainline. Copy this flow and configure your own credentials." });
+          }
+          if (runtimeRequired.length > 0 && !personalAgent) {
+            return res.status(400).json({ error: `Shared agents require Brokered secrets. Runtime secrets cannot be delivered: ${runtimeRequired.join(", ")}` });
+          }
+          if (sessionNeed && !personalAgent) {
+            if (evalFlow.organizationId != null && !["owner", "admin"].includes(user.membership?.role ?? "")) {
+              return res.status(403).json({ error: "Only organization secret managers can authorize sharing authenticated sessions with a Shared agent" });
+            }
             if (req.body.credentialConsent !== true) {
               return res.status(400).json({ error: "credentialConsent is required to dispatch credential-injected jobs to a shared agent" });
             }
-            const attested = await areLoginSecretsAttested(scope, [sessionNeed.emailSecret, sessionNeed.passwordSecret]);
-            if (!attested) {
-              return res.status(403).json({ error: "Shared dispatch requires dedicated test-account credentials (mark the login secrets as test accounts)" });
-            }
-            consentRecorded = true; // gate above already guarantees credentialConsent === true
+            consentRecorded = true;
           }
-          // Runtime secrets reach a shared (stranger's) agent raw. Require the
-          // dispatcher to acknowledge that exposure BEFORE any escrow hold is
-          // placed. Server-authoritative so a direct API caller can't skip the
-          // UI checkbox. Only present runtime secrets actually get delivered.
-          const runtimeExposed = classified.filter((c) => c.brokerType == null && c.present).map((c) => c.name);
-          if (runtimeExposed.length > 0) {
-            if (req.body.runtimeSecretConsent !== true) {
-              return res.status(400).json({
-                error: `This run exposes runtime secret(s) ${runtimeExposed.join(", ")} to a shared agent. Set runtimeSecretConsent=true to acknowledge.`,
-              });
-            }
-            runtimeConsentRecorded = true;
-          }
-          const authz = await marketplace.authorizeDispatch(user.id, token.id, {
+          // All credential checks precede the marketplace credit hold.
+          const authz = personalAgent ? { ok: true, settlementContext: undefined } : await marketplace!.authorizeDispatch(user.id, token.id, {
             evalFlowId: parseInt(evalFlowId, 10),
             evalSetId: evalSetId ?? null,
             region: token.siteId,
@@ -5598,38 +5667,20 @@ export async function registerRoutes(
             { organizationId: ownerMembership?.organizationId ?? null },
           );
           if (!decision.ok) return res.status(403).json({ error: "Not allowed to dispatch to this agent" });
-          // Credential-trust gate for a session-injected job dispatched to a
-          // free-tier (private/team/public) token: the agent must belong to the
-          // evalFlow owner or share the evalFlow's org — otherwise the minted
-          // session (the OWNER's test-account cookies) would reach a token the
-          // serve gate will refuse anyway (a targeted public stranger). Mirror
-          // isSessionServable's owner/team arms; the attested-shared arm is the
-          // separate `shared` branch above.
-          if (sessionNeed) {
-            const ownerTrusted = token.createdBy === evalFlow.ownerId
-              || (evalFlow.organizationId != null && sameOrg({ organizationId: ownerMembership?.organizationId ?? null }, { organizationId: evalFlow.organizationId }));
-            if (!ownerTrusted) {
-              return res.status(403).json({ error: "Credential-injected jobs can only be dispatched to the evalFlow owner's or org's agents, or to a shared agent with consent" });
-            }
+          // Mirror credential delivery: Mainline is trusted; Private/Team
+          // require matching personal/organization ownership.
+          if (hasCredentials) {
+            const violation = credentialAgentViolation(evalFlow, {
+              createdBy: token.createdBy, dispatchTier: token.dispatchTier,
+              organizationId: ownerMembership?.organizationId ?? null,
+            }, runtimeRequired.length > 0);
+            if (violation) return res.status(403).json({ error: violation });
           }
         }
         jobRegion = token.siteId; // targeted: region derived from token (body region ignored)
         targeting = token.id;
       } else {
-        // Untargeted (region-pool) dispatch. A session-injected job here must
-        // only land on the evalFlow owner's OWN agents (enforced in the claim
-        // SQL: public strangers are excluded from session jobs). Reject up front
-        // when the runner is neither the owner nor an org co-member — otherwise a
-        // stranger running a PUBLIC login evalFlow could pull the owner's minted
-        // test-account session. Targeting a shared agent (with consent) is the
-        // only cross-user path, handled in the targeted branch above.
-        if (sessionNeed) {
-          const isOwner = evalFlow.ownerId === user.id;
-          const isTeam = evalFlow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalFlow.organizationId });
-          if (!isOwner && !isTeam) {
-            return res.status(403).json({ error: "Credential-injected evalFlows can only be run untargeted by the owner or an org member; dispatch to a shared agent with consent to run it elsewhere" });
-          }
-        }
+        // Region-pool dispatch. Borrowing was restricted to Mainline above.
         if (!region || !targetTier) {
           return res.status(400).json({ error: "region and targetTier are required for pooled dispatch" });
         }
@@ -5646,14 +5697,9 @@ export async function registerRoutes(
         if (!regionLoc || !regionLoc.isActive) {
           return res.status(400).json({ error: "region must be an active region" });
         }
-        // Session-injection composition (spec §5): single source of truth is
-        // sessionPoolViolation — public pools can never serve a session job
-        // (the serve gate refuses strangers post-claim), and a team pool needs
-        // the evalFlow to belong to the dispatcher's org. (The owner-or-org
-        // guard above separately limits WHO may dispatch a session evalFlow
-        // untargeted; the helper deliberately does not encode that.)
-        if (sessionNeed) {
-          const violation = sessionPoolViolation(targetTier as "private" | "team" | "public" | "shared", evalFlow, { organizationId: user.membership?.organizationId ?? null });
+        // Apply the same ownership composition to Runtime and Brokered jobs.
+        if (hasCredentials) {
+          const violation = credentialPoolViolation(targetTier, evalFlow, { id: user.id, organizationId: user.membership?.organizationId ?? null });
           if (violation) {
             return res.status(403).json({ error: `Credential-injected evalFlows: ${violation}` });
           }
@@ -5667,7 +5713,6 @@ export async function registerRoutes(
         ...baseSnapshot,
         ...(settlementContext !== undefined ? { settlementContext } : {}),
         ...(consentRecorded ? { credentialConsent: true } : {}),
-        ...(runtimeConsentRecorded ? { runtimeSecretConsent: true } : {}),
         // Immutable session-injection stamp: the /session endpoint reads the need
         // (which login secrets to mint from) and the trust context from HERE, not
         // the live evalFlow — an owner editing the evalFlow post-dispatch can't
@@ -5689,7 +5734,7 @@ export async function registerRoutes(
           (jobConfig as Record<string, unknown>).sessionInjection = { platformId: sessionNeed.platformId };
           // Pre-warm the session cache so claim-time is a cache hit. Fire-and-forget:
           // ensureSession never throws and records failures on the web_sessions row.
-          void ensureSession(scope, sessionNeed);
+          if (!borrowing) void ensureSession(scope, sessionNeed);
         }
         const jobValues = {
           evalFlowId: parseInt(evalFlowId),
@@ -5711,7 +5756,8 @@ export async function registerRoutes(
         };
         // Aimed at one agent: create it only while that token is live, locked
         // against a concurrent revoke (#214).
-        job = targeting == null ? await storage.createEvalJob(jobValues) : await storage.createEvalJobForLiveToken(jobValues, targeting);
+        job = borrowing ? await createCredentialTrialJob(jobValues, requestId.success ? requestId.data : undefined)
+          : targeting == null ? await storage.createEvalJob(jobValues) : await storage.createEvalJobForLiveToken(jobValues, targeting);
         if (!job) {
           if (settlementContext !== undefined) await getMarketplace()?.voidDispatch(settlementContext).catch(() => {});
           return res.status(409).json({ error: "That agent was revoked. Choose another." });
@@ -5731,11 +5777,18 @@ export async function registerRoutes(
         throw createErr;
       }
 
+      if (borrowing && (job.status === "pending" || job.status === "running")) {
+        const frozenFlow = job.snapshot?.evalFlow;
+        const frozenNeed = job.snapshot?.sessionInjection;
+        if (frozenFlow && frozenNeed) void ensureSession(sessionScopeForEvalFlow(frozenFlow), frozenNeed);
+      }
+
       res.json({
         message: "Job created",
         job,
       });
     } catch (error) {
+      if (error instanceof CredentialTrialError) return res.status(error.status).json({ error: error.message });
       console.error("Error running evalFlow:", error);
       res.status(500).json({ error: "Failed to run evalFlow" });
     }
@@ -5755,11 +5808,24 @@ export async function registerRoutes(
 
       const region = req.query.region ? String(req.query.region) : null;
       const evalSetIdRaw = req.query.evalSetId ? Number(req.query.evalSetId) : null;
+      const configs: unknown[] = [evalFlow.config];
+      let evalSetForRun: Awaited<ReturnType<typeof storage.getEvalSet>> = undefined;
+      if (evalSetIdRaw != null && Number.isFinite(evalSetIdRaw)) {
+        const es = await storage.getEvalSet(evalSetIdRaw);
+        if (es && canAccessResource(user, es)) { configs.push(es.config); evalSetForRun = es; }
+      }
+      const hasCredentials = collectSecretRefs(configs).size > 0;
+      const caller = { id: user.id, organizationId: user.membership?.organizationId ?? null };
+      const borrowing = hasCredentials && !ownsCredentialScope(evalFlow, caller);
+      const trial = borrowing ? { required: true, ...await getCredentialTrialAllowance(evalFlow, user.id) } : null;
+      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => null);
+      const runtimeSecretNames = await runtimeSecretsForRun(evalFlow, evalSetForRun, trusted === true);
 
       type Agent = {
         tokenId: number; name: string;
         siteId: string | null; region: string | null; dispatchTier: string; locationTrust: string | null;
         price: number | null;
+        ownCredentialAgent: boolean;
       };
       // Public-tier sites are never individually targetable (the run route
       // only accepts {region, targetTier:"public"} for this tier — never a
@@ -5794,19 +5860,16 @@ export async function registerRoutes(
       // fail-closed behavior as elsewhere in this file).
       const agentOwnerOrgs = (await getOrganizations()?.getMemberships(agentRows.map((a) => a.tokenCreatedBy)))
         ?? new Map<number, Membership>();
-      // Session trust, computed ONCE from the same detector the run route
-      // enforces with. For a session-injected evalFlow, a dispatcher who is
-      // neither the owner nor an eval-flow-org member cannot receive the minted
-      // session on ANY of their own tokens (the targeted branch's ownerTrusted
-      // gate 403s them) — so offering `mine` would violate the
-      // never-offer-a-403 contract. Shared listings stay: targeted shared with
-      // attestation + consent is the sanctioned cross-user path.
+      // Use the same detector and trust policy as admission and delivery.
       const sessionReqForTargets = await detectSessionNeed(evalFlow);
-      const sessionTrusted = sessionReqForTargets.kind !== "need" ||
-        evalFlow.ownerId === user.id ||
-        (evalFlow.organizationId != null && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalFlow.organizationId }));
-      const mine: Agent[] = !sessionTrusted ? [] : ownTokens
+      const canConsent = evalFlow.organizationId == null || ["owner", "admin"].includes(user.membership?.role ?? "");
+      const mine: Agent[] = borrowing ? [] : ownTokens
         .filter((t) => !t.isRevoked && t.dispatchTier !== "public")
+        .filter((t) => !hasCredentials || !credentialAgentViolation(evalFlow, {
+          createdBy: t.createdBy, dispatchTier: t.dispatchTier,
+          organizationId: user.membership?.organizationId ?? null,
+        }, runtimeSecretNames.length > 0))
+        .filter((t) => t.dispatchTier !== "shared" || sessionReqForTargets.kind !== "need" || canConsent)
         .map((t) => {
           const eff = effectiveDispatchIdentity(t, agentByTokenId.get(t.id));
           return {
@@ -5814,6 +5877,7 @@ export async function registerRoutes(
             siteId: eff.siteId, region: eff.region,
             dispatchTier: t.dispatchTier, locationTrust: eff.locationTrust,
             price: null,
+            ownCredentialAgent: isPersonalCredentialAgent(evalFlow, t),
           };
         })
         // Filter on the EFFECTIVE region (the same value the row carries in
@@ -5834,7 +5898,7 @@ export async function registerRoutes(
       // (from `setListing`), not a region base id — filter by prefix.
       const marketplace = getMarketplace();
       const shared: Agent[] = [];
-      if (marketplace) {
+      if (marketplace && !borrowing && runtimeSecretNames.length === 0 && (sessionReqForTargets.kind !== "need" || canConsent)) {
         const listings = await marketplace.listDispatchable(user.id);
         const listedTokens = await storage.getEvalAgentTokensByIds(listings.map((l) => l.tokenId)); // one query, not one per listing
         for (const l of listings) {
@@ -5850,7 +5914,7 @@ export async function registerRoutes(
           shared.push({
             tokenId: l.tokenId, name: tok.name,
             siteId: eff.siteId, region: eff.region, dispatchTier: "shared", locationTrust: eff.locationTrust,
-            price: l.pricePerUnit,
+            price: l.pricePerUnit, ownCredentialAgent: false,
           });
         }
       }
@@ -5871,12 +5935,6 @@ export async function registerRoutes(
 
       // Referenced secrets + class (evalFlow config + the chosen eval set, when
       // supplied and visible to the caller).
-      const configs: unknown[] = [evalFlow.config];
-      let evalSetForRun: Awaited<ReturnType<typeof storage.getEvalSet>> = undefined;
-      if (evalSetIdRaw != null && Number.isFinite(evalSetIdRaw)) {
-        const es = await storage.getEvalSet(evalSetIdRaw);
-        if (es && canAccessResource(user, es)) { configs.push(es.config); evalSetForRun = es; }
-      }
       const scope = sessionScopeForEvalFlow(evalFlow);
       const classifiedRefs = await classifyReferencedSecrets(scope, collectSecretRefs(configs));
       // `resolvable` = the daemon would actually fill this one: the eval flow's
@@ -5886,12 +5944,12 @@ export async function registerRoutes(
       // Read-only: a failing organizations provider means "not trusted" here
       // (the run itself re-checks and reports the outage), never a 500.
       // null = unknown (the provider threw): neither trusted nor refused here.
-      const trusted = await evalSetMayUseSecrets(evalFlow, evalSetForRun).catch(() => null);
       const resolvableHere = collectSecretRefs(resolvableSecretSources(evalFlow.config, evalSetForRun?.config, trusted === true));
       // The run route would refuse this eval set (secretGate): say so up front
       // so the dialog can disable Run instead of the click returning a 400.
       // Only on a definite "not trusted" — an outage is not a trust problem.
-      const evalSetProblem = runDialogEvalSetProblem(evalFlow.config, evalSetForRun?.config, trusted);
+      const evalSetProblem = runDialogEvalSetProblem(evalFlow.config, evalSetForRun?.config, trusted) ??
+        (borrowing && trusted === false ? "Borrowed-credential trials require an eval set controlled by the credential owner. Copy the flow to use your own eval set and credentials." : null);
       const referencedSecrets = classifiedRefs.map((c) => ({ ...c, resolvable: resolvableHere.has(c.name) }));
 
       // Same detector the run route enforces with — not "any brokered secret
@@ -5899,7 +5957,6 @@ export async function registerRoutes(
       // strays, and a second brokerType would silently split them). A
       // misconfigured pair does NOT mark tiers unavailable: dispatch fails
       // with the real misuse error, which is the actionable message.
-      const needsSession = sessionReqForTargets.kind === "need";
       const online = agentRows.filter((a) =>
         a.state !== "offline" && (!region || a.tokenRegion === region));
       const countFor = (tier: "private" | "team" | "public"): number =>
@@ -5910,33 +5967,24 @@ export async function registerRoutes(
               && sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: agentOwnerOrgs.get(a.tokenCreatedBy)?.organizationId ?? null });
           return a.tokenDispatchTier === "public";
         }).length;
-      // Availability must mirror the run route exactly: its untargeted branch
-      // gates ALL pooled tiers on owner-or-org for session-injected evalFlows
-      // (a non-owner running a public login evalFlow gets 403 on every pool),
-      // and the team pool additionally requires the evalFlow to belong to the
-      // dispatcher's org. Advertising a tier the run would 403 defeats the
-      // never-offer-a-403 contract — and the dialogs auto-hop to the first
-      // available tier, so a mis-advertised one would be auto-selected.
-      const isTeamEvalFlow = evalFlow.organizationId != null &&
-        sameOrg({ organizationId: user.membership?.organizationId ?? null }, { organizationId: evalFlow.organizationId });
-      const sessionDispatchAllowed = sessionTrusted; // same predicate, computed above
-      const teamBlockedBySession = needsSession && !isTeamEvalFlow;
-      const tiers = [
-        sessionDispatchAllowed
-          ? { tier: "private", available: true, onlineAgents: countFor("private") }
-          : { tier: "private", available: false, reason: "session-injected" },
-        !hasOrg(user)
-          ? { tier: "team", available: false, reason: "no-org" }
-          : teamBlockedBySession
-            ? { tier: "team", available: false, reason: "session-injected" }
-            : { tier: "team", available: true, onlineAgents: countFor("team") },
-        needsSession
-          ? { tier: "public", available: false, reason: "session-injected" }
-          : { tier: "public", available: true, onlineAgents: countFor("public") },
-        { tier: "shared", available: false, reason: "not-pooled-yet" },
-      ];
+      const tiers = (["private", "team", "public"] as const).map((tier) => {
+        const reason = tier === "team" && !hasOrg(user) ? "no-org"
+          : borrowing && tier !== "public" ? "Borrowed credentials require Mainline"
+          : borrowing && trial && !trial.available ? trial.reason
+          : hasCredentials ? credentialPoolViolation(tier, evalFlow, caller) : null;
+        return { tier, available: reason == null, ...(reason ? { reason } : { onlineAgents: countFor(tier) }) };
+      });
 
-      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, evalSetProblem, tiers });
+      const preferredTokenId = mine.find((a) => {
+        const live = agentByTokenId.get(a.tokenId);
+        return a.ownCredentialAgent && ["private", "shared"].includes(a.dispatchTier) && live?.state === "idle" &&
+          live.lastSeenAt != null && Date.now() - new Date(live.lastSeenAt).getTime() < STALE_THRESHOLD_MINUTES * 60_000 &&
+          (evalFlow.transport !== "phone" || (Array.isArray(live.capabilities) && live.capabilities.includes("phone"))) &&
+          agentListFilter({ ...(evalFlow.config as Record<string, unknown>), ...(sessionReqForTargets.kind === "need" ? { sessionInjection: true } : {}) }, live.metadata) == null;
+      })?.tokenId ?? null;
+      res.json({ agents: { mine, shared, public: publicFleet }, referencedSecrets, evalSetProblem, preferredTokenId,
+        runtimeSecretNames, requiresSessionConsent: sessionReqForTargets.kind === "need", trial,
+        tiers: [...tiers, { tier: "shared", available: false, reason: "not-pooled-yet" }] });
     } catch (error) {
       console.error("Error listing run targets:", error);
       res.status(500).json({ error: "Failed to list run targets" });
@@ -6082,6 +6130,7 @@ export async function registerRoutes(
         // As the claim SQL reads it: the key present at all, even as JSON null.
         sessionInjected: job.config != null && typeof job.config === "object" && "sessionInjection" in (job.config as object),
         config: job.config,
+        snapshot: job.snapshot,
       }, agents, viewerId, { onlineWithinMinutes: STALE_THRESHOLD_MINUTES });
     } catch (err) {
       console.error(`Explaining why job ${job.id} waits failed:`, err instanceof Error ? err.message : err);

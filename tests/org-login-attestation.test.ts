@@ -1,9 +1,6 @@
 //
-// The shared-tier ATTESTATION GATE, org path. `areLoginSecretsAttested` is the
-// predicate behind routes.ts's 403 "Shared dispatch requires dedicated
-// test-account credentials" — the check that stops a real (non-test) login
-// credential from being minted into a session for a stranger's marketplace
-// agent.
+// Legacy attestation metadata, org path. Kept for API/storage compatibility;
+// dispatch now requires explicit owner session consent, not this metadata.
 //
 // Its org arm used to read `org_secrets` straight out of storage; it now
 // resolves through the `vox.organizations` seam (Ruling F). tests/session-

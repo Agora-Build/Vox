@@ -11,9 +11,10 @@ import { createHash } from "crypto";
 import { collectSecretRefs, isAuthFieldName, untrustedEvalSetSecretsMessage } from "@shared/secrets";
 import yaml from "js-yaml";
 import { fillJobPlaceholders, jobConfigVars, withinBounds, TOO_COMPLEX_MESSAGE, type JobParts } from "@shared/placeholders";
-import { storage, encryptValue, decryptValue, type SessionScope } from "./storage";
+import { storage, encryptValue, decryptValue, mergeEvalConfig, type SessionScope } from "./storage";
 import { getOrganizations, type OrgSecretRow } from "./organizations";
 import { isOwnerOrOrgManager } from "./permissions";
+import { credentialPoolViolation, ownsCredentialScope } from "./credential-policy";
 import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintTimeoutSeconds } from "./broker-registry";
 
 export interface PlatformSetupInfo {
@@ -146,11 +147,11 @@ export async function getBrokeredSecretNames(scope: SessionScope): Promise<Set<s
 async function resolveScopeSecret(scope: SessionScope, name: string): Promise<string | undefined> {
   if ("userId" in scope) {
     const rows = await storage.getSecretsByUserId(scope.userId);
-    const row = rows.find(s => s.name === name);
+    const row = rows.find(s => s.name === name && s.brokerType === "auth-session");
     return row ? decryptValue(row.encryptedValue) : undefined;
   }
   const rows = await orgSecretRowsViaSeam(scope.organizationId);
-  const row = rows.find(s => s.name === name);
+  const row = rows.find(s => s.name === name && s.brokerType === "auth-session");
   return row ? decryptValue(row.encryptedValue) : undefined;
 }
 
@@ -337,6 +338,18 @@ type SecretOwner = { ownerId: number; organizationId: number | null };
 type EvalFlowLike = SecretOwner & { config: unknown; createdBy?: number | null };
 type EvalSetLike = SecretOwner & { config: unknown };
 
+/** Owner/API/scheduler paths never borrow another scope's credentials. */
+export async function ownedCredentialPoolViolation(
+  flow: EvalFlowLike, evalSet: EvalSetLike | null | undefined, tier: string,
+  caller: { id: number; organizationId: number | null },
+): Promise<string | null> {
+  const requirement = await detectSessionNeed(flow);
+  if (requirement.kind === "misconfigured") return requirement.reason;
+  if (requirement.kind !== "need" && collectSecretRefs([flow.config, evalSet?.config]).size === 0) return null;
+  if (!ownsCredentialScope(flow, caller)) return "You are not authorized to use this flow's credential scope. Borrowed credentials are only available through manual web trials.";
+  return credentialPoolViolation(tier, flow, caller);
+}
+
 /**
  * May this eval set use the eval flow's secrets? (design
  * 2026-09-29-secret-substitution.md, "only when trusted"). The eval set is the
@@ -521,6 +534,21 @@ export function secretsJobFills(
     return {}; // too complex to walk (TOO_COMPLEX_MESSAGE) — the agent refuses the job too
   }
   return Object.fromEntries(used.map((n) => [n, available[n]]));
+}
+
+/** Required Runtime names, including REST; third-party Shared is Brokered-only. */
+export async function runtimeSecretsForRun(
+  flow: EvalFlowLike,
+  evalSet: EvalSetLike | null | undefined,
+  evalSetSecrets: boolean,
+): Promise<string[]> {
+  const refs = collectSecretRefs([flow.config, evalSet?.config]);
+  const classified = await classifyReferencedSecrets(sessionScopeForEvalFlow(flow), refs);
+  const available = Object.fromEntries(classified.filter((s) => s.present && s.brokerType == null).map((s) => [s.name, "present"]));
+  if (Object.keys(available).length === 0) return [];
+  const required = collectSecretRefs(resolvableSecretSources(flow.config, evalSet?.config, evalSetSecrets));
+  const runner = secretsJobFills(mergeEvalConfig(flow.config, evalSet?.config, { evalSetSecrets }), available);
+  return Object.keys(available).filter((name) => name in runner || required.has(name));
 }
 
 /**

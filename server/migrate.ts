@@ -90,6 +90,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 64, description: "cache invalid-number answers and bind access classification to its IP", file: "0063_lookup_validity_access_ip.sql" },
   { version: 65, description: "fence asynchronous location checks with a persisted generation", file: "0064_location_check_gen.sql" },
   { version: 66, description: "per-run network event history and strict benchmark eligibility", file: "0065_job_network_events.sql" },
+  { version: 67, description: "owner-controlled credential trials and durable admission quotas", file: "0066_credential_trials.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
