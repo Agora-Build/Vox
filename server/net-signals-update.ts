@@ -1,8 +1,8 @@
 /**
  * Agent-reported network signals on register/heartbeat (`netSignals`) —
  * designs/2026-10-22-network-tags-design.md "Where it's computed and
- * stored" (Part-2 Task 3). Pure parse/merge/change-detection; server/routes.ts
- * is the only caller that touches the DB or the HTTP body.
+ * stored" (Part-2 Task 3). Pure parse/merge/change-detection; routes parse the
+ * HTTP body and storage merges against the current row under a database lock.
  *
  * Wire contract (mirrors `parseLinkTypeUpdate` in server/routes.ts):
  * - The body's `netSignals`, when present, is an object with up to two

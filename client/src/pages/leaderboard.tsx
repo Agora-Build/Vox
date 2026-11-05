@@ -21,6 +21,7 @@ import {
 import { useRegionLocations } from "@/hooks/use-regions";
 import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel, isEmptyGroup, showAccessSplit } from "@/components/metrics-tag-controls";
 import { ACCESS_TEXT } from "@/lib/access-text";
+import { NetworkPolicyControls } from "@/components/network-policy-controls";
 import { formatTag } from "@shared/tags";
 
 interface LeaderboardEntry {
@@ -83,20 +84,20 @@ export default function Leaderboard() {
   const [timeRange, setTimeRange] = useState<string>("168"); // 7 days default
   const [selectedEntry, setSelectedEntry] = useState<LeaderboardEntry | null>(null);
   const { data: regionLocations } = useRegionLocations();
-  const { tagFilters, setTagFilters, groupBy, setGroupBy } = useMetricsTagUrlState();
+  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagUrlState();
 
   const regionScopeKey = [...regionScopes].sort().join(",");
   // All (no access filter): each row also shows its last-mile / datacenter split.
   const showAccess = showAccessSplit(tagFilters);
   const { data: leaderboardData, isLoading } = useQuery<LeaderboardEntry[]>({
-    queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey, tagParamsKey(tagFilters, groupBy)],
+    queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey, tagParamsKey(tagFilters, groupBy, network)],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") {
         params.set("hours", timeRange);
       }
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy);
+      appendTagParams(params, tagFilters, groupBy, network);
       const res = await fetch(`/api/metrics/leaderboard?${params}`);
       if (!res.ok) throw new Error("Failed to fetch leaderboard");
       return res.json();
@@ -220,6 +221,7 @@ export default function Leaderboard() {
         </div>
       </div>
 
+      <NetworkPolicyControls network={network} onChange={setNetwork} tier="realtime" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} />
       <Card>
         <CardHeader>
           <CardTitle>Performance Rankings</CardTitle>

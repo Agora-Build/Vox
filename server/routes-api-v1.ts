@@ -910,7 +910,7 @@ export function registerApiV1Routes(app: Express): void {
    * — or `groupBy=region`, the result's region (reserved: not a tag key).
    */
   async function metricsView(req: Request): Promise<
-    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number; tagFilters: Tag[]; groupBy?: string }
+    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number; tagFilters: Tag[]; groupBy?: string; network: "strict" | "all" }
     | { status: number; error: string }
   > {
     const tier = parseMetricsTier(req.query.tier);
@@ -928,12 +928,12 @@ export function registerApiV1Routes(app: Express): void {
       if (!user.isEnabled) return { status: 401, error: "Account is disabled" };
       userId = user.id;
     }
-    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId, tagFilters: tags.tagFilters, groupBy: tags.groupBy };
+    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId, tagFilters: tags.tagFilters, groupBy: tags.groupBy, network: tags.network };
   }
   /** What the response actually covers, so a client can't misread it. */
-  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number; tagFilters: Tag[]; groupBy?: string }) => ({
+  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number; tagFilters: Tag[]; groupBy?: string; network: "strict" | "all" }) => ({
     tier: v.tier, transport: v.transport, hours: v.hoursBack ?? null,
-    tag: v.tagFilters.map(formatTag), groupBy: v.groupBy ?? null,
+    tag: v.tagFilters.map(formatTag), groupBy: v.groupBy ?? null, network: v.network,
   });
 
   app.get("/api/v1/metrics/realtime", async (req: Request, res: Response) => {
@@ -954,7 +954,7 @@ export function registerApiV1Routes(app: Express): void {
         limit = n;
       }
       const results = await storage.getTierEvalResults(view.storageTier, limit, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters, network: view.network,
       });
 
       // Transform to API format
@@ -1006,7 +1006,7 @@ export function registerApiV1Routes(app: Express): void {
       const view = await metricsView(req);
       if ("error" in view) return res.status(view.status).json({ error: view.error });
       const results = await storage.getTierEvalResults(view.storageTier, 1000, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters, network: view.network,
       });
 
       // Aggregate by provider and site — and, with groupBy, by that tag's

@@ -114,7 +114,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
   it("runAgentLocationCheck immediate-assigns for a private agent (stub deps unavailable → uses stored detection path)", async () => {
     // No mmdbs in dev: a public IP classifies low_confidence/unknown → stays Unverified.
     const before = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 },
       token: { id: tokenId, dispatchTier: "private" },
       ip: "8.8.8.8", immediate: true,
@@ -131,7 +131,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
 
   it("public tier: observability only — region/siteId untouched", async () => {
     await db.update(evalAgents).set({ siteId: "na-us-seattle-01" }).where(eq(evalAgents.id, agentId));
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, region: null, siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0 },
       token: { id: tokenId, dispatchTier: "public" },
       ip: "8.8.8.8", immediate: true,
@@ -157,7 +157,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     setMarketplace(laggingMarketplace);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const res = await runAgentLocationCheck({
+      const res = await runAgentLocationCheck({ checkGeneration: 0,
         agent: { id: agentId, region: "na-us-seattle", siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0 },
         token: { id: tokenId, dispatchTier: "shared" },
         ip: "8.8.8.8", immediate: true,
@@ -192,7 +192,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     const allocateSpy = vi.spyOn(storage, "allocateSiteId");
     try {
       for (const immediate of [true, false]) {
-        const res = await runAgentLocationCheck({
+        const res = await runAgentLocationCheck({ checkGeneration: 0,
           agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: "eu-fr-paris", pendingRegionCount: 2, locationTrust: "trusted" },
           token: { id: tokenId, dispatchTier: "private" },
           ip: "80.150.1.1", immediate, deps: unloadedWithGeo,
@@ -226,13 +226,13 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
     }).where(eq(evalAgents.id, agentId));
     const agent = { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0, locationTrust: "unknown" };
     // Data unloaded: nothing written.
-    const capped = await runAgentLocationCheck({ agent, token: { id: tokenId, dispatchTier: "private" }, ip: "80.150.1.1", immediate: false, deps: unloadedWithGeo });
+    const capped = await runAgentLocationCheck({ checkGeneration: 0, agent, token: { id: tokenId, dispatchTier: "private" }, ip: "80.150.1.1", immediate: false, deps: unloadedWithGeo });
     expect(capped.locationTrust).toBe("unknown");
     let row = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(row.locationCheckedAt?.getTime()).toBe(checkedAt.getTime());
     expect(row.accessClass).toBeNull();
     // Data loaded (same agent, next beat): classified at once.
-    const loaded = await runAgentLocationCheck({
+    const loaded = await runAgentLocationCheck({ checkGeneration: 0,
       agent, token: { id: tokenId, dispatchTier: "private" }, ip: "80.150.1.1", immediate: false,
       deps: { ...unloadedWithGeo, networkClassLoaded: true },
     });
@@ -250,7 +250,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
       region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0,
       locationTrust: "trusted", locationCheckedAt: checkedAt, accessClass: "datacenter", accessReason: "v1: dc-range", accessCheckedAt: checkedAt,
     }).where(eq(evalAgents.id, agentId));
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0, locationTrust: "trusted" },
       token: { id: tokenId, dispatchTier: "private" }, ip: "80.150.1.1", immediate: false,
       deps: { ...unloadedWithGeo, geo: () => null },
@@ -266,7 +266,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
   it("unloaded access data: a new agent with no region stays Unverified (fail closed)", async () => {
     await db.update(evalAgents).set({ region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 })
       .where(eq(evalAgents.id, agentId));
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, region: null, siteId: null, pendingRegion: null, pendingRegionCount: 0 },
       token: { id: tokenId, dispatchTier: "private" },
       ip: "80.150.1.1", immediate: true, deps: unloadedWithGeo,
@@ -281,7 +281,7 @@ describeDb("allocateSiteId + runAgentLocationCheck", () => {
   it("unloaded access data: a Tor exit still fast-distrusts an existing agent (region and siteId cleared)", async () => {
     await db.update(evalAgents).set({ region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: null, pendingRegionCount: 0 })
       .where(eq(evalAgents.id, agentId));
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, region: "eu-de-frankfurt", siteId: "eu-de-frankfurt-07", pendingRegion: null, pendingRegionCount: 0 },
       token: { id: tokenId, dispatchTier: "private" },
       ip: "80.150.1.1", immediate: false,

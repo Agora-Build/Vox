@@ -60,7 +60,7 @@ d("metrics: groupBy=region and leaderboard access columns", () => {
     } as any);
     jobIds.push(job.id);
     await pool.query(
-      "UPDATE eval_jobs SET token_dispatch_tier = $2, completed_at = now(), tags = $3::jsonb, kind = $4, transport = 'web' WHERE id = $1",
+      "UPDATE eval_jobs SET token_dispatch_tier = $2, completed_at = now(), network_monitoring = 'complete', tags = $3::jsonb, kind = $4, transport = 'web' WHERE id = $1",
       [job.id, pub ? "public" : "private", opts.tags == null ? null : JSON.stringify(opts.tags), opts.kind ?? "eval"],
     );
     const r = await storage.createEvalResult({

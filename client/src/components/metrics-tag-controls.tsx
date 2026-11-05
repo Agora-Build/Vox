@@ -6,6 +6,7 @@ import { formatRegion } from "@/lib/utils";
 import { LAST_MILE_HINT, DATACENTER_HINT } from "@/lib/access-text";
 import { accessView, withAccessView, type AccessView } from "@/lib/access-view";
 import { KNOWN_TAG_KEYS, MAX_TAG_FILTERS, REGION_GROUP_KEY, formatTag, parseGroupBy, parseTagFilter, type Tag } from "@shared/tags";
+import type { NetworkMode } from "@shared/network-events";
 
 /**
  * The network-tag knobs of a metrics view (designs/2026-10-22-network-tags-design.md
@@ -21,11 +22,11 @@ const KNOWN_KEY_LABELS: Record<string, string> = {
   sim: "SIM operator",
 };
 
-function readUrl(): { tagFilters: Tag[]; groupBy?: string } {
+function readUrl(): { tagFilters: Tag[]; groupBy?: string; network: NetworkMode } {
   const p = new URLSearchParams(window.location.search);
   const tf = parseTagFilter(p.getAll("tag"));
   const gb = parseGroupBy(p.get("groupBy") ?? undefined);
-  return { tagFilters: "error" in tf ? [] : tf.filters, groupBy: "error" in gb ? undefined : gb.groupBy };
+  return { tagFilters: "error" in tf ? [] : tf.filters, groupBy: "error" in gb ? undefined : gb.groupBy, network: p.get("network") === "all" ? "all" : "strict" };
 }
 
 /** Tag filters + groupBy, initialised from and mirrored to the URL (replaceState: no history entry per keystroke). */
@@ -33,26 +34,30 @@ export function useMetricsTagUrlState() {
   const [initial] = useState(readUrl);
   const [tagFilters, setTagFilters] = useState<Tag[]>(initial.tagFilters);
   const [groupBy, setGroupBy] = useState<string | undefined>(initial.groupBy);
+  const [network, setNetwork] = useState<NetworkMode>(initial.network);
   useEffect(() => {
     const url = new URL(window.location.href);
     url.searchParams.delete("tag");
     for (const t of tagFilters) url.searchParams.append("tag", formatTag(t));
     if (groupBy) url.searchParams.set("groupBy", groupBy);
     else url.searchParams.delete("groupBy");
+    if (network === "all") url.searchParams.set("network", "all");
+    else url.searchParams.delete("network");
     if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
-  }, [tagFilters, groupBy]);
-  return { tagFilters, setTagFilters, groupBy, setGroupBy };
+  }, [tagFilters, groupBy, network]);
+  return { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork };
 }
 
 /** Add the tag knobs to a metrics request. */
-export function appendTagParams(params: URLSearchParams, tagFilters: Tag[], groupBy?: string) {
+export function appendTagParams(params: URLSearchParams, tagFilters: Tag[], groupBy?: string, network: NetworkMode = "strict") {
   for (const t of tagFilters) params.append("tag", formatTag(t));
   if (groupBy) params.set("groupBy", groupBy);
+  params.set("network", network);
 }
 
 /** A stable query-key part for the tag knobs. */
-export function tagParamsKey(tagFilters: Tag[], groupBy?: string): string {
-  return `${tagFilters.map(formatTag).sort().join(",")}|${groupBy ?? ""}`;
+export function tagParamsKey(tagFilters: Tag[], groupBy?: string, network: NetworkMode = "strict"): string {
+  return `${tagFilters.map(formatTag).sort().join(",")}|${groupBy ?? ""}|${network}`;
 }
 
 /** Custom (not known) keys seen in rows' tags, for the Group by list. */

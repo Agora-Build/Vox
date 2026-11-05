@@ -46,6 +46,8 @@ import { detectLinkType, withLinkType } from './link-type';
 import { NetSignalsDetector, withNetSignals } from './net-signals';
 import { claimFirstAvailable, claimOutcome, type ClaimOutcome } from './job-pick';
 import { UNMEASURED_DEFAULTS } from './result-defaults';
+import { NetworkEventBuffer } from './network-events';
+import { NetworkObserver } from './network-observer';
 import { Readable } from 'stream';
 import {
   CHUNK_SIZE,
@@ -83,6 +85,7 @@ interface EvalAgent {
 
 interface EvalJob {
   id: number;
+  startedAt?: string;
   evalFlowId: number;
   evalSetId: number | null;
   siteId: string | null;
@@ -242,6 +245,25 @@ class VoxEvalAgentDaemon {
   private healthServer: HttpServer | null = null;
   private startTime = Date.now();
   private currentJobId: number | null = null;
+  private claimedJob: EvalJob | null = null;
+  private networkEvents = new NetworkEventBuffer();
+  private networkObserver = new NetworkObserver();
+  private networkTimer: NodeJS.Timeout | null = null;
+
+  private sampleNetwork() {
+    const sample = this.networkObserver.sample();
+    if (sample.gap) this.networkEvents.gap();
+    let observedChanges = 0;
+    for (const observation of sample.observations) if (this.networkEvents.observe(observation)) observedChanges++;
+    if ((sample.transitionCount ?? 0) > observedChanges) this.networkEvents.noteMissingChanges(sample.transitionCount! - observedChanges);
+    return sample.observations.at(-1);
+  }
+
+  private finishNetwork(): void {
+    if (this.networkTimer) clearInterval(this.networkTimer);
+    this.networkTimer = null;
+    this.networkEvents.finish(this.sampleNetwork());
+  }
   // Decrypted values of the ACTIVE job's secrets, used only to scrub them out of
   // any error text we persist. The daemon runs one job at a time.
   private activeSecretValues: string[] = [];
@@ -388,6 +410,7 @@ class VoxEvalAgentDaemon {
    *  `VOX_LINK_TYPE` (vox-upgrade.sh's host-side answer, since a container
    *  only sees its own veth) wins; undefined on failure, never thrown. */
   private currentLinkType(): ReturnType<typeof detectLinkType> {
+    if (process.env.VOX_NETWORK_STATUS_FILE) return this.sampleNetwork()?.link ?? undefined;
     return detectLinkType({
       env: process.env,
       platform: process.platform,
@@ -402,16 +425,17 @@ class VoxEvalAgentDaemon {
    *  holds a public address. `VOX_PUBLIC_IP_ON_IFACE` (vox-upgrade.sh's
    *  host-side answer, since a container only sees its own veth) wins for
    *  the latter; neither probe ever throws. */
-  private currentNetSignals() {
-    return this.netSignalsDetector.detect({
+  private async currentNetSignals() {
+    const signals = await this.netSignalsDetector.detect({
       fetch: (url, init) => fetch(url, init),
       now: () => Date.now(),
-      env: process.env,
+      env: process.env.VOX_NETWORK_STATUS_FILE ? { ...process.env, VOX_PUBLIC_IP_ON_IFACE: undefined } : process.env,
       platform: process.platform,
       sysRoot: '',
       // No shell: program + argument array (interface names come from OS output).
       exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
     });
+    return process.env.VOX_NETWORK_STATUS_FILE ? { ...signals, publicIpOnInterface: this.networkObserver.publicIpOnInterface } : signals;
   }
 
   async register(): Promise<boolean> {
@@ -496,11 +520,13 @@ class VoxEvalAgentDaemon {
           state: this.isRunningJob ? 'occupied' : 'idle',
           metadata: this.buildMetadata(),
           capabilities: await this.currentCapabilities(),
+          networkReport: this.networkEvents.report(),
         }, this.currentLinkType()), await this.currentNetSignals()), this.currentSim())),
       });
 
       await this.exitIfSuperseded(response);
       if (response.ok) {
+        this.networkEvents.acknowledge((await response.json()).networkAck);
         console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       } else {
         console.error(`[Daemon] Heartbeat rejected by Vox: ${await describeHttpFailure(response)}`);
@@ -539,9 +565,10 @@ class VoxEvalAgentDaemon {
 
   async claimJob(jobId: number): Promise<ClaimOutcome> {
     try {
+      const baseline = this.networkObserver.sample();
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/claim`, {
         method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId }),
+        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, linkType: baseline.observations.at(-1)?.link }),
       });
 
       await this.exitIfSuperseded(response);
@@ -551,6 +578,12 @@ class VoxEvalAgentDaemon {
         return outcome;
       }
 
+      this.claimedJob = await response.json();
+      if (this.claimedJob?.kind !== 'analyze' && this.claimedJob?.startedAt) {
+        this.networkEvents.start(jobId, this.claimedJob.startedAt, baseline.gap ? undefined : baseline.observations.at(-1));
+        this.sampleNetwork();
+        this.networkTimer = setInterval(() => this.sampleNetwork(), 1000);
+      }
       console.log(`[Daemon] Claimed job ${jobId}`);
       return 'claimed';
     } catch (error: unknown) {
@@ -561,51 +594,39 @@ class VoxEvalAgentDaemon {
   }
 
   async completeJob(jobId: number, results: EvalResult): Promise<boolean> {
-    try {
-      console.log(`[Daemon] Completing job ${jobId}...`);
-      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: this.agentId, leaseId: this.leaseId, results,
-          // Phone jobs attach call detail (design §7); null/absent for web.
-          ...(this.lastCallMetadata ? { callMetadata: this.lastCallMetadata } : {}),
-        }),
-      });
-
-      await this.exitIfSuperseded(response);
-      if (response.ok) {
-        console.log(`[Daemon] Job ${jobId} completed successfully`);
-        return true;
-      } else {
-        console.error(`[Daemon] Failed to complete job ${jobId}: ${await describeHttpFailure(response)}`);
-        return false;
-      }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Error completing job:`, msg);
-      return false;
-    }
+    return this.reportJobCompletion(jobId, { results,
+      // Phone jobs attach call detail (design §7); absent for web.
+      ...(this.lastCallMetadata ? { callMetadata: this.lastCallMetadata } : {}),
+    });
   }
 
   async failJob(jobId: number, reason: string): Promise<boolean> {
-    try {
-      console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
-      const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
-        method: 'POST',
-        body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, error: reason }),
-      });
+    console.log(`[Daemon] Failing job ${jobId}: ${reason}`);
+    return this.reportJobCompletion(jobId, { error: reason });
+  }
 
-      await this.exitIfSuperseded(response);
-      if (response.ok) {
-        console.log(`[Daemon] Job ${jobId} marked as failed`);
+  private async reportJobCompletion(jobId: number, payload: Record<string, unknown>): Promise<boolean> {
+    try {
+      this.finishNetwork();
+      const failure = await sendWithRetry(async () => {
+        const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/complete`, {
+          method: 'POST',
+          body: JSON.stringify({ agentId: this.agentId, leaseId: this.leaseId, ...payload, networkReport: this.networkEvents.report() }),
+        });
+        await this.exitIfSuperseded(response);
+        if (response.ok) this.networkEvents.acknowledge((await response.clone().json()).networkAck);
+        return response;
+      });
+      if (!failure) {
+        console.log(`[Daemon] Job ${jobId} completion accepted`);
         return true;
       } else {
-        console.error(`[Daemon] Failed to report job failure ${jobId}: ${await describeHttpFailure(response)}`);
+        console.error(`[Daemon] Failed to report job ${jobId}: ${failure}`);
         return false;
       }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`[Daemon] Error reporting job failure:`, msg);
+      console.error(`[Daemon] Error reporting job ${jobId}:`, msg);
       return false;
     }
   }
@@ -2294,8 +2315,14 @@ class VoxEvalAgentDaemon {
 
     // The first job that accepts the claim, not always jobs[0]: a refused
     // claim must not stall this agent on one row (#216).
-    const job = await claimFirstAvailable(jobs, (j) => this.claimJob(j.id));
-    if (!job) return;
+    // Reserve locally while claiming too: a slow poll/claim must not start
+    // two runs (and two monitoring queues) on this daemon.
+    if (this.isRunningJob) return;
+    this.isRunningJob = true;
+    this.claimedJob = null;
+    const pendingJob = await claimFirstAvailable(jobs, (j) => this.claimJob(j.id));
+    if (!pendingJob) { this.isRunningJob = false; return; }
+    const job = this.claimedJob ?? pendingJob;
 
     this.isRunningJob = true;
     this.currentJobId = job.id;
@@ -2351,6 +2378,10 @@ class VoxEvalAgentDaemon {
         this.activeSecretValues = []; // don't retain decrypted values past the job
         this.isRunningJob = false;
         this.currentJobId = null;
+        if (this.networkTimer) clearInterval(this.networkTimer);
+        this.networkTimer = null;
+        this.networkEvents.clear();
+        this.claimedJob = null;
       }
     }
   }

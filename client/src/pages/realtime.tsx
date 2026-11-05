@@ -38,6 +38,8 @@ import { detailWindow, mergeMetricDetail, METRICS_DAY_MS, type MetricsResolution
 import { useRegionLocations } from "@/hooks/use-regions";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
 import { MetricsTagControls, useMetricsTagUrlState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
+import { NetworkPolicyControls } from "@/components/network-policy-controls";
+import type { NetworkMode } from "@shared/network-events";
 import { formatTag, type Tag } from "@shared/tags";
 
 interface EvalResult {
@@ -765,11 +767,12 @@ interface MetricsSectionProps {
   hiddenProviders?: Set<string>;
   /** Active tag filters — the zoom's detail request must carry them too. */
   tagFilters: Tag[];
+  network: NetworkMode;
   /** Grouped by a tag: the detail endpoint has no groupBy, so zoom stays on the overview rows. */
   grouped?: boolean;
 }
 
-function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, detailEndpoint, regionScopes, transport, refreshInterval, userId, testIdPrefix = "", showEvalFlow = false, hiddenProviders, tagFilters, grouped = false }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, detailEndpoint, regionScopes, transport, refreshInterval, userId, testIdPrefix = "", showEvalFlow = false, hiddenProviders, tagFilters, network, grouped = false }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -831,7 +834,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
       const params = new URLSearchParams({ from: String(window.from), to: String(window.to), transport });
       appendRegionScopes(params, regionScopes);
       // Same tag filters as the overview: a filtered chart's zoom never shows unfiltered rows.
-      appendTagParams(params, tagFilters);
+      appendTagParams(params, tagFilters, undefined, network);
       const res = await fetch(`${detailEndpoint}?${params}`, { signal });
       if (!res.ok) throw new Error("Failed to load chart detail");
       return res.json();
@@ -1235,8 +1238,8 @@ export default function Dashboard() {
   // Provider multi-select: hidden set (default empty = all shown).
   const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
   // Network tags: filters (all must match) + groupBy, kept in the URL.
-  const { tagFilters, setTagFilters, groupBy, setGroupBy } = useMetricsTagUrlState();
-  const tagKey = tagParamsKey(tagFilters, groupBy);
+  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagUrlState();
+  const tagKey = tagParamsKey(tagFilters, groupBy, network);
   const { data: regionLocations } = useRegionLocations();
   const { data: providerList } = useQuery<Array<{ id: string; name: string }>>({
     queryKey: ["/api/providers"],
@@ -1255,9 +1258,10 @@ export default function Dashboard() {
 
   const availabilityTier = activeTab === "mainline" ? "realtime" : activeTab === "community" ? "community" : "my-evals";
   const { data: regionAvailability } = useQuery<{ availableRegions: string[]; hasUnverified: boolean }>({
-    queryKey: ["/api/metrics/available-regions", availabilityTier, availabilityTier === "my-evals" ? authStatus?.user?.id : null, timeRange],
+    queryKey: ["/api/metrics/available-regions", availabilityTier, availabilityTier === "my-evals" ? authStatus?.user?.id : null, timeRange, evalMode, tagKey],
     queryFn: async () => {
-      const params = new URLSearchParams({ tier: availabilityTier });
+      const params = new URLSearchParams({ tier: availabilityTier, transport: evalMode });
+      appendTagParams(params, tagFilters, undefined, network);
       if (timeRange !== "all") params.set("hours", timeRange);
       const res = await fetch(`/api/metrics/available-regions?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error("available-regions failed");
@@ -1288,7 +1292,7 @@ export default function Dashboard() {
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy);
+      appendTagParams(params, tagFilters, groupBy, network);
       // No limit param: the server owns row counts + raw-vs-bucket per window.
       const res = await fetch(`/api/metrics/realtime?${params}`);
       if (!res.ok) throw new Error("Failed to fetch metrics");
@@ -1305,7 +1309,7 @@ export default function Dashboard() {
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy);
+      appendTagParams(params, tagFilters, groupBy, network);
       const res = await fetch(`/api/metrics/community?${params}`);
       if (!res.ok) throw new Error("Failed to fetch community metrics");
       return res.json();
@@ -1321,7 +1325,7 @@ export default function Dashboard() {
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy);
+      appendTagParams(params, tagFilters, groupBy, network);
       const res = await fetch(`/api/metrics/my-evals?${params}`, { signal });
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
@@ -1577,6 +1581,7 @@ export default function Dashboard() {
         </TabsList>
 
         <TabsContent value="mainline" className="space-y-4 mt-4">
+          <NetworkPolicyControls network={network} onChange={setNetwork} tier="realtime" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />
           <MetricsSection
             metrics={groupedMainline}
             isLoading={mainlineLoading}
@@ -1591,11 +1596,13 @@ export default function Dashboard() {
             testIdPrefix=""
             hiddenProviders={hiddenProviders}
             tagFilters={tagFilters}
+            network={network}
             grouped={!!groupBy}
           />
         </TabsContent>
 
         <TabsContent value="community" className="space-y-4 mt-4">
+          <NetworkPolicyControls network={network} onChange={setNetwork} tier="community" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} />
           <MetricsSection
             metrics={groupedCommunity}
             isLoading={communityLoading}
@@ -1611,11 +1618,13 @@ export default function Dashboard() {
             showEvalFlow
             hiddenProviders={hiddenProviders}
             tagFilters={tagFilters}
+            network={network}
             grouped={!!groupBy}
           />
         </TabsContent>
 
         <TabsContent value="my-evals" className="space-y-4 mt-4">
+          {isLoggedIn && <NetworkPolicyControls network={network} onChange={setNetwork} tier="my-evals" timeRange={timeRange} regionScopes={regionScopes} tagFilters={tagFilters} transport={evalMode} userId={authStatus?.user?.id} />}
           {isLoggedIn ? (
             <MetricsSection
               metrics={groupedMyEvals}
@@ -1633,6 +1642,7 @@ export default function Dashboard() {
               showEvalFlow
               hiddenProviders={hiddenProviders}
               tagFilters={tagFilters}
+              network={network}
               grouped={!!groupBy}
             />
           ) : (

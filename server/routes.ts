@@ -28,8 +28,9 @@ import { validateTierChoice, resolveTargetedDispatch, filterDispatchableAgents }
 import { getMarketplace } from "./marketplace";
 import { isAlreadyMemberError, getOrganizations, requireOrganizations, type Membership, type OrgSecretRow } from "./organizations";
 import { fingerprintCredential, formatLastFailedHttpStatus, parseLastFailedHttpStatus } from "@shared/credentials";
-import { parseNetSignalsUpdate, mergeNetSignals, netSignalsChanged, netSignalsPatch } from "./net-signals-update";
+import { parseNetSignalsUpdate } from "./net-signals-update";
 import { noteSimReport } from "./sim-carrier";
+import { parseNetworkReport, recordAgentNetworkEvents, getJobNetworkHistory, NetworkReportError } from "./network-events";
 import { sessionScopeForEvalFlow, areLoginSecretsAttested, ensureSession, stampOwnerSession, credentialKeyFor, SESSION_FRESH_MARGIN_SECONDS, classifyReferencedSecrets, findBrokeredMisuse, resolveBrokerType, type SessionNeed, detectSessionNeed, resolvableSecretSources, secretGate, evalSetMayUseSecrets, secretsJobFills, runDialogEvalSetProblem, missingEvalFlowSecrets } from "./auth-session";
 import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
@@ -37,7 +38,7 @@ import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsuppo
 import { PHONE_NUMBER_RE } from "@shared/steps";
 import { deriveApiKeyStatus } from "./api-key-status";
 import { isStaleOfflineAgent } from "./agent-liveness";
-import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders, normalizeIp } from "./location";
+import { runAgentLocationCheck, LOCATION_RECHECK_HOURS, getGeoipAttribution, reloadGeoReaders } from "./location";
 import {
   refreshGeoipDatabases,
   getGeoipRefreshStatus,
@@ -4380,13 +4381,9 @@ export async function registerRoutes(
       // Upsert: reuse existing agent row for this token instead of creating duplicates on restart
       const existing = await storage.getEvalAgentsByTokenId(evalAgentToken.id);
       let agent;
-      let netSignalsForCheck: typeof netSignalsUpdate | undefined;
       if (existing.length > 0) {
         agent = existing[0];
-        netSignalsForCheck = mergeNetSignals(agent.netSignals, netSignalsUpdate) ?? undefined;
-        // netSignals is written only when this registration reported some —
-        // never the stored value written back (netSignalsPatch).
-        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], ...netSignalsPatch(agent.netSignals, netSignalsUpdate), ...(linkTypeUpdate ?? {}) };
+        const agentUpdate = { name: agentName, state: "idle" as const, metadata: metadata || {}, currentLeaseId: leaseId, capabilities: capabilities ?? [], ...(linkTypeUpdate ?? {}) };
         await storage.updateEvalAgent(agent.id, agentUpdate);
         agent = { ...agent, ...agentUpdate };
         // A fresh registration means the prior process died; release any jobs it
@@ -4397,7 +4394,6 @@ export async function registerRoutes(
           console.log(`[eval-agent] Released ${released} orphaned running job(s) from re-registered agent ${agent.id}`);
         }
       } else {
-        netSignalsForCheck = netSignalsUpdate;
         agent = await storage.createEvalAgent({
           name: agentName,
           tokenId: evalAgentToken.id,
@@ -4410,17 +4406,9 @@ export async function registerRoutes(
           capabilities: capabilities ?? [],
           linkType: linkTypeUpdate?.linkType ?? null,
         });
-        // netSignals is omitted from InsertEvalAgent (drizzle-zod jsonb-$type
-        // limitation, same as tags — see shared/schema.ts); set it via the
-        // correctly-typed update path when a fresh registration reported one.
-        if (netSignalsUpdate !== undefined) {
-          await storage.updateEvalAgent(agent.id, { netSignals: netSignalsUpdate });
-          agent = { ...agent, netSignals: netSignalsUpdate };
-        }
       }
 
       await storage.updateEvalAgentHeartbeat(agent.id);
-      { const ip = clientIp(req); if (ip) await storage.updateEvalAgentObservedIp(agent.id, ip); }
       // Our SIM (phone agents, design "`sim` is system-only"): matched in the
       // background — a lookup must never hold registration up.
       void noteSimReport(agent.id, req.body.sim, capabilities ?? []);
@@ -4432,6 +4420,11 @@ export async function registerRoutes(
       // falls open to Unverified rather than 500ing the whole registration.
       let loc: { region: string | null; siteId: string | null; locationTrust: string };
       try {
+        const observation = await storage.prepareEvalAgentLocationCheck(agent.id, {
+          ip: clientIp(req), netSignals: netSignalsUpdate, forceCheck: true,
+          recheckAfterMs: LOCATION_RECHECK_HOURS * 60 * 60 * 1000,
+        });
+        agent = observation.agent;
         loc = await runAgentLocationCheck({
           agent: {
             id: agent.id,
@@ -4444,7 +4437,8 @@ export async function registerRoutes(
           token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
           ip: clientIp(req),
           immediate: true,
-          netSignals: netSignalsForCheck,
+          netSignals: agent.netSignals ?? undefined,
+          checkGeneration: agent.locationCheckGen,
         });
       } catch (err) {
         console.error(`[location] register-time location check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err);
@@ -4483,6 +4477,7 @@ export async function registerRoutes(
       }
 
       const { agentId, state, metadata, leaseId } = req.body;
+      const networkReport = parseNetworkReport(req.body.networkReport);
 
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
@@ -4516,37 +4511,10 @@ export async function registerRoutes(
 
       await storage.updateEvalAgentHeartbeat(agentId);
       const callerIp = clientIp(req);
-      const ipChanged = !!callerIp && callerIp !== agent.observedIp;
-      if (callerIp) await storage.updateEvalAgentObservedIp(agentId, callerIp);
-
-      // Re-detect when the IP moved, the check is stale (> LOCATION_RECHECK_HOURS
-      // / never ran), or a pending region change is mid-hysteresis (every beat counts it down —
-      // the IP-change trigger alone would stall since observed_ip updates each
-      // beat). Fire-and-forget: a slow catalog write must not delay the beat.
-      const bindingChanged = !!callerIp && (!agent.accessIp || normalizeIp(agent.accessIp) !== normalizeIp(callerIp));
-      const stale = bindingChanged || !agent.locationCheckedAt
-        || (Date.now() - new Date(agent.locationCheckedAt).getTime()) > LOCATION_RECHECK_HOURS * 60 * 60 * 1000;
-      const pending = agent.pendingRegion != null;
-      // A reported signal change (e.g. cloudMetadata flips false→true) must
-      // not wait for the next scheduled recheck, same reasoning as ipChanged.
-      const signalsChanged = netSignalsChanged(agent.netSignals, hbNetSignalsUpdate);
-      const mergedNetSignals = mergeNetSignals(agent.netSignals, hbNetSignalsUpdate);
-      if (ipChanged || stale || pending || signalsChanged) {
-        void runAgentLocationCheck({
-          agent: {
-            id: agent.id,
-            region: agent.region ?? null,
-            siteId: agent.siteId ?? null,
-            pendingRegion: agent.pendingRegion ?? null,
-            pendingRegionCount: agent.pendingRegionCount ?? 0,
-            locationTrust: agent.locationTrust,
-          },
-          token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
-          ip: callerIp,
-          immediate: false,
-          netSignals: mergedNetSignals ?? undefined,
-        }).catch((err) => console.error(`[location] heartbeat check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
-      }
+      const observation = await storage.prepareEvalAgentLocationCheck(agentId, {
+        ip: callerIp, netSignals: hbNetSignalsUpdate,
+        recheckAfterMs: LOCATION_RECHECK_HOURS * 60 * 60 * 1000,
+      });
 
       const updates: Record<string, unknown> = {};
       if (state && ["idle", "offline", "occupied"].includes(state)) {
@@ -4561,16 +4529,31 @@ export async function registerRoutes(
       if (hbLinkType !== undefined) {
         updates.linkType = hbLinkType.linkType;
       }
-      Object.assign(updates, netSignalsPatch(agent.netSignals, hbNetSignalsUpdate));
       if (Object.keys(updates).length > 0) {
         await storage.updateEvalAgent(agentId, updates);
+      }
+      // Inputs and generation are committed before detection starts. Keep DNS
+      // and catalog work asynchronous so they do not delay the heartbeat.
+      if (observation.shouldCheck) {
+        void runAgentLocationCheck({
+          agent: observation.agent,
+          token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
+          ip: callerIp,
+          immediate: false,
+          netSignals: observation.agent.netSignals ?? undefined,
+          checkGeneration: observation.agent.locationCheckGen,
+        }).catch((err) => console.error(`[location] heartbeat check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
       }
       // Our SIM: recomputed in the background only when the report changed or
       // the lookup expired (server/sim-carrier.ts) — never delays the beat.
       void noteSimReport(agent.id, req.body.sim, hbCapabilities ?? agent.capabilities);
 
-      res.json({ message: "Heartbeat received" });
+      const networkAck = await recordAgentNetworkEvents({
+        agentId: agent.id, leaseId: agent.currentLeaseId, ip: callerIp, report: networkReport,
+      });
+      res.json({ message: "Heartbeat received", networkAck });
     } catch (error) {
+      if (error instanceof NetworkReportError) return res.status(error.status).json({ error: error.message });
       console.error("Error processing heartbeat:", error);
       res.status(500).json({ error: "Failed to process heartbeat" });
     }
@@ -4664,7 +4647,19 @@ export async function registerRoutes(
       // Effective identity: public agents carry the token's configured (admin-
       // trusted) site; everything else carries the claiming agent's DETECTED
       // site — NULL for Unverified.
-      const eff = effectiveDispatchIdentity(evalAgentToken, agent);
+      const claimObservation = await storage.prepareEvalAgentLocationCheck(agent.id, {
+        ip: clientIp(req), recheckAfterMs: LOCATION_RECHECK_HOURS * 60 * 60 * 1000,
+      });
+      const claimLink = parseLinkTypeUpdate(req.body.linkType);
+      if (claimLink !== undefined) await storage.updateEvalAgent(agent.id, { linkType: claimLink.linkType });
+      if (claimObservation.shouldCheck) {
+        void runAgentLocationCheck({ agent: claimObservation.agent,
+          token: { id: evalAgentToken.id, dispatchTier: evalAgentToken.dispatchTier },
+          ip: clientIp(req), immediate: false, checkGeneration: claimObservation.agent.locationCheckGen,
+          netSignals: claimObservation.agent.netSignals ?? undefined,
+        }).catch((err) => console.error(`[location] claim check failed for agent ${agent.id}:`, err instanceof Error ? err.message : err));
+      }
+      const eff = effectiveDispatchIdentity(evalAgentToken, claimObservation.agent);
       // Site fence for site-pinned rows only (targeted + legacy). Pooled jobs
       // are fenced by region+tier inside claimEvalJob's predicate — including a
       // requeued one, which still carries its first claimer's site (#216).
@@ -4687,7 +4682,7 @@ export async function registerRoutes(
         locationTrust: eff.locationTrust,
         phoneCapable: Array.isArray(agent?.capabilities) && (agent!.capabilities as string[]).includes("phone"),
         analyzeCapable: Array.isArray(agent?.capabilities) && (agent!.capabilities as string[]).includes("analyze"),
-      });
+      }, { expectedLeaseId: typeof leaseId === "string" ? leaseId : null });
       if (!job) {
         return res.status(409).json({ error: "Job already claimed or not found" });
       }
@@ -4719,6 +4714,7 @@ export async function registerRoutes(
 
       const { jobId } = req.params;
       const { agentId, error: jobError, results, leaseId } = req.body;
+      const networkReport = parseNetworkReport(req.body.networkReport);
 
       if (!agentId) {
         return res.status(400).json({ error: "Agent ID required" });
@@ -4755,6 +4751,7 @@ export async function registerRoutes(
       if (job.evalAgentId !== agentId) {
         return res.status(403).json({ error: "Job not assigned to this agent" });
       }
+      let networkAck: import("@shared/network-events").NetworkAck | undefined;
       // Record a result only on SUCCESS. A failed completion (jobError set) is a
       // measurement failure — no result row, so failed runs never enter metrics.
       // A run that completed but got no agent response is NOT a failure: it comes
@@ -4822,13 +4819,17 @@ export async function registerRoutes(
       // running and the agent retries on the 500.
       let finalized: EvalJob | undefined;
       try {
-        finalized = await storage.finalizeRunningJobWithResult(parseInt(jobId), jobError, resultRow, { agentId, leaseId });
+        finalized = await storage.finalizeRunningJobWithResult(parseInt(jobId), jobError, resultRow, {
+          agentId, leaseId, startedAt: job.startedAt,
+          network: { report: networkReport, ip: clientIp(req), onAck: (ack) => { networkAck = ack; } },
+        });
       } catch (resultError) {
+        if (resultError instanceof NetworkReportError) return res.status(resultError.status).json({ error: resultError.message });
         console.error(`Failed to save the result of job ${jobId}:`, resultError);
         return res.status(500).json({ error: "Failed to save eval results" });
       }
       if (!finalized) {
-        return res.json({ message: "Job already finalized" });
+        return res.json({ message: "Job already finalized", networkAck });
       }
 
       await storage.updateEvalAgent(agentId, { state: "idle" });
@@ -4862,8 +4863,9 @@ export async function registerRoutes(
         console.error(`Settlement failed for job ${jobId}:`, settleErr);
       }
 
-      res.json({ message: "Job completed" });
+      res.json({ message: "Job completed", networkAck });
     } catch (error) {
+      if (error instanceof NetworkReportError) return res.status(error.status).json({ error: error.message });
       console.error("Error completing job:", error);
       res.status(500).json({ error: "Failed to complete job" });
     }
@@ -6073,6 +6075,23 @@ export async function registerRoutes(
     }
   };
 
+  app.get("/api/eval-jobs/:id/network-events", requireAuth, async (req, res) => {
+    try {
+      const user = await getCurrentUser(req);
+      if (!user) return res.status(401).json({ error: "Not authenticated" });
+      const job = await storage.getEvalJob(Number(req.params.id));
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      const flow = job.evalFlowId != null ? await storage.getEvalFlow(job.evalFlowId) : undefined;
+      if (!canViewJob(user, job, flow)) return res.status(403).json({ error: "Not authorized to view this job" });
+      const cursor = Number(req.query.cursor ?? 0);
+      if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > 2_147_483_647) return res.status(400).json({ error: "Invalid cursor" });
+      res.json(await getJobNetworkHistory(job, cursor));
+    } catch (error) {
+      console.error("Error fetching network events:", error);
+      res.status(500).json({ error: "Failed to fetch network events" });
+    }
+  });
+
   app.get("/api/eval-jobs/:id/detail", requireAuth, async (req, res) => {
     try {
       const user = await getCurrentUser(req);
@@ -6409,12 +6428,12 @@ export async function registerRoutes(
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
       // Tag filters only (no groupBy): a filtered chart's zoom must stay filtered.
-      const tf = parseMetricsTags({ tag: req.query.tag });
+      const tf = parseMetricsTags({ tag: req.query.tag, network: req.query.network });
       if ("error" in tf) return res.status(400).json({ error: tf.error });
-      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey({ tagFilters: tf.tagFilters })}`;
+      const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tf)}`;
       const cached = getCached(key);
       if (cached) return res.json(cached);
-      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport, tf.tagFilters);
+      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport, tf.tagFilters, tf.network);
       const data = { ...result, metrics: await formatMetricsResults(result.metrics, tier) };
       setCache(key, data);
       res.json(data);
@@ -6443,16 +6462,51 @@ export async function registerRoutes(
         if (!user) return res.status(401).json({ error: "Not authenticated" });
         userId = user.id;
       }
-      const cacheKey = `avail:${tierParam}:${win.hoursBack ?? "all"}:${userId ?? ""}`;
+      const tags = parseMetricsTags(req.query);
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const tp = parseMetricsTransport(req.query.transport);
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      const cacheKey = `avail:${tierParam}:${win.hoursBack ?? "all"}:${userId ?? ""}:${tp.transport}:${tagsCacheKey(tags)}`;
       const cached = getCached(cacheKey);
       if (cached) return res.json(cached);
-      const { baseIds, hasUnverified } = await storage.getAvailableRegions(tier, win.hoursBack, userId);
+      const { baseIds, hasUnverified } = await storage.getAvailableRegions(tier, win.hoursBack, userId, tp.transport, tags);
       const data = { availableRegions: baseIds, hasUnverified: tier === "myEvals" ? hasUnverified : false };
       setCache(cacheKey, data);
       res.json(data);
     } catch (error) {
       console.error("Error fetching available regions:", error);
       res.status(500).json({ error: "Failed to fetch available regions" });
+    }
+  });
+
+  app.get("/api/metrics/network-coverage", async (req, res) => {
+    try {
+      const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
+      const tier = Object.hasOwn(tierMap, String(req.query.tier)) ? tierMap[String(req.query.tier)] : undefined;
+      if (!tier) return res.status(400).json({ error: "Invalid tier" });
+      let userId: number | undefined;
+      if (tier === "myEvals") {
+        const user = await getCurrentUser(req);
+        if (!user?.isEnabled) return res.status(401).json({ error: "Not authenticated" });
+        userId = user.id;
+      }
+      const win = parseMetricsWindow(req.query.hours);
+      const scope = await parseRegionQueryScope(req.query);
+      const tp = parseMetricsTransport(req.query.transport);
+      const tags = parseMetricsTags(req.query);
+      if ("error" in win) return res.status(400).json({ error: win.error });
+      if ("error" in scope) return res.status(400).json({ error: scope.error });
+      if ("error" in tp) return res.status(400).json({ error: tp.error });
+      if ("error" in tags) return res.status(400).json({ error: tags.error });
+      const key = `coverage:${tier}:${userId ?? ""}:${win.hoursBack ?? "all"}:${scope.cacheKey}:${tp.transport}:${tagsCacheKey(tags)}`;
+      const cached = getCached(key);
+      if (cached) return res.json(cached);
+      const data = await storage.getNetworkCoverage(tier, win.hoursBack, userId, scope.scope, tp.transport, tags);
+      setCache(key, data);
+      res.json(data);
+    } catch (error) {
+      console.error("Error fetching network coverage:", error);
+      res.status(500).json({ error: "Failed to fetch network coverage" });
     }
   });
 
@@ -6472,7 +6526,7 @@ export async function registerRoutes(
       if (cached) return res.json(cached);
 
       const results = await storage.getTierEvalResults("mainline", 1000, {
-        hoursBack: win.hoursBack, scope: regionScope.scope, transport: tp.transport, tagFilters: tags.tagFilters,
+        hoursBack: win.hoursBack, scope: regionScope.scope, transport: tp.transport, tagFilters: tags.tagFilters, network: tags.network,
       });
       const locations = await storage.getAllRegionLocations();
 

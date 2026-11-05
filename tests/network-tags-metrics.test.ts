@@ -65,7 +65,7 @@ d("metrics: tag= and groupBy=", () => {
       priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     jobIds.push(job.id);
-    await pool.query("UPDATE eval_jobs SET token_dispatch_tier = $2, completed_at = now(), tags = $3::jsonb WHERE id = $1",
+    await pool.query("UPDATE eval_jobs SET token_dispatch_tier = $2, completed_at = now(), network_monitoring = 'complete', tags = $3::jsonb WHERE id = $1",
       [job.id, pub ? "public" : "private", tags === null ? null : JSON.stringify(tags)]);
     const r = await storage.createEvalResult({ evalJobId: job.id, providerId, siteId: "na-us-seattle-01", responseLatencyMedian: latency } as any);
     ids[name] = r.id;

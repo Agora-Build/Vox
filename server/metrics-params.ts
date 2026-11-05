@@ -54,17 +54,19 @@ export function parseMetricsTier(raw: unknown): { tier: ApiMetricsTier; storageT
  * by that key's effective value. Both go through shared/tags.ts's parsers, so
  * a bad value is a 400 with the same message as everywhere else.
  */
-export function parseMetricsTags(query: { tag?: unknown; groupBy?: unknown }): { tagFilters: Tag[]; groupBy?: string } | { error: string } {
+export function parseMetricsTags(query: { tag?: unknown; groupBy?: unknown; network?: unknown }): { tagFilters: Tag[]; groupBy?: string; network: "strict" | "all" } | { error: string } {
   const tf = parseTagFilter(query.tag);
   if ("error" in tf) return { error: tf.error };
   const gb = parseGroupBy(query.groupBy);
   if ("error" in gb) return { error: gb.error };
-  return { tagFilters: tf.filters, groupBy: gb.groupBy };
+  const network = query.network ?? "strict";
+  if (network !== "strict" && network !== "all") return { error: "network must be strict or all" };
+  return { tagFilters: tf.filters, groupBy: gb.groupBy, network };
 }
 
 /** Cache-key part for the tag knobs. Filters are sorted: AND doesn't care about order. */
-export function tagsCacheKey(v: { tagFilters: Tag[]; groupBy?: string }): string {
-  return `tags=${v.tagFilters.map(formatTag).sort().join(",")}:groupBy=${v.groupBy ?? ""}`;
+export function tagsCacheKey(v: { tagFilters: Tag[]; groupBy?: string; network?: "strict" | "all" }): string {
+  return `tags=${v.tagFilters.map(formatTag).sort().join(",")}:groupBy=${v.groupBy ?? ""}:network=${v.network ?? "strict"}`;
 }
 
 /**

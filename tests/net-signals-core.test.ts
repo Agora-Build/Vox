@@ -158,7 +158,7 @@ describeDb("agent signals persisted on eval_agents.net_signals reach the classif
   it("without any agent signal, Deutsche Telekom earns lastmile (baseline)", async () => {
     await db.update(evalAgents).set({ netSignals: null }).where(eq(evalAgents.id, agentId));
     const stored = await row();
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh }, token: { id: tokenId, dispatchTier: "private" },
       ip: DT_IP, immediate: true, deps: lastmileDeps(), netSignals: stored.netSignals ?? undefined,
     });
@@ -170,7 +170,7 @@ describeDb("agent signals persisted on eval_agents.net_signals reach the classif
     await db.update(evalAgents).set({ netSignals: { cloudMetadata: true } }).where(eq(evalAgents.id, agentId));
     const stored = await row();
     expect(stored.netSignals).toEqual({ cloudMetadata: true });
-    await runAgentLocationCheck({
+    await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh }, token: { id: tokenId, dispatchTier: "private" },
       ip: DT_IP, immediate: true, deps: lastmileDeps(), netSignals: stored.netSignals ?? undefined,
     });
@@ -182,7 +182,7 @@ describeDb("agent signals persisted on eval_agents.net_signals reach the classif
   it("a persisted publicIpOnInterface:true read back from the DB demotes the would-be lastmile to unknown — never lastmile", async () => {
     await db.update(evalAgents).set({ netSignals: { publicIpOnInterface: true } }).where(eq(evalAgents.id, agentId));
     const stored = await row();
-    await runAgentLocationCheck({
+    await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh }, token: { id: tokenId, dispatchTier: "private" },
       ip: DT_IP, immediate: true, deps: lastmileDeps(), netSignals: stored.netSignals ?? undefined,
     });
@@ -254,14 +254,18 @@ describeDb("register/heartbeat persist netSignals (HTTP)", () => {
     // on the agent but absent from the register response and from the public
     // agents list (review fix round 1, Minor).
     expect(regBody).not.toHaveProperty("netSignals");
+    expect(regBody).not.toHaveProperty("locationCheckGen");
     let r = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(r.netSignals).toEqual({ cloudMetadata: true });
+    const generation = r.locationCheckGen;
+    expect(generation).toBeGreaterThan(0);
 
     const listRes = await fetch(`${BASE_URL}/api/eval-agents`, { headers: { Cookie: cookie } });
     expect(listRes.ok).toBe(true);
     const listed = (await listRes.json()).find((a: { id: number }) => a.id === agentId);
     expect(listed).toBeTruthy();
     expect(listed).not.toHaveProperty("netSignals");
+    expect(listed).not.toHaveProperty("locationCheckGen");
 
     // Junk-only body: ignored entirely, leaves the stored value alone.
     const hbJunk = await fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
@@ -272,6 +276,7 @@ describeDb("register/heartbeat persist netSignals (HTTP)", () => {
     expect(hbJunk.ok).toBe(true);
     r = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(r.netSignals).toEqual({ cloudMetadata: true });
+    expect(r.locationCheckGen).toBe(generation);
 
     // A beat reporting only the other field merges in, sticky — the first field survives.
     const hbMerge = await fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
@@ -282,6 +287,28 @@ describeDb("register/heartbeat persist netSignals (HTTP)", () => {
     expect(hbMerge.ok).toBe(true);
     r = (await db.select().from(evalAgents).where(eq(evalAgents.id, agentId)))[0];
     expect(r.netSignals).toEqual({ cloudMetadata: true, publicIpOnInterface: false });
+    expect(r.locationCheckGen).toBe(generation + 1);
+  });
+
+  it("concurrent partial heartbeat reports merge before their checks are launched", async () => {
+    const tokenValue = await freshToken();
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${tokenValue}` };
+    const reg = await fetch(`${BASE_URL}/api/eval-agent/register`, {
+      method: "POST", headers,
+      body: JSON.stringify({ name: "Concurrent Signals Agent", netSignals: { cloudMetadata: false, publicIpOnInterface: false } }),
+    });
+    expect(reg.ok).toBe(true);
+    const { id: agentId, leaseId } = await reg.json();
+    const [before] = await db.select().from(evalAgents).where(eq(evalAgents.id, agentId));
+    const responses = await Promise.all([{ cloudMetadata: true }, { publicIpOnInterface: true }].map((netSignals) =>
+      fetch(`${BASE_URL}/api/eval-agent/heartbeat`, {
+        method: "POST", headers, body: JSON.stringify({ agentId, leaseId, netSignals }),
+      }),
+    ));
+    expect(responses.every((response) => response.ok)).toBe(true);
+    const [after] = await db.select().from(evalAgents).where(eq(evalAgents.id, agentId));
+    expect(after.netSignals).toEqual({ cloudMetadata: true, publicIpOnInterface: true });
+    expect(after.locationCheckGen).toBe(before.locationCheckGen + 2);
   });
 
   it("a heartbeat whose netSignals actually change triggers an immediate re-check (not just at staleness)", async () => {

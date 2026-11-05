@@ -529,6 +529,8 @@ export async function runAgentLocationCheck(opts: {
   token: { id: number; dispatchTier: string };
   ip: string | undefined;
   immediate: boolean;
+  /** Reserved with the persisted IP/signals before launching this check. */
+  checkGeneration: number;
   /** Injected in tests; live loaders otherwise. */
   deps?: DetectionDeps;
   /** Agent-reported network signals (register/heartbeat `netSignals`, Task 3). */
@@ -584,7 +586,7 @@ export async function runAgentLocationCheck(opts: {
   if (opts.token.dispatchTier === "public") {
     const applied = await storage.updateEvalAgentLocationObservability(opts.agent.id, {
       locationTrust: det.trust, locationSource: det.source, ...checked,
-    }, checkedIp);
+    }, checkedIp, opts.checkGeneration);
     if (!applied) return currentLocation();
     return { region: opts.agent.region, siteId: opts.agent.siteId, locationTrust: det.trust };
   }
@@ -601,7 +603,7 @@ export async function runAgentLocationCheck(opts: {
     locationSource: det.source,
     pendingRegion: next.pendingRegion, pendingRegionCount: next.pendingRegionCount,
     ...checked,
-  }, checkedIp);
+  }, checkedIp, opts.checkGeneration);
   if (!applied) return currentLocation();
   if (next.changed && opts.token.dispatchTier === "shared") {
     // Shared listings advertise the agent's siteId; keep the plugin in sync.

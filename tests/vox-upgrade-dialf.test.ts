@@ -118,6 +118,18 @@ describe("hosts WITHOUT DialF: the same container actions as before", () => {
 });
 
 describe("hosts WITH DialF", () => {
+  it("preserves the cache and read-only network directory alongside DialF mounts", () => {
+    const statusDir = path.join(dir, "network-status");
+    fs.mkdirSync(statusDir);
+    fs.writeFileSync(path.join(statusDir, "status.json"), "{}");
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", DIALF_SOCKET: sock, VOX_NETWORK_STATUS_DIR: statusDir });
+    const run = r.calls.find((call) => call.startsWith("docker run"));
+    expect(r.status).toBe(0);
+    expect(run).toContain(`-v ${statusDir}:/run/vox-network:ro`);
+    expect(run).toContain("VOX_NETWORK_STATUS_FILE=/run/vox-network/status.json");
+    expect(run).toContain("vox-aeval-cache:/root/.cache");
+    expect(run).toContain(`-v ${sock}:${sock}`);
+  });
   it("same image, but the running container lacks the DialF mount: recreated with it", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-new", LATEST_IMAGE: "sha-new", DIALF_SOCKET: sock });
     expect(r.out).toMatch(/wasn't started with it — recreating it/);

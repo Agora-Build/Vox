@@ -151,7 +151,7 @@ test.describe("network tags", () => {
         status: "completed", priority: 0, retryCount: 0, maxRetries: 3, tokenDispatchTier: "public",
       } as any);
       jobIds.push(job.id);
-      await pool.query("UPDATE eval_jobs SET completed_at = now(), tags = $2::jsonb WHERE id = $1", [job.id, JSON.stringify(tags)]);
+      await pool.query("UPDATE eval_jobs SET completed_at = now(), network_monitoring = 'complete', tags = $2::jsonb WHERE id = $1", [job.id, JSON.stringify(tags)]);
       await storage.createEvalResult({ evalJobId: job.id, providerId: provider.id, siteId: `${base}-01`, responseLatencyMedian: latency } as any);
     };
     try {
@@ -212,7 +212,7 @@ test.describe("network tags", () => {
         status: "completed", priority: 0, retryCount: 0, maxRetries: 3, tokenDispatchTier: "public",
       } as any);
       jobIds.push(job.id);
-      await pool.query("UPDATE eval_jobs SET completed_at = now(), tags = $2::jsonb WHERE id = $1",
+      await pool.query("UPDATE eval_jobs SET completed_at = now(), network_monitoring = 'complete', tags = $2::jsonb WHERE id = $1",
         [job.id, JSON.stringify([{ key: "access", value: access, source: "detected", reason: "v1: test" }, { key: "run", value: RUN, source: "flow" }])]);
       await storage.createEvalResult({ evalJobId: job.id, providerId: provider.id, siteId: `${base}-01`, responseLatencyMedian: latency } as any);
     };

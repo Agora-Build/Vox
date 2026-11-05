@@ -85,12 +85,13 @@ provider describes the target, so it can't live on the agent.
 | `eval_agents` | `link_type varchar(16)` | reported by the agent on register/heartbeat; null = not reported (an older agent) |
 | `eval_agents` | `access_class`, `access_reason`, `access_checked_at`, `access_ip` | system classification, versioned reason, check time, and internal checked-IP binding |
 | `eval_agents` | `net_signals jsonb` | optional agent-reported cloud-metadata and public-interface-IP signals |
+| `eval_agents` | `location_check_gen bigint not null default 0` | internal generation fencing asynchronous location/access checks across Core instances |
 | `eval_agents` | `sim_carrier`, `sim_reason`, `sim_number_redacted`, `sim_number_hash`, `sim_report_gen` | system SIM match, last four digits, internal full-number HMAC, and race-protection generation |
 | `eval_jobs` | `tags jsonb` | frozen at claim (below); null for jobs claimed before the release |
 | `number_lookups` | `invalid_number`, `mcc`, `mnc` | definitive negative-cache flag and optional network codes, alongside the carrier answer |
 | `paid_lookup_usage` | scope, subject, UTC day, count | durable paid-lookup allowances reserved atomically in PostgreSQL |
 
-Hand-written migrations 0057-0063 are registered as schema versions 58-64 in
+Hand-written migrations 0057-0064 are registered as schema versions 58-65 in
 `server/migrate.ts`; see [migration history](#migration-history). No result-tag
 backfill: older results are simply untagged. Existing access classifications are
 not assigned a guessed IP binding; they are unknown at claim until rechecked.
@@ -279,8 +280,10 @@ the cache key. The keyless rate limit and the tier/transport rules are unchanged
 
 ## Rollout
 
-1. Deploy Core with all migrations through schema v64 (claim freezing,
-   parameters, UI, number lookup, access binding, and SIM matching).
+1. Deploy Core with all migrations through schema v65 (claim freezing,
+   parameters, UI, number lookup, access binding, check generations, and SIM matching).
+   Upgrade every Core instance: an older Core still uses IP-only write guards.
+   The generation guard requires no agent upgrade or protocol change.
    Detected `isp` works at once for every agent — it needs only Core. Lookup
    turns on when an admin enters Twilio credentials; existing phone flows are
    looked up on their next save or "Look up again". Do not configure production
@@ -422,12 +425,22 @@ the measured call still runs from the datacenter. Region trust has the same limi
 today; nothing Core sees from that IP can fully close it. A later step could
 cross-check the media path's source address where the target platform reports it.
 
-**IP changes and late checks.** Register/heartbeat await recording the observed
-IP before starting a location check. Claims never wait for rDNS: they reuse access
+**IP/signal changes and late checks.** Register/heartbeat lock the current agent
+row, merge only the reported signal fields, record the observed IP, and reserve
+the next `location_check_gen` before starting a location check. Trigger decisions
+use that locked row, not an earlier request snapshot. Checks run on registration,
+IP/binding changes, signal changes, staleness, and pending region hysteresis;
+unchanged heartbeats do not advance the generation unless another trigger applies.
+The short transaction commits before DNS/catalog work starts, and heartbeat
+detection remains asynchronous. Concurrent partial reports preserve both fields.
+Claims never wait for rDNS: they reuse access
 only when its normalized `access_ip` matches the current `observed_ip`, otherwise
 freezing `access:unknown` with reason `v1: ip-changed` (or `v1: not-classified`
-without a prior binding). Location writes are guarded by the checked IP separately
-from optional access fields, including unloaded-data outcomes. A no-IP check may
+without a prior binding). Both location-write paths require the reserved generation
+to still match, as well as the checked IP, separately from optional access fields,
+including no-data outcomes. Older same-IP checks, including A-to-B-to-A signal
+changes, cannot overwrite newer access, trust, check times, or location state.
+A no-IP check may
 write only while `observed_ip IS NULL`; rejected checks return the current stored
 location and do not update marketplace listings. A rejected write may consume a
 site sequence number, leaving a harmless gap. This binds access tags to the IP;
@@ -648,7 +661,7 @@ React/TanStack Query, Vitest, and Playwright.
 | Original task | Implementation boundary | Primary verification |
 |---|---|---|
 | 1. Access data | `server/access-data.ts`, `server/access-data-refresh.ts`, `server/data/mobile-carrier-asns.json`: fixture parsers, sorted range lookup, source limits, refresh | `tests/access-data.test.ts`, `tests/fixtures/access/` |
-| 2. Classifier and location | `server/access-class.ts`, `server/location.ts`, schema/storage: one location/access pipeline, versioned reasons, checked-IP fencing | `tests/access-class.test.ts`, `tests/location-access.test.ts`, `tests/location-catalog.test.ts`, `tests/location.test.ts` |
+| 2. Classifier and location | `server/access-class.ts`, `server/location.ts`, schema/storage: one location/access pipeline, versioned reasons, checked-IP and generation fencing | `tests/access-class.test.ts`, `tests/location-access.test.ts`, `tests/location-check-generation.test.ts`, `tests/location-catalog.test.ts`, `tests/location.test.ts` |
 | 3. Agent network signals | `vox_eval_agentd/net-signals.ts`, daemon, upgrade script, `server/net-signals-update.ts`: signed metadata probes, host public-IPv4 signal, optional reports | `tests/net-signals.test.ts`, `tests/net-signals-core.test.ts`, daemon/upgrade tests |
 | 4. System-only SIM and tags | `vox_eval_agentd/dialf-client.ts`, `server/sim-carrier.ts`, lookup, shared tags, claim freezing: MCC/MNC match, durable generations, redaction/HMAC | `tests/dialf-client.test.ts`, `tests/sim-carrier.test.ts`, reserved-key/claim tests |
 | 5. Analysis and UI | Metrics routes/storage, `client/src/lib/access-view.ts`, `access-text.ts`, Agents badge, access toggle/columns, `groupBy=region` | `tests/network-tags-region-access.test.ts`, `tests/access-toggle.test.ts`, E2E |
@@ -659,6 +672,78 @@ responses, and cache for 10 minutes. Public IPv4 checks ignore IPv6-only global
 addresses. Unknown agent fields are omitted, not manufactured. Module changes
 must preserve the security and fail-closed rules above; no production lookup or
 live dataset is needed to exercise fixture-backed tests.
+
+## Mid-evaluation network history
+
+The network baseline stays in `eval_jobs.tags`, frozen atomically at claim.
+Neither heartbeats nor classifier refreshes rewrite it. A sticky, system-owned
+`network_changed` flag records detected handoffs; `network_monitoring` separately
+records `unknown`, `monitoring`, `complete`, or `incomplete` coverage. Missing
+evidence is not evidence of stability. Analyses do not inherit the analyzing
+machine's network history.
+
+Events are append-only snapshots in `eval_job_network_events`, for example:
+
+```json
+{"event":"initial","timestamp":1793836800000,"tags":{"link":"wifi","isp":"att","line":"twilio"}}
+{"event":"network_change","timestamp":1793836810000,"tags":{"link":"cellular","isp":null,"line":"twilio"}}
+```
+
+The actual API also includes source, relative offset, and a sequence. Agent
+events report local topology changes, not a newly certified ISP. A buffered
+event must never inherit the reconnect IP's ISP. Core records independently
+observed egress/link changes at receipt time; classification refreshes alone
+are not handoffs. Custom/line tags remain the baseline dimensions. IPs, leases,
+raw interface details and local fingerprints never enter the public timeline.
+Internal claim/egress state lives in a separate table, not job response rows.
+
+### Delivery and execution identity
+
+No `attempt_id` is added. Identity is the existing job ID, agent ID, lease ID,
+Core-issued claim `startedAt`, and lease-global increasing event `seq`.
+Claim timestamps are strictly increasing per job and millisecond-precise so
+the JSON round trip cannot collapse two claims. Reclaims reset active coverage
+and event scope; an old timestamp/lease cannot write a successor's history.
+
+Optional `networkReport` on heartbeat and completion contains protocol version
+1, the job/start identity, first/last sequence, sticky change/count and continuity
+summaries, the eviction high-water mark, and up to 128 events. Core returns
+`networkAck` with the same job/start identity and the committed event IDs. An
+agent removes only those IDs: events created while a request was in flight stay
+queued. Lost acknowledgments can retry identical events; the unique database
+identity deduplicates across Core instances and conflicting payloads return 409.
+
+The daemon samples every second; heartbeat delivery remains every 30 seconds.
+Only unacknowledged details are retained, for at most two monotonic minutes and
+128 entries. Sticky summaries survive eviction. Core never expires accepted
+events on that timer. Gaps/suspension/unsupported observations fail closed. A
+final sample and `monitoring_end` accompany success or failure. Final events,
+coverage, job status and result commit together before any acknowledgment.
+Complete coverage needs a continuous monitor and every sequence from start
+through end; summaries alone cannot manufacture it. Acknowledged events that
+have left the agent queue still count toward coverage in Core.
+
+Change count is an observation count: Core and agent may see the same handoff,
+so it is not advertised as an exact count of physical transitions. The native
+sampler watches route/interface/source/gateway (and Linux Wi-Fi BSSID when `iw`
+is available). This is best-effort observation, not a guarantee that a sub-second
+handoff or an egress-only change between heartbeats can always be detected.
+
+### Strict dashboards and rollout
+
+Leaderboard, metrics overview/hour/day buckets, zoom detail, region availability
+and public v1 default to `network=strict`: only complete, unchanged runs qualify.
+Legacy, unsupported and incomplete runs are excluded, even when their change
+flag is false. `network=all` explicitly includes them without altering baseline
+grouping. All cache/query keys include policy. The console exposes an include
+unstable/unverified toggle, scoped coverage counts, and authorized job timelines.
+Normal job/result history is not filtered away.
+
+Deploy Core schema 66 first, then updated daemons. Older daemons still run but
+remain unverified. Docker startup overrides cannot prove continuous monitoring:
+use the read-only live host sampler documented in `vox_eval_agentd/README.md`.
+Missing/stale host observations never silently qualify as stable. Empty strict
+dashboards during rollout are expected; operators can explicitly choose All.
 
 ## Migration history
 
@@ -671,6 +756,8 @@ live dataset is needed to exercise fixture-backed tests.
 | `0061_paid_lookup_usage.sql` | 62 | Durable paid-lookup caps and HMAC-keyed number cache; remove plaintext cache keys |
 | `0062_sim_report_gen.sql` | 63 | Latest SIM report wins across Core processes |
 | `0063_lookup_validity_access_ip.sql` | 64 | Definitive invalid-number cache flag and internal checked-IP binding |
+| `0064_location_check_gen.sql` | 65 | Persisted generation for same-IP signal races and atomic partial-report merging |
+| `0065_job_network_events.sql` | 66 | Immutable per-execution event history, private claim state and strict coverage flags |
 
 Append migrations to `server/migrate.ts`; never rewrite an applied step. The
 negative-cache flag defaults to false for old rows. Access IP bindings are not

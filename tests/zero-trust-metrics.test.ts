@@ -17,7 +17,7 @@ describeDb("zero-trust metrics gates", () => {
     tier: "public" | "shared" | "private" | "team"; trust: string | null; siteId: string | null;
   }) => {
     const job = (await db.insert(evalJobs).values({
-      createdBy: 1, status: "completed", config: {}, snapshot: publicSnap,
+      createdBy: 1, status: "completed", config: {}, snapshot: publicSnap, networkMonitoring: "complete",
       tokenDispatchTier: over.tier, locationTrust: over.trust, siteId: over.siteId,
     } as typeof evalJobs.$inferInsert).returning())[0];
     jobIds.push(job.id);

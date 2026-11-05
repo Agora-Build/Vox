@@ -4,6 +4,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import crypto from "crypto";
 import type { Tag, JobTag, LineLookup } from "./tags";
+import type { NetworkMonitoring, NetworkEventTags } from "./network-events";
 
 // Enums
 export const userPlanEnum = pgEnum("user_plan", ["basic", "premium", "principal", "fellow"]);
@@ -332,6 +333,9 @@ export const evalAgents = pgTable("eval_agents", {
   region: varchar("region", { length: 64 }),
   locationTrust: varchar("location_trust", { length: 16 }).default("unknown").notNull(),
   locationCheckedAt: timestamp("location_checked_at"),
+  // Core-only fence for asynchronous location/access checks, including
+  // signal changes that keep the same egress IP. Migration 0064.
+  locationCheckGen: bigint("location_check_gen", { mode: "number" }).notNull().default(0),
   // Full detection evidence (city/coords/asn/signals). Core-internal — never
   // exposed on any API, same rule as observedIp.
   locationSource: jsonb("location_source"),
@@ -393,7 +397,7 @@ export const evalAgents = pgTable("eval_agents", {
 // its DB default ('[]') and is set afterwards through its own edit path.
 // netSignals is the same jsonb-$type situation (no DB default — starts NULL,
 // same as "not reported yet"); register/heartbeat set it via
-// storage.updateEvalAgent (Partial<EvalAgent>, correctly typed) instead of
+// storage.prepareEvalAgentLocationCheck instead of
 // through this insert.
 export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   id: true,
@@ -403,6 +407,7 @@ export const insertEvalAgentSchema = createInsertSchema(evalAgents).omit({
   lastJobAt: true,
   tags: true,
   netSignals: true,
+  locationCheckGen: true,
   // System-only — never set through an insert built from input.
   accessClass: true,
   accessReason: true,
@@ -640,6 +645,9 @@ export const evalJobs = pgTable("eval_jobs", {
   // value rule can change later without rewriting history (shared/tags.ts
   // `effectiveTags`). Null for jobs claimed before this release (untagged).
   tags: jsonb("tags").$type<JobTag[]>(),
+  networkChanged: boolean("network_changed").notNull().default(false),
+  networkMonitoring: varchar("network_monitoring", { length: 16 }).$type<NetworkMonitoring>().notNull().default("unknown"),
+  networkChangeCount: integer("network_change_count").notNull().default(0),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   // Set once marketplace.settle() has resolved for this (terminal) job: its
@@ -660,6 +668,8 @@ export const evalJobs = pgTable("eval_jobs", {
   statusSiteIdx: index("eval_jobs_status_site_idx").on(table.status, table.siteId),
   evalAgentIdx: index("eval_jobs_eval_agent_idx").on(table.evalAgentId),
   scheduleIdx: index("eval_jobs_schedule_idx").on(table.scheduleId),
+  strictNetworkIdx: index("eval_jobs_strict_network_idx").on(table.id)
+    .where(sql`network_monitoring = 'complete' AND network_changed = false`),
   // Serves the shared-dispatch reap-settle sweep (storage.getReapableSharedJobs):
   // targeted terminal jobs, ordered oldest-first so a backlog drains toward the
   // 26h leak-reaper before aging out (GitHub #90 / #7). A plain btree serves both
@@ -676,10 +686,44 @@ export const insertEvalJobSchema = createInsertSchema(evalJobs).omit({
   updatedAt: true,
   startedAt: true,
   completedAt: true,
+  networkChanged: true,
+  networkMonitoring: true,
+  networkChangeCount: true,
 });
 
 export type InsertEvalJob = z.infer<typeof insertEvalJobSchema>;
 export type EvalJob = typeof evalJobs.$inferSelect;
+
+export const evalJobNetworkState = pgTable("eval_job_network_state", {
+  jobId: integer("job_id").primaryKey().references(() => evalJobs.id, { onDelete: "cascade" }),
+  agentId: integer("agent_id").notNull(),
+  leaseId: text("lease_id"),
+  startedAt: timestamp("started_at").notNull(),
+  observedIp: text("observed_ip"),
+  linkType: varchar("link_type", { length: 16 }),
+  firstSeq: bigint("first_seq", { mode: "number" }),
+  lastSeq: bigint("last_seq", { mode: "number" }),
+  monitoringGap: boolean("monitoring_gap").notNull().default(false),
+  finalized: boolean("finalized").notNull().default(false),
+});
+
+export const evalJobNetworkEvents = pgTable("eval_job_network_events", {
+  id: serial("id").primaryKey(),
+  jobId: integer("job_id").notNull().references(() => evalJobs.id, { onDelete: "cascade" }),
+  agentId: integer("agent_id").notNull(),
+  leaseId: text("lease_id"),
+  startedAt: timestamp("started_at").notNull(),
+  seq: bigint("seq", { mode: "number" }),
+  event: varchar("event", { length: 32 }).notNull(),
+  source: varchar("source", { length: 8 }).notNull(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  offsetMs: integer("offset_ms").notNull(),
+  tags: jsonb("tags").$type<NetworkEventTags>().notNull(),
+  changed: jsonb("changed").$type<string[]>().notNull().default([]),
+}, (table) => ({
+  eventIdentityIdx: uniqueIndex("eval_job_network_events_identity_idx").on(table.jobId, table.agentId, table.leaseId, table.startedAt, table.source, table.seq),
+  historyIdx: index("eval_job_network_events_history_idx").on(table.jobId, table.startedAt, table.id),
+}));
 
 // ==================== EVAL RESULTS ====================
 

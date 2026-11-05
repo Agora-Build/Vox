@@ -16,6 +16,7 @@ import type { EvalJob, EvalResult } from "@shared/schema";
 import { EvalResultView } from "@/components/eval-result-view";
 import { formatTag, explainSystemReason, isSystemKey, type JobTag } from "@shared/tags";
 import { accessHint } from "@/lib/access-text";
+import { JobNetworkTimeline } from "@/components/job-network-timeline";
 
 const TAG_SOURCE_TEXT: Record<JobTag["source"], { label: string; title: string }> = {
   flow: { label: "flow", title: "Set on the eval flow" },
@@ -262,6 +263,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </div>
       </div>
 
+      {job.kind === "eval" && job.startedAt && <JobNetworkTimeline key={`${job.id}:${job.startedAt}`} job={job} />}
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

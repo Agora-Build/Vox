@@ -560,6 +560,18 @@ for name in "${!images[@]}"; do
         public_ip_on_iface=$(host_public_ip_on_iface)
         [ -n "$public_ip_on_iface" ] && env_args+="-e VOX_PUBLIC_IP_ON_IFACE=$public_ip_on_iface "
 
+        # Optional live host sampler. Mount the directory, not the atomically
+        # replaced file, so updates remain visible inside Docker.
+        network_status_dir="${VOX_NETWORK_STATUS_DIR:-}"
+        if [ -n "$network_status_dir" ]; then
+            if [[ "$network_status_dir" =~ ^/[A-Za-z0-9_./-]+$ && -f "$network_status_dir/status.json" ]]; then
+                mount_args+="-v $network_status_dir:/run/vox-network:ro "
+                env_args+="-e VOX_NETWORK_STATUS_FILE=/run/vox-network/status.json "
+            else
+                echo "WARNING: VOX_NETWORK_STATUS_DIR must be an absolute directory using letters, numbers, dot, dash, slash or underscore, containing status.json."
+            fi
+        fi
+
         # ------------------------------------------------------------------
         # DialF bridge (Phone vs Agent): dialfd runs on the HOST; the daemon
         # runs in this container. Auto-detect the control socket and bind-mount
@@ -578,7 +590,7 @@ for name in "${!images[@]}"; do
             dialf_detected=1
             exchange_dir="${DIALF_EXCHANGE_DIR:-$HOME/vox-phone-exchange}"
             mkdir -p "$exchange_dir/corpus" "$exchange_dir/recordings"
-            mount_args="-v $dialf_socket:$dialf_socket -v $exchange_dir:$exchange_dir"
+            mount_args+="-v $dialf_socket:$dialf_socket -v $exchange_dir:$exchange_dir "
             env_args+="-e VOX_DIALF_SOCKET=$dialf_socket -e VOX_DIALF_EXCHANGE_DIR=$exchange_dir "
             echo "DialF detected: socket $dialf_socket mounted; exchange dir $exchange_dir"
             echo "  -> recordings are routed into the exchange automatically (per-run"

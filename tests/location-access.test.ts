@@ -73,7 +73,7 @@ describeDb("runAgentLocationCheck persists access", () => {
 
   it("a datacenter range makes trust datacenter (region-eligible) and stores access datacenter — with no DNS lookup", async () => {
     const deps = makeDeps();
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh }, token: { id: privateTokenId, dispatchTier: "private" },
       ip: DC_IP, immediate: true, deps,
     });
@@ -90,7 +90,7 @@ describeDb("runAgentLocationCheck persists access", () => {
 
   it("the reverse-DNS answer feeds the classifier: access network + residential name → lastmile", async () => {
     const deps = makeDeps();
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh }, token: { id: privateTokenId, dispatchTier: "private" },
       ip: DT_IP, immediate: true, deps,
     });
@@ -103,7 +103,7 @@ describeDb("runAgentLocationCheck persists access", () => {
   });
 
   it("agent net signals reach the classifier (cloud metadata → datacenter)", async () => {
-    await runAgentLocationCheck({
+    await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh }, token: { id: privateTokenId, dispatchTier: "private" },
       ip: DT_IP, immediate: true, deps: makeDeps(), netSignals: { cloudMetadata: true },
     });
@@ -114,7 +114,7 @@ describeDb("runAgentLocationCheck persists access", () => {
   });
 
   it("public tier (record-only path) still stores access", async () => {
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, region: "na-us-seattle", siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0 },
       token: { id: publicTokenId, dispatchTier: "public" },
       ip: DC_IP, immediate: false, deps: makeDeps(),
@@ -128,7 +128,7 @@ describeDb("runAgentLocationCheck persists access", () => {
 
   it("capped result (data unloaded) writes no access (never lastmile, never no-data) and makes no DNS lookup", async () => {
     const deps = makeDeps({ networkClassLoaded: false });
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh, locationTrust: "unknown" }, token: { id: privateTokenId, dispatchTier: "private" },
       ip: DT_IP, immediate: true, deps,
     });
@@ -144,7 +144,7 @@ describeDb("runAgentLocationCheck persists access", () => {
     const checkedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
     await db.update(evalAgents).set({ locationTrust: "datacenter", locationCheckedAt: checkedAt, accessClass: "datacenter", accessReason: "v1: dc-range", accessCheckedAt: checkedAt })
       .where(eq(evalAgents.id, agentId));
-    const res = await runAgentLocationCheck({
+    const res = await runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, region: "na-us-seattle", siteId: "na-us-seattle-01", pendingRegion: null, pendingRegionCount: 0, locationTrust: "datacenter" },
       token: { id: publicTokenId, dispatchTier: "public" },
       ip: DC_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }),
@@ -161,21 +161,21 @@ describeDb("runAgentLocationCheck persists access", () => {
     const agent = { id: agentId, ...fresh };
     const tags = async () => buildJobTags({ job: { kind: "eval", transport: "web" }, snapshotFlow: null, agent: await row() }, () => null);
     await storage.updateEvalAgentObservedIp(agentId, DT_IP);
-    await runAgentLocationCheck({ agent, token, ip: DT_IP, immediate: true, deps: makeDeps() });
+    await runAgentLocationCheck({ checkGeneration: 0, agent, token, ip: DT_IP, immediate: true, deps: makeDeps() });
     expect(await tags()).toContainEqual({ key: "access", value: "lastmile", source: "detected", reason: "v1: eyeball-asn + residential-rdns" });
     const before = await row();
 
     // A restart on the SAME IP retains the valid old classification.
-    await runAgentLocationCheck({ agent: before, token, ip: DT_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }) });
+    await runAgentLocationCheck({ checkGeneration: 0, agent: before, token, ip: DT_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }) });
     expect(await tags()).toContainEqual({ key: "access", value: "lastmile", source: "detected", reason: "v1: eyeball-asn + residential-rdns" });
 
     // The detector cannot answer yet, but the old IP's class cannot follow the agent.
     await storage.updateEvalAgentObservedIp(agentId, DC_IP);
-    await runAgentLocationCheck({ agent: before, token, ip: DC_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }) });
+    await runAgentLocationCheck({ checkGeneration: 0, agent: before, token, ip: DC_IP, immediate: false, deps: makeDeps({ networkClassLoaded: false }) });
     expect(await tags()).toContainEqual({ key: "access", value: "unknown", source: "detected", reason: "v1: ip-changed" });
     expect((await row()).accessCheckedAt?.getTime()).toBe(before.accessCheckedAt?.getTime());
 
-    await runAgentLocationCheck({ agent: await row(), token, ip: DC_IP, immediate: false, deps: makeDeps() });
+    await runAgentLocationCheck({ checkGeneration: 0, agent: await row(), token, ip: DC_IP, immediate: false, deps: makeDeps() });
     expect((await row()).accessIp).toBe(DC_IP);
     expect(await tags()).toContainEqual({ key: "access", value: "datacenter", source: "detected", reason: "v1: dc-range" });
   });
@@ -187,14 +187,14 @@ describeDb("runAgentLocationCheck persists access", () => {
     const dnsStarted = new Promise<void>((resolve) => { started = resolve; });
     const oldDns = new Promise<string>((resolve) => { finishDns = resolve; });
     await storage.updateEvalAgentObservedIp(agentId, DT_IP);
-    const oldCheck = runAgentLocationCheck({
+    const oldCheck = runAgentLocationCheck({ checkGeneration: 0,
       agent: { id: agentId, ...fresh }, token, ip: DT_IP, immediate: true,
       deps: makeDeps({ reverseDns: async () => { started(); return oldDns; } }),
     });
     await dnsStarted;
     try {
       await storage.updateEvalAgentObservedIp(agentId, DC_IP);
-      await runAgentLocationCheck({ agent: await row(), token, ip: DC_IP, immediate: true, deps: makeDeps() });
+      await runAgentLocationCheck({ checkGeneration: 0, agent: await row(), token, ip: DC_IP, immediate: true, deps: makeDeps() });
     } finally {
       finishDns("p5096a101.dip0.t-ipconnect.de");
       await oldCheck;
@@ -210,10 +210,10 @@ describeDb("runAgentLocationCheck persists access", () => {
     const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
     const staleAgent = { id: agentId, ...fresh };
     await storage.updateEvalAgentObservedIp(agentId, DC_IP);
-    await runAgentLocationCheck({ agent: staleAgent, token, ip: DC_IP, immediate: true, deps: makeDeps() });
+    await runAgentLocationCheck({ checkGeneration: 0, agent: staleAgent, token, ip: DC_IP, immediate: true, deps: makeDeps() });
     const current = await row();
 
-    const result = await runAgentLocationCheck({ agent: staleAgent, token, ip: undefined, immediate: true, deps: makeDeps() });
+    const result = await runAgentLocationCheck({ checkGeneration: 0, agent: staleAgent, token, ip: undefined, immediate: true, deps: makeDeps() });
 
     expect(await row()).toEqual(current);
     expect(result).toEqual({ region: current.region, siteId: current.siteId, locationTrust: current.locationTrust });
@@ -223,10 +223,10 @@ describeDb("runAgentLocationCheck persists access", () => {
     const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
     const staleAgent = { id: agentId, ...fresh };
     await storage.updateEvalAgentObservedIp(agentId, DC_IP);
-    await runAgentLocationCheck({ agent: staleAgent, token, ip: DC_IP, immediate: true, deps: makeDeps() });
+    await runAgentLocationCheck({ checkGeneration: 0, agent: staleAgent, token, ip: DC_IP, immediate: true, deps: makeDeps() });
     const current = await row();
 
-    const result = await runAgentLocationCheck({
+    const result = await runAgentLocationCheck({ checkGeneration: 0,
       agent: staleAgent, token, ip: DT_IP, immediate: true,
       deps: makeDeps({ networkClassLoaded: false, geo: () => null }),
     });
@@ -237,7 +237,7 @@ describeDb("runAgentLocationCheck persists access", () => {
 
   it.each(["private", "public"])("%s agent can record a no-IP check before its first observation", async (dispatchTier) => {
     const token = { id: dispatchTier === "public" ? publicTokenId : privateTokenId, dispatchTier };
-    await runAgentLocationCheck({ agent: { id: agentId, ...fresh }, token, ip: undefined, immediate: true, deps: makeDeps() });
+    await runAgentLocationCheck({ checkGeneration: 0, agent: { id: agentId, ...fresh }, token, ip: undefined, immediate: true, deps: makeDeps() });
 
     const current = await row();
     expect(current.accessClass).toBe("unknown");
@@ -248,7 +248,7 @@ describeDb("runAgentLocationCheck persists access", () => {
   it("Tor exit / private IP: stored unknown and no DNS lookup", async () => {
     for (const [ip, reason] of [["185.220.101.1", "v1: tor"], ["10.0.0.5", "v1: private-ip"]] as const) {
       const deps = makeDeps();
-      await runAgentLocationCheck({
+      await runAgentLocationCheck({ checkGeneration: 0,
         agent: { id: agentId, ...fresh }, token: { id: privateTokenId, dispatchTier: "private" },
         ip, immediate: true, deps,
       });

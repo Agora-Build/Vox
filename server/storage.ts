@@ -1,4 +1,5 @@
 import * as yaml from "js-yaml";
+import type { NetworkReport, NetworkAck } from "@shared/network-events";
 import { metricsResolution, metricsDetailResolution, METRICS_DAY_MS, METRICS_RETENTION_DAYS, type MetricsWindow, type MetricsResolution } from "@shared/metrics-window";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
@@ -109,6 +110,8 @@ import {
 } from "@shared/schema";
 import { regionSiteSequence, haversineKm, type RegionCandidate } from "@shared/regions";
 import type { AsnLookupFn } from "./job-tags";
+import type { AgentNetSignals } from "./access-class";
+import { netSignalsChanged, netSignalsPatch } from "./net-signals-update";
 import type { Tag, JobTag } from "@shared/tags";
 import { groupValueSql, resultRegionSql, tagFilterCondition } from "./tag-sql";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -166,7 +169,7 @@ export type MetricSourceRow = Pick<EvalResult,
   & { jobTags?: JobTag[] | null; tagValue?: string | null; recordingRegion?: string | null };
 
 /** The network-tag knobs of a metrics query: AND-ed filters, and an optional groupBy key. */
-export type MetricsTagQuery = { tagFilters?: Tag[]; groupBy?: string };
+export type MetricsTagQuery = { tagFilters?: Tag[]; groupBy?: string; network?: "strict" | "all" };
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -931,15 +934,17 @@ export class DatabaseStorage {
   // `locationCheckedAt` and the access fields are optional: a check made while
   // the VPN/datacenter data is unloaded leaves them as they were, so the next
   // heartbeat re-checks instead of waiting out LOCATION_RECHECK_HOURS.
-  // A completed check may not overwrite a newer IP's result. Null observed IP
-  // supports a first check before any observation; normal routes record it first.
+  // A completed check may not overwrite a newer check's result, even on the
+  // same IP. The generation is allocated with the persisted input snapshot.
+  // Null observed IP supports a first check before any observation;
+  // normal routes record it first.
   // The guard is independent of optional access fields, including unloaded data.
   // A no-IP check may only apply while no IP has been observed.
   async updateEvalAgentLocation(agentId: number, fields: {
     region: string | null; siteId: string | null; locationTrust: string;
     locationCheckedAt?: Date; locationSource: unknown;
     pendingRegion: string | null; pendingRegionCount: number;
-  } & Partial<EvalAgentAccessFields>, checkedIp: string | null): Promise<boolean> {
+  } & Partial<EvalAgentAccessFields>, checkedIp: string | null, checkGeneration: number): Promise<boolean> {
     const rows = await db.update(evalAgents).set({
       region: fields.region,
       siteId: fields.siteId,
@@ -957,6 +962,7 @@ export class DatabaseStorage {
       updatedAt: new Date(),
     }).where(and(
       eq(evalAgents.id, agentId),
+      eq(evalAgents.locationCheckGen, checkGeneration),
       checkedIp === null ? isNull(evalAgents.observedIp)
         : or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, checkedIp), eq(evalAgents.observedIp, `::ffff:${checkedIp}`)),
     )).returning({ id: evalAgents.id });
@@ -968,7 +974,7 @@ export class DatabaseStorage {
   // (access is computed for every agent). Optional fields as above.
   async updateEvalAgentLocationObservability(agentId: number, fields: {
     locationTrust: string; locationCheckedAt?: Date; locationSource: unknown;
-  } & Partial<EvalAgentAccessFields>, checkedIp: string | null): Promise<boolean> {
+  } & Partial<EvalAgentAccessFields>, checkedIp: string | null, checkGeneration: number): Promise<boolean> {
     const rows = await db.update(evalAgents).set({
       locationTrust: fields.locationTrust,
       ...(fields.locationCheckedAt ? { locationCheckedAt: fields.locationCheckedAt } : {}),
@@ -982,6 +988,7 @@ export class DatabaseStorage {
       updatedAt: new Date(),
     }).where(and(
       eq(evalAgents.id, agentId),
+      eq(evalAgents.locationCheckGen, checkGeneration),
       checkedIp === null ? isNull(evalAgents.observedIp)
         : or(isNull(evalAgents.observedIp), eq(evalAgents.observedIp, checkedIp), eq(evalAgents.observedIp, `::ffff:${checkedIp}`)),
     )).returning({ id: evalAgents.id });
@@ -1309,12 +1316,42 @@ export class DatabaseStorage {
     await db.update(evalAgents).set({ lastSeenAt: new Date(), state: "idle", updatedAt: new Date() }).where(eq(evalAgents.id, id));
   }
 
+  /** Persist the input snapshot and reserve its check before any async detection. */
+  async prepareEvalAgentLocationCheck(agentId: number, opts: {
+    ip?: string;
+    netSignals?: AgentNetSignals;
+    forceCheck?: boolean;
+    recheckAfterMs: number;
+  }): Promise<{ agent: EvalAgent; shouldCheck: boolean }> {
+    return db.transaction(async (tx) => {
+      // Merge against the locked row, not the route's earlier snapshot: two
+      // partial heartbeats on different Core instances must preserve both fields.
+      const [current] = await tx.select().from(evalAgents).where(eq(evalAgents.id, agentId)).for("update");
+      if (!current) throw new Error("Eval agent not found");
+      const ip = opts.ip?.replace(/^::ffff:/, "");
+      const ipChanged = !!ip && ip !== current.observedIp?.replace(/^::ffff:/, "");
+      const bindingChanged = !!ip && ip !== current.accessIp?.replace(/^::ffff:/, "");
+      const shouldCheck = !!opts.forceCheck || ipChanged || bindingChanged
+        || !current.locationCheckedAt
+        || Date.now() - current.locationCheckedAt.getTime() > opts.recheckAfterMs
+        || current.pendingRegion !== null
+        || netSignalsChanged(current.netSignals, opts.netSignals);
+      if (!ip && opts.netSignals === undefined && !shouldCheck) return { agent: current, shouldCheck };
+      const [agent] = await tx.update(evalAgents).set({
+        ...(ip ? { observedIp: ip, observedIpAt: new Date() } : {}),
+        ...netSignalsPatch(current.netSignals, opts.netSignals),
+        ...(shouldCheck ? { locationCheckGen: sql`${evalAgents.locationCheckGen} + 1` } : {}),
+      }).where(eq(evalAgents.id, agentId)).returning();
+      return { agent, shouldCheck };
+    });
+  }
+
   /**
    * Layer-2/3 foundation: Core-observed egress IP of an agent (register/
    * heartbeat). Raw IP is Core-internal — future phases derive network labels
    * (residential/datacenter/starlink) from it; never expose it publicly.
-   * Registration/heartbeat await this before launching their location check,
-   * so a late check for the previous IP cannot overwrite the current one.
+   * A low-level observation without launching a check. Registration/heartbeat
+   * use prepareEvalAgentLocationCheck to also merge signals and reserve a generation.
    * It must never reject: an observation failure must not break a heartbeat.
    */
   async updateEvalAgentObservedIp(agentId: number, ip: string): Promise<void> {
@@ -1444,7 +1481,7 @@ export class DatabaseStorage {
     identity: { id: number; siteId: string | null; region: string | null; dispatchTier: string; createdBy: number; ownerOrgId: number | null; locationTrust: string; phoneCapable?: boolean; analyzeCapable?: boolean },
     // Tests inject the ASN lookup (no mmdb needed); production uses the
     // shipped ASN database via job-tags' default (server/location.ts lookupAsn).
-    opts: { asnLookup?: AsnLookupFn } = {},
+    opts: { asnLookup?: AsnLookupFn; expectedLeaseId?: string | null } = {},
   ): Promise<EvalJob | undefined> {
     // Loaded lazily: job-tags → location → storage would otherwise be an
     // import cycle (storage imports no server module at the top). By claim
@@ -1501,9 +1538,13 @@ export class DatabaseStorage {
       // claim UPDATE itself. One statement, one commit: a claim can never
       // land without its tags (no later write a crash could skip).
       const agentRow = await client.query(
-        `SELECT tags, link_type, observed_ip, access_class, access_reason, access_ip, sim_carrier, sim_reason FROM eval_agents WHERE id = $1`,
+        `SELECT tags, link_type, observed_ip, access_class, access_reason, access_ip, sim_carrier, sim_reason, current_lease_id FROM eval_agents WHERE id = $1 FOR SHARE`,
         [agentId],
       );
+      if (opts.expectedLeaseId !== undefined && agentRow.rows[0]?.current_lease_id !== opts.expectedLeaseId) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
       const snapshotFlow = (selectResult.rows[0].snapshot as JobSnapshot | null)?.evalFlow ?? null;
       const jobTags = buildJobTags({
         job: { kind: selectResult.rows[0].kind, transport: selectResult.rows[0].transport },
@@ -1522,9 +1563,14 @@ export class DatabaseStorage {
       // token_dispatch_tier + location_trust frozen, site stamped, in the same
       // atomic update: a pooled job (site_id NULL) records the claiming agent's
       // concrete site, and the job's trust is fixed at the moment it's claimed.
+      // Private state retains the claim clock when a reaper clears started_at,
+      // keeping execution identities distinct even across clock skew.
       const updateResult = await client.query(
         `UPDATE eval_jobs
-         SET eval_agent_id = $1, status = 'running'::eval_job_status, started_at = NOW(), updated_at = NOW(),
+         SET eval_agent_id = $1, status = 'running'::eval_job_status,
+             started_at = GREATEST(date_trunc('milliseconds', clock_timestamp()), started_at + interval '1 millisecond',
+               (SELECT started_at + interval '1 millisecond' FROM eval_job_network_state WHERE job_id = eval_jobs.id)),
+             updated_at = NOW(), network_changed = false, network_monitoring = 'unknown', network_change_count = 0,
              token_dispatch_tier = $3,
              -- An analysis keeps no site: the agent's location says nothing
              -- about where the recording was made (Tools → Analyze). A pooled
@@ -1539,6 +1585,8 @@ export class DatabaseStorage {
          RETURNING *`,
         [agentId, jobId, identity.dispatchTier, identity.siteId, identity.locationTrust, JSON.stringify(jobTags)]
       );
+      const { initializeJobNetworkHistory } = await import("./network-events");
+      await initializeJobNetworkHistory(client, updateResult.rows[0], agentRow.rows[0] ?? {});
       await client.query('COMMIT');
       return snakeToCamel(updateResult.rows[0]) as EvalJob;
     } catch (error) {
@@ -2077,39 +2125,51 @@ export class DatabaseStorage {
    */
   async finalizeRunningJobWithResult(
     jobId: number, error: string | undefined, result: InsertEvalResult | null,
-    holder?: { agentId: number; leaseId: unknown },
+    holder?: { agentId: number; leaseId: unknown; startedAt?: Date | null;
+      network?: { report?: NetworkReport; ip?: string; onAck: (ack: NetworkAck | undefined) => void } },
   ): Promise<EvalJob | undefined> {
     const superseded = new Error("superseded lease");
+    const client = await pool.connect();
     try {
-      return await db.transaction(async (tx) => {
-        const [done] = await tx.update(evalJobs)
-          .set({
-            status: error ? "failed" : "completed",
-            completedAt: new Date(),
-            error: error || null,
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(evalJobs.id, jobId),
-            eq(evalJobs.status, "running"),
-            holder ? eq(evalJobs.evalAgentId, holder.agentId) : undefined,
-          ))
-          .returning();
-        if (!done) return undefined;
-        if (holder) {
-          // After the job row (the order claims and reapers lock in).
-          const [agent] = await tx.select({ lease: evalAgents.currentLeaseId }).from(evalAgents)
-            .where(eq(evalAgents.id, holder.agentId)).for("share");
-          // Same rule as the routes' isSupersededLease.
-          if (!agent || (!!agent.lease && agent.lease !== holder.leaseId)) throw superseded;
-        }
-        if (result && !error && !done.deletedAt) await tx.insert(evalResults).values(result);
-        return done;
-      });
+      await client.query("BEGIN");
+      const tx = drizzle(client);
+      const [running] = await tx.select().from(evalJobs).where(eq(evalJobs.id, jobId)).for("update");
+      if (holder && (!running || running.evalAgentId !== holder.agentId ||
+        (holder.startedAt && running.startedAt?.getTime() !== holder.startedAt.getTime()))) throw superseded;
+      if (holder) {
+        const [agent] = await tx.select({ lease: evalAgents.currentLeaseId }).from(evalAgents)
+          .where(eq(evalAgents.id, holder.agentId)).for("share");
+        if (!agent || (!!agent.lease && agent.lease !== holder.leaseId)) throw superseded;
+      }
+      let networkAck: NetworkAck | undefined;
+      if (holder?.network) {
+        const { recordAgentNetworkEvents } = await import("./network-events");
+        networkAck = await recordAgentNetworkEvents({ agentId: holder.agentId, leaseId: typeof holder.leaseId === "string" ? holder.leaseId : null,
+          ip: holder.network.ip, report: holder.network.report, finalJobId: jobId, client });
+      }
+      const [done] = await tx.update(evalJobs)
+        .set({
+          status: error ? "failed" : "completed",
+          completedAt: new Date(),
+          error: error || null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(evalJobs.id, jobId),
+          eq(evalJobs.status, "running"),
+          holder ? eq(evalJobs.evalAgentId, holder.agentId) : undefined,
+          holder?.startedAt ? eq(evalJobs.startedAt, holder.startedAt) : undefined,
+        ))
+        .returning();
+      if (done && result && !error && !done.deletedAt) await tx.insert(evalResults).values(result);
+      await client.query("COMMIT");
+      holder?.network?.onAck(networkAck);
+      return done;
     } catch (err) {
+      await client.query("ROLLBACK");
       if (err === superseded) return undefined;
       throw err;
-    }
+    } finally { client.release(); }
   }
 
   async completeEvalJob(jobId: number, error?: string): Promise<EvalJob | undefined> {
@@ -2439,13 +2499,14 @@ export class DatabaseStorage {
   private joinCommunity(q: any): any { return this.joinTier(q); }
   private joinMyEvals(q: any): any { return this.joinTier(q); }
 
-  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = []) {
+  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = [], network: "strict" | "all" = "strict") {
     const conditions = tier === "mainline" ? this.mainlineConditions(hoursBack, scope)
       : tier === "community" ? this.communityConditions(hoursBack, scope)
       : this.myEvalConditions(userId!, hoursBack, scope);
     // Transport is a hard partition, never mixed (design 2026-09-21 §11): every
     // tier view is scoped to exactly one transport; default web.
     conditions.push(eq(evalJobs.transport, transport));
+    if (network === "strict") conditions.push(eq(evalJobs.networkMonitoring, "complete"), eq(evalJobs.networkChanged, false));
     // Network-tag filters, AND-ed, on the job's effective value for this tier's
     // board (the tier names are the board names). In SQL, so they apply before
     // any row limit. A job with no tags (NULL) matches no filter.
@@ -2495,7 +2556,7 @@ export class DatabaseStorage {
       ...(tagValue ? { tagValue: sql<string>`${tagValue}` } : {}),
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
-      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport, tags.tagFilters), ...(window ? [
+      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport, tags.tagFilters, tags.network), ...(window ? [
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)),
       ] : [])))
@@ -2518,7 +2579,7 @@ export class DatabaseStorage {
     }
 
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport, tags.tagFilters)))
+      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport, tags.tagFilters, tags.network)))
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
@@ -2544,12 +2605,12 @@ export class DatabaseStorage {
     return this.tierMetrics("myEvals", hoursBack, userId, scope, transport, tags);
   }
 
-  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = []): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
+  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = [], network: "strict" | "all" = "strict"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
     if (tier === "myEvals" && userId == null) throw new Error("My Evals detail requires a user");
     let resolution: MetricsResolution = metricsDetailResolution(window.to - window.from);
     const retentionHours = METRICS_RETENTION_DAYS * 24;
     if (resolution === "raw") {
-      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport, tagFilters),
+      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport, tagFilters, network),
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)));
       // Probe only IDs so dense windows skip transferring raw chart rows entirely.
@@ -2596,11 +2657,11 @@ export class DatabaseStorage {
       return { from: Math.floor(window.from / unit) * unit, to: Math.ceil(window.to / unit) * unit };
     };
     let actualWindow = align(resolution);
-    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters });
+    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters, network });
     if (rows.length > METRICS_ROW_CEILING && resolution === "hour") {
       resolution = "day";
       actualWindow = align(resolution);
-      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters });
+      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters, network });
     }
     return { ...actualWindow, metrics: rows.slice(0, METRICS_ROW_CEILING), resolution, truncated: rows.length > METRICS_ROW_CEILING };
   }
@@ -2611,9 +2672,9 @@ export class DatabaseStorage {
   // stripped to their base ("<base>-NN" -> "<base>") and deduped/counted;
   // a NULL siteId (unverified/self-hosted agent) is reported separately via
   // hasUnverified rather than mixed into baseIds.
-  async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
+  async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number, transport: "web" | "phone" = "web", tags: MetricsTagQuery = {}): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
     const effectiveHoursBack = hoursBack ?? METRICS_ALL_MAX_DAYS * 24;
-    const conditions = this.tierConditions(tier, effectiveHoursBack, userId);
+    const conditions = this.tierConditions(tier, effectiveHoursBack, userId, undefined, transport, tags.tagFilters, tags.network);
     // A result's region: where it was measured (its site), or, for an analyzed
     // recording, where its uploader said it was made (recording_region).
     const region = sql<string | null>`${resultRegionSql(evalResults.siteId, evalResults.recordingRegion)}`;
@@ -2638,12 +2699,12 @@ export class DatabaseStorage {
   async getTierEvalResults(
     tier: MetricTier,
     limit: number,
-    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone"; tagFilters?: Tag[] } = {},
+    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone"; tagFilters?: Tag[]; network?: "strict" | "all" } = {},
   ): Promise<Array<EvalResult & { jobTags: JobTag[] | null }>> {
     // "My evals" without a user would compare owner = NULL and silently match nothing.
     if (tier === "myEvals" && opts.userId == null) throw new Error("getTierEvalResults: myEvals needs a userId");
     return this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web", opts.tagFilters)))
+      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web", opts.tagFilters, opts.network)))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
       // The job's frozen tags ride along (eval_jobs is joined for tiering anyway)
@@ -2658,6 +2719,15 @@ export class DatabaseStorage {
    */
   async getMainlineEvalResults(limit: number = 50, hoursBack?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web"): Promise<EvalResult[]> {
     return this.getTierEvalResults("mainline", limit, { hoursBack, scope, transport });
+  }
+
+  async getNetworkCoverage(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tags: MetricsTagQuery = {}) {
+    const [counts] = await this.applyTierJoins(tier, db.select({
+      stable: sql<number>`count(*) FILTER (WHERE ${evalJobs.networkMonitoring} = 'complete' AND NOT ${evalJobs.networkChanged})::int`,
+      changed: sql<number>`count(*) FILTER (WHERE ${evalJobs.networkChanged})::int`,
+      unverified: sql<number>`count(*) FILTER (WHERE NOT ${evalJobs.networkChanged} AND ${evalJobs.networkMonitoring} <> 'complete')::int`,
+    }).from(evalResults)).where(and(...this.tierConditions(tier, hoursBack ?? METRICS_ALL_MAX_DAYS * 24, userId, scope, transport, tags.tagFilters, "all")));
+    return counts as { stable: number; changed: number; unverified: number };
   }
 
   async getCommunityEvalResults(limit: number = 50, hoursBack?: number): Promise<EvalResult[]> {

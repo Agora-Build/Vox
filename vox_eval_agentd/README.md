@@ -30,6 +30,56 @@ vox-agentd.ts  (compiled to vox-agentd.js for Docker)
 10. Queues artifact upload (processed when daemon goes idle)
 11. Cleans up temp files
 
+### Network monitoring and strict benchmarks
+
+Updated agents sample the local route/link every second and send network events
+on the normal 30-second heartbeat. Acknowledged events are removed immediately;
+unacknowledged details are bounded to two minutes/128 events. Whole-run change
+and coverage summaries survive dropped details. Completion/failure flushes a
+final sample. No extra attempt ID is used: Core's claim timestamp scopes events
+alongside the existing job, agent and lease IDs and a lease-global sequence.
+
+Native Linux/macOS processes detect the default route, interface and source
+address locally. Linux additionally uses `iw` for Wi-Fi BSSID when available.
+Private topology is hashed locally; only coarse link type and change dimensions
+are reported. Sampling is best effort: very short transitions or egress-only
+changes between Core requests can be missed. Strict means fully monitored with
+no **detected** changes, not proof that a network could never have changed.
+
+Docker's veth and startup `VOX_LINK_TYPE`/`VOX_PUBLIC_IP_ON_IFACE` overrides are
+not live host monitoring. Without fresh host observations, runs remain
+unverified and appear only when unstable/unverified runs are included.
+
+For Docker hosts, run the bundled, unprivileged sampler as a persistent host
+service (Python 3; Linux requires `iproute2`, macOS uses built-in network tools):
+
+```sh
+python3 /opt/Vox/scripts/vox-network-monitor.py --output /var/lib/vox-network
+```
+
+Use a dedicated private output directory writable only by the service owner.
+Run the command with the paths appropriate for your checkout/service account;
+supervise it with systemd/launchd and restart it on failure. It uses no Vox
+token, opens no listener, and writes only hashed topology/coarse status. It
+retains two minutes/128 host transitions plus monotonic change/gap counters.
+
+Set `VOX_NETWORK_STATUS_DIR=/var/lib/vox-network` when using `vox-upgrade.sh`.
+The script mounts that directory read-only at `/run/vox-network` and sets
+`VOX_NETWORK_STATUS_FILE=/run/vox-network/status.json`. For manual Docker
+deployments, add the equivalent read-only directory mount and environment
+variable; ensure the container UID can read the private status file. Mount the
+directory, not the file, because writes replace `status.json` atomically.
+Neither this upgrade nor the daemon automatically installs a host service.
+
+Sampler death, missing routes, restart, missed history, or status older than
+five seconds makes monitoring incomplete. The host's refreshed public-IPv4
+signal supersedes the startup override while the live sampler is configured.
+Core independently observes the request IP, without exposing it in events.
+
+Deploy Core's schema-66 migration before rolling out this daemon. Old agents
+continue to run; they do not qualify for the default strict dashboards. Use
+the explicit Include unstable / unverified toggle to inspect older data.
+
 ### Artifact Upload (S3)
 
 After a job completes (success or failure), the output directory is queued for upload. **Uploads only happen when the daemon is idle** — no impact on eval job performance.

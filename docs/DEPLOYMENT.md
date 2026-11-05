@@ -2,6 +2,28 @@
 
 This guide covers deploying Vox to production using Coolify (what vox.agora.build runs on), or any Docker-based hosting platform (Railway, Render, CapRover, etc.).
 
+## Network-history rollout (schema 66)
+
+Deploy Core before updated `vox-eval-agentd` instances. Startup applies migration
+`0065_job_network_events.sql`, adding append-only event history, internal claim
+state and safe job-level network/coverage flags. There is no backfill claiming
+historical runs were stable. The migration takes the normal short DDL locks;
+schedule it with the usual database migration precautions.
+
+Metrics and Leaderboard now default to strict network coverage. Old agents
+remain compatible but unverified; historical/unsupported/incomplete runs are
+visible using Include unstable / unverified (`network=all` on metrics APIs).
+Watch `/api/metrics/network-coverage?tier=realtime` during rollout. This counts
+stable, changed and unverified results in the selected tier/window/filter scope.
+
+Docker agents need live host observations for strict eligibility, not just
+startup network env vars. Set up the private, unprivileged host sampler and
+read-only directory mount described in `vox_eval_agentd/README.md`; configure
+`VOX_NETWORK_STATUS_DIR` for `vox-upgrade.sh`. No host privileges, host-network
+mode, credentials, or public listener are required. The deployment script does
+not silently install or activate a host service. Missing/stale observations
+fail closed and are visible in a job's Network timeline.
+
 ## Prerequisites
 
 - A server or hosting platform that supports Docker

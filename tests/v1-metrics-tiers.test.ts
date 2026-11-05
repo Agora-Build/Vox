@@ -64,7 +64,7 @@ d("v1 metrics: tier, transport, hours", () => {
       priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
     jobIds.push(job.id);
-    await pool.query("UPDATE eval_jobs SET token_dispatch_tier = $2, completed_at = now() WHERE id = $1", [job.id, o.dispatchTier]);
+    await pool.query("UPDATE eval_jobs SET token_dispatch_tier = $2, completed_at = now(), network_monitoring = 'complete' WHERE id = $1", [job.id, o.dispatchTier]);
     const r = await storage.createEvalResult({ evalJobId: job.id, providerId, siteId: "na-us-seattle-01", responseLatencyMedian: o.latency } as any);
     ids[name] = r.id;
   }
