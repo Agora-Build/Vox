@@ -6,7 +6,7 @@ import os from "os";
 import path from "path";
 import { dialfConnectFailure, probeDialf } from "../vox_eval_agentd/dialf-client";
 
-// scripts/vox-upgrade.sh and DialF (Phone vs Agent). A phone agent stopped
+// scripts/vox-manager.sh and DialF (Phone vs Agent). A phone agent stopped
 // taking phone jobs after an upgrade: the script mounts dialfd's socket only
 // if it finds it, said nothing when it didn't, skipped "same image" containers
 // that lacked the mount, and couldn't tell a stale socket or a permission
@@ -15,7 +15,10 @@ import { dialfConnectFailure, probeDialf } from "../vox_eval_agentd/dialf-client
 // real Unix socket standing in for dialfd — and pin that hosts WITHOUT DialF
 // see the same container actions as before.
 
-const SCRIPT = path.resolve(__dirname, "../scripts/vox-upgrade.sh");
+const SCRIPT = path.resolve(__dirname, "../scripts/vox-manager.sh");
+const LEGACY_SCRIPT = path.resolve(__dirname, "../scripts/vox-upgrade.sh");
+const IMAGE_NEW = `sha256:${"a".repeat(64)}`;
+const IMAGE_OLD = `sha256:${"b".repeat(64)}`;
 let dir = "";
 let sock = "";
 let sockServer: net.Server;
@@ -25,10 +28,17 @@ echo "docker $*" >> "$VU_LOG"
 case "$1" in
   info) [ -n "\${DOCKER_DENIED:-}" ] && { echo "permission denied while trying to connect to the Docker daemon socket" >&2; exit 1; }; echo ok ;;
   ps) echo "\${RUNNING_ID:-}" ;;
-  image) echo "\${LATEST_IMAGE:-sha-new}" ;;
+  pull)
+    [ -n "\${PULL_FAIL_IMAGE:-}" ] && [[ "$2" == *"$PULL_FAIL_IMAGE"* ]] && exit 1
+    [ -n "\${PULL_FAIL_AT:-}" ] && [ "$(grep -c '^docker pull' "$VU_LOG")" = "$PULL_FAIL_AT" ] && exit 1
+    exit 0 ;;
+  image)
+    [ -n "\${TARGET_INSPECT_FAIL:-}" ] && exit 1
+    if [[ "$*" == *vox-clash-runner* ]] && [ -n "\${RUNNER_TARGET_IMAGE:-}" ]; then echo "$RUNNER_TARGET_IMAGE"
+    else echo "\${LATEST_IMAGE-${IMAGE_NEW}}"; fi ;;
   inspect)
     case "$*" in
-      *"{{.Image}}"*) [ -n "\${IMAGE_INSPECT_FAIL:-}" ] && exit 1; echo "\${RUNNING_IMAGE:-sha-old}" ;;
+      *"{{.Image}}"*) [ -n "\${IMAGE_INSPECT_FAIL:-}" ] && exit 1; echo "\${RUNNING_IMAGE:-${IMAGE_OLD}}" ;;
       *"Config.Env"*) [ -n "\${INSPECT_FAIL:-}" ] && exit 1; [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"; echo "AGENT_TOKEN=x" ;;
       *"RestartPolicy"*) echo "unless-stopped" ;;
       *) echo "" ;;
@@ -58,11 +68,15 @@ exit 1
 `;
 
 /** Run the real script; returns its output and the docker calls it made. */
-function upgrade(env: Record<string, string>, opts: { runner?: boolean; answers?: string; script?: string } = {}) {
+function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; script?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[] } = {}) {
   const log = path.join(dir, `calls-${Math.random()}.log`);
   fs.writeFileSync(log, "");
-  const envFile = path.join(dir, opts.runner ? "runner.env" : "agent.env");
-  const r = spawnSync("bash", [opts.script ?? SCRIPT, envFile], {
+  const envFile = path.join(dir, opts.both ? "both.env" : opts.runner ? "runner.env" : "agent.env");
+  const args = opts.defaultEnv ? (opts.command ? ["vox_agent"] : []) : opts.command ? ["vox_agent", envFile] : [envFile];
+  if (opts.version !== undefined) args.push("--version", opts.version);
+  if (opts.args) args.push(...opts.args);
+  const r = spawnSync("bash", [opts.script ?? SCRIPT, ...args], {
+    cwd: dir,
     input: opts.answers ?? "",
     encoding: "utf8",
     env: {
@@ -84,31 +98,26 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "AGENT_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "runner.env"), "RUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
+  fs.writeFileSync(path.join(dir, "both.env"), "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
   sock = path.join(dir, "dialfd.sock");
   sockServer = net.createServer().listen(sock);
   await new Promise((r) => sockServer.once("listening", r));
 });
 afterAll(() => { sockServer?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
 
-describe("hosts WITHOUT DialF: the same container actions as before", () => {
-  // The script as it was before this change (main), run against the same stub.
-  const original = () => {
-    const p = path.join(dir, "orig.sh");
-    if (!fs.existsSync(p)) {
-      fs.writeFileSync(p, execFileSync("git", ["show", "main:scripts/vox-upgrade.sh"], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" }));
-    }
-    return p;
-  };
+describe("hosts WITHOUT DialF: canonical and legacy commands keep the same container actions", () => {
   const cases: Array<[string, Record<string, string>, boolean]> = [
-    ["web agent, same image", { RUNNING_ID: "abc", RUNNING_IMAGE: "sha-new", LATEST_IMAGE: "sha-new" }, false],
-    ["web agent, new image", { RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" }, false],
-    ["clash runner, new image", { RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" }, true],
+    ["web agent, same image", { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_NEW }, false],
+    ["web agent, new image", { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW }, false],
+    ["clash runner, new image", { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW }, true],
   ];
   for (const [name, env, runner] of cases) {
     it(name, () => {
-      const before = upgrade(env, { runner, script: original() });
-      const after = upgrade(env, { runner });
+      const before = upgrade(env, { runner, script: LEGACY_SCRIPT });
+      const after = upgrade(env, { runner, command: true });
+      expect(before.status).toBe(0);
       expect(after.status).toBe(0);
+      expect(after.actions).toEqual(env.RUNNING_IMAGE === env.LATEST_IMAGE ? [] : ["stop", "rm", "rm", "run"]);
       expect(after.actions).toEqual(before.actions);                       // stop/rm/run unchanged
       const runOf = (r: typeof after) => r.calls.find((c) => c.startsWith("docker run"));
       expect(runOf(after)).toEqual(runOf(before));                           // same container config
@@ -117,12 +126,217 @@ describe("hosts WITHOUT DialF: the same container actions as before", () => {
   }
 });
 
+describe("install/upgrade command dispatch", () => {
+  it("no arguments still use .env and match an explicit vox_agent command", () => {
+    fs.copyFileSync(path.join(dir, "agent.env"), path.join(dir, ".env"));
+    const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW };
+    const implicit = upgrade(env, { defaultEnv: true });
+    const explicit = upgrade(env, { command: true, defaultEnv: true });
+    expect(implicit.status).toBe(0);
+    expect(explicit.status).toBe(0);
+    expect(implicit.calls).toEqual(explicit.calls);
+  });
+
+  it("no arguments install latest on a new host using .env in the current directory", () => {
+    fs.copyFileSync(path.join(dir, "agent.env"), path.join(dir, ".env"));
+    const r = upgrade({}, { defaultEnv: true, answers: "y\n" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
+    const run = r.calls.find((call) => call.startsWith("docker run"));
+    expect(run).toContain("AGENT_TOKEN=evtest");
+    expect(run).toContain("VOX_SERVER=http://localhost:5000");
+    expect(run).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+  });
+
+  it.each([false, true])("--env selects the specified file with spaces (implicit command: %s)", (implicit) => {
+    const envFile = path.join(dir, "agent config.env");
+    fs.copyFileSync(path.join(dir, "agent.env"), envFile);
+    fs.writeFileSync(path.join(dir, ".env"), "RUNNER_TOKEN=wrong-default\n");
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, {
+      defaultEnv: true, command: !implicit, args: ["--env", envFile],
+    });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
+    expect(r.calls.join("\n")).not.toContain("vox-clash-runner");
+    expect(r.actions).toEqual([]);
+  });
+
+  it("vox_agent also installs a new agent when no container exists", () => {
+    const r = upgrade({}, { command: true, answers: "y\n" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.out).toContain("Starting new container");
+  });
+
+  it("legacy env-file invocations still match vox_agent for agents and runners", () => {
+    for (const runner of [false, true]) {
+      const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW };
+      expect(upgrade(env, { runner }).calls).toEqual(upgrade(env, { runner, command: true }).calls);
+    }
+  });
+});
+
+describe("selected Docker image versions and rollback", () => {
+  it.each([
+    ["--version", "c64ff76", "--env"],
+    ["--env", "--version", "c64ff76"],
+    ["--env=", "--version=c64ff76"],
+  ])("accepts explicit --env and --version in either order: %j", (...options) => {
+    const envFile = path.join(dir, "agent.env");
+    const args = options.flatMap((option) => option === "--env" ? [option, envFile] : option === "--env=" ? [`--env=${envFile}`] : [option]);
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, { defaultEnv: true, command: true, args });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:c64ff76");
+    expect(r.calls.join("\n")).not.toContain(":latest");
+    expect(r.actions).toEqual([]);
+  });
+
+  it("still pulls latest by default and launches the verified immutable image ID", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW }, { command: true });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
+    expect(r.calls.find((call) => call.startsWith("docker run"))).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+  });
+
+  it.each([false, true])("selects a published image tag (runner: %s)", (runner) => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD }, { command: true, runner, version: "7c3b1a2" });
+    const image = `ghcr.io/agora-build/${runner ? "vox-clash-runner" : "vox-eval-agentd"}:7c3b1a2`;
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain(`docker pull ${image}`);
+    expect(r.calls).toContain(`docker image inspect ${image} --format={{.Id}}`);
+    expect(r.calls.find((call) => call.startsWith("docker run"))).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+    expect(r.calls.join("\n")).not.toContain(":latest");
+    expect(r.out).toContain(`Verified ${image}`);
+  });
+
+  it("installs a specific version on a new host after confirmation", () => {
+    const r = upgrade({}, { command: true, version: "7c3b1a2", answers: "y\n" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.out).toContain("Starting new container");
+    expect(r.out).toContain("vox-eval-agentd:7c3b1a2");
+  });
+
+  it("rolls back to an older image, preserving existing Docker configuration", () => {
+    const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_OLD, DIALF_SOCKET: sock };
+    const r = upgrade(env, { command: true, version: "previous-build" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    const run = r.calls.find((call) => call.startsWith("docker run"));
+    expect(run).toContain("--restart unless-stopped");
+    expect(run).toContain("vox-aeval-cache:/root/.cache");
+    expect(run).toContain(`-v ${sock}:${sock}`);
+    expect(run).toMatch(new RegExp(` ${IMAGE_OLD}$`));
+    expect(r.out).toContain("vox-eval-agentd:previous-build");
+    expect(r.out).toContain("Selected image differs from running image");
+  });
+
+  it("accepts an immutable manifest digest using Docker's @ syntax", () => {
+    const digest = `sha256:${"c".repeat(64)}`;
+    const r = upgrade({ RUNNING_ID: "abc" }, { command: true, version: digest });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain(`docker pull ghcr.io/agora-build/vox-eval-agentd@${digest}`);
+    expect(r.calls.find((call) => call.startsWith("docker run"))).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+  });
+
+  it("does not replace a container already running the selected version", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, { command: true, version: "7c3b1a2" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("Already running the selected image (ghcr.io/agora-build/vox-eval-agentd:7c3b1a2)");
+  });
+
+  it("allows --version before the env file and the --version=tag form", () => {
+    const env = { RUNNING_ID: "abc" };
+    fs.copyFileSync(path.join(dir, "agent.env"), path.join(dir, ".env"));
+    const beforeEnv = upgrade(env, { defaultEnv: true, command: true, args: ["--version", "7c3b1a2", path.join(dir, "agent.env")] });
+    const equals = upgrade(env, { command: true, args: ["--version=7c3b1a2"] });
+    const implicit = upgrade(env, { defaultEnv: true, args: ["--version", "7c3b1a2"] });
+    expect(beforeEnv.status).toBe(0);
+    expect(equals.status).toBe(0);
+    expect(implicit.status).toBe(0);
+    expect(beforeEnv.calls).toEqual(equals.calls);
+    expect(implicit.calls).toEqual(equals.calls);
+  });
+
+  it("the legacy launcher forwards version selection unchanged", () => {
+    const env = { RUNNING_ID: "abc" };
+    const canonical = upgrade(env, { command: true, version: "7c3b1a2" });
+    const legacy = upgrade(env, { script: LEGACY_SCRIPT, command: true, version: "7c3b1a2" });
+    expect(legacy.status).toBe(0);
+    expect(legacy.calls).toEqual(canonical.calls);
+  });
+
+  it("the legacy launcher forwards explicit --env and version selection unchanged", () => {
+    const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW };
+    const opts = { command: true, defaultEnv: true, args: ["--version", "c64ff76", "--env", path.join(dir, "agent.env")] };
+    const canonical = upgrade(env, opts);
+    const legacy = upgrade(env, { ...opts, script: LEGACY_SCRIPT });
+    expect(canonical.status).toBe(0);
+    expect(legacy.status).toBe(0);
+    expect(legacy.calls).toEqual(canonical.calls);
+  });
+
+  it("an unavailable version leaves the existing container untouched", () => {
+    const r = upgrade({ RUNNING_ID: "abc", PULL_FAIL_IMAGE: "vox-eval-agentd" }, { command: true, version: "missing-build" });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("No containers were changed");
+    expect(r.calls.some((call) => call.startsWith("docker image inspect"))).toBe(false);
+  });
+
+  it("a failed image inspection leaves the existing container untouched", () => {
+    const r = upgrade({ RUNNING_ID: "abc", TARGET_INSPECT_FAIL: "1" }, { command: true, version: "7c3b1a2" });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("could not resolve");
+  });
+
+  it.each(["", "invalid-image", "--privileged", "sha256:short"])("rejects invalid resolved image ID %j before changing containers", (id) => {
+    const r = upgrade({ RUNNING_ID: "abc", LATEST_IMAGE: id }, { command: true });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("No containers were changed");
+  });
+
+  it("validates both selected images before any replacement", () => {
+    const r = upgrade({ RUNNING_ID: "abc" }, { command: true, both: true, version: "7c3b1a2" });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:7c3b1a2");
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-clash-runner:7c3b1a2");
+    const firstStop = r.calls.findIndex((call) => call.startsWith("docker stop"));
+    const inspections = r.calls.flatMap((call, index) => call.startsWith("docker image inspect") ? [index] : []);
+    expect(inspections).toHaveLength(2);
+    expect(inspections.every((index) => index < firstStop)).toBe(true);
+  });
+
+  it("keeps agent and runner image IDs separate when both use the same tag", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNER_TARGET_IMAGE: IMAGE_OLD }, { command: true, both: true, version: "7c3b1a2" });
+    expect(r.status).toBe(0);
+    const runs = r.calls.filter((call) => call.startsWith("docker run"));
+    // The runner already has IMAGE_OLD; only the agent needs replacement.
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toContain("--name vox-eval-agentd");
+    expect(runs[0]).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+    expect(r.out).toContain("Already running the selected image (ghcr.io/agora-build/vox-clash-runner:7c3b1a2)");
+  });
+
+  it("a missing second image cannot leave a multi-container rollback half-applied", () => {
+    const r = upgrade({ RUNNING_ID: "abc", PULL_FAIL_AT: "2" }, { command: true, both: true, version: "missing-build" });
+    expect(r.status).toBe(1);
+    expect(r.calls.filter((call) => call.startsWith("docker pull"))).toHaveLength(2);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("No containers were changed");
+  });
+});
+
 describe("hosts WITH DialF", () => {
   it("preserves the cache and read-only network directory alongside DialF mounts", () => {
     const statusDir = path.join(dir, "network-status");
     fs.mkdirSync(statusDir);
     fs.writeFileSync(path.join(statusDir, "status.json"), "{}");
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", DIALF_SOCKET: sock, VOX_NETWORK_STATUS_DIR: statusDir });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, DIALF_SOCKET: sock, VOX_NETWORK_STATUS_DIR: statusDir });
     const run = r.calls.find((call) => call.startsWith("docker run"));
     expect(r.status).toBe(0);
     expect(run).toContain(`-v ${statusDir}:/run/vox-network:ro`);
@@ -131,14 +345,14 @@ describe("hosts WITH DialF", () => {
     expect(run).toContain(`-v ${sock}:${sock}`);
   });
   it("same image, but the running container lacks the DialF mount: recreated with it", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-new", LATEST_IMAGE: "sha-new", DIALF_SOCKET: sock });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_NEW, DIALF_SOCKET: sock });
     expect(r.out).toMatch(/wasn't started with it — recreating it/);
     expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
     expect(r.calls.find((c) => c.startsWith("docker run"))).toContain(`VOX_DIALF_SOCKET=${sock}`);
   });
 
   it("same path but dialfd recreated its socket (stale inode): restarted, and the new check read since then", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-new", LATEST_IMAGE: "sha-new", PREV_SOCK: sock, DIALF_SOCKET: sock, CONT_INO: "1", PROBE_LINE: "[Daemon] DialF probe: ok (v0.3.16)" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_NEW, PREV_SOCK: sock, DIALF_SOCKET: sock, CONT_INO: "1", PROBE_LINE: "[Daemon] DialF probe: ok (v0.3.16)" });
     expect(r.out).toMatch(/DialF socket is stale/);
     expect(r.actions).toEqual(["restart"]);
     // Unix seconds, not a bare datetime (which Docker reads as LOCAL time).
@@ -148,65 +362,65 @@ describe("hosts WITH DialF", () => {
 
   it("same path, same inode: left alone (no needless restart)", () => {
     const ino = String(fs.statSync(sock).ino);
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-new", LATEST_IMAGE: "sha-new", PREV_SOCK: sock, DIALF_SOCKET: sock, CONT_INO: ino });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_NEW, PREV_SOCK: sock, DIALF_SOCKET: sock, CONT_INO: ino });
     expect(r.actions).toEqual([]);
-    expect(r.out).toMatch(/Already running the latest image/);
+    expect(r.out).toMatch(/Already running the selected image/);
   });
 
   it("the old container had DialF and none is found now: asks BEFORE stopping it, and 'n' leaves it running", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PREV_SOCK: "/run/user/1001/dialfd.sock" }, { answers: "n\n" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, PREV_SOCK: "/run/user/1001/dialfd.sock" }, { answers: "n\n" });
     expect(r.out).toMatch(/WON'T take phone jobs/);
     expect(r.out).toMatch(/Leaving the running vox-eval-agentd as it is/);
     expect(r.actions).toEqual([]);
   });
 
   it("reports what the agent's own DialF check says after launch — e.g. no permission", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", DIALF_SOCKET: sock, PROBE_LINE: "[Daemon] DialF probe: unavailable (no permission to open the dialfd socket x)" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, DIALF_SOCKET: sock, PROBE_LINE: "[Daemon] DialF probe: unavailable (no permission to open the dialfd socket x)" });
     expect(r.out).toMatch(/WARNING: DialF check inside the container FAILED: unavailable \(no permission to open the dialfd socket x\)/);
   });
 });
 
 describe("VOX_LINK_TYPE (network tags — host link detection, design 2026-10-22)", () => {
   it("a known VOX_LINK_TYPE in the environment is passed to the agent container", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "wifi" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, VOX_LINK_TYPE: "wifi" });
     expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_LINK_TYPE=wifi");
   });
 
   it("an invalid VOX_LINK_TYPE is ignored — not forwarded (host_link_type falls through, finds nothing here)", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "5g" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, VOX_LINK_TYPE: "5g" });
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
   });
 
   it("unset VOX_LINK_TYPE and no real route (stub ip): nothing forwarded, run unaffected", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW });
     expect(r.status).toBe(0);
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
   });
 
   it("not forwarded to vox-clash-runner (it doesn't report network tags)", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_LINK_TYPE: "wifi" }, { runner: true });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, VOX_LINK_TYPE: "wifi" }, { runner: true });
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_LINK_TYPE");
   });
 });
 
 describe("VOX_PUBLIC_IP_ON_IFACE (network tags part 2 — host interface detection, design 2026-10-22)", () => {
   it("a known VOX_PUBLIC_IP_ON_IFACE in the environment is passed to the agent container", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "true" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, VOX_PUBLIC_IP_ON_IFACE: "true" });
     expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=true");
   });
 
   it("false is passed through too (not just truthy values)", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "false" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, VOX_PUBLIC_IP_ON_IFACE: "false" });
     expect(r.calls.find((c) => c.startsWith("docker run"))).toContain("VOX_PUBLIC_IP_ON_IFACE=false");
   });
 
   it("an invalid VOX_PUBLIC_IP_ON_IFACE is ignored — not forwarded (host_public_ip_on_iface falls through, finds nothing here)", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "maybe" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, VOX_PUBLIC_IP_ON_IFACE: "maybe" });
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
   });
 
   it("unset VOX_PUBLIC_IP_ON_IFACE and no real route (stub ip): nothing forwarded, run unaffected", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW });
     expect(r.status).toBe(0);
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
   });
@@ -232,7 +446,7 @@ describe("VOX_PUBLIC_IP_ON_IFACE (network tags part 2 — host interface detecti
   });
 
   it("not forwarded to vox-clash-runner (it doesn't report network tags)", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", VOX_PUBLIC_IP_ON_IFACE: "true" }, { runner: true });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, VOX_PUBLIC_IP_ON_IFACE: "true" }, { runner: true });
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
   });
 });
@@ -247,29 +461,29 @@ describe("permission problems are reported, not guessed at", () => {
   });
 
   it("dialfd runs as another user, so its socket isn't visible: says so, naming both users", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PS_DIALF_UID: "4321" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, PS_DIALF_UID: "4321" });
     expect(r.out).toMatch(/dialfd is running as '(uid 4321|[^']+)', but this script runs as '.+' and has no permission to see/);
   });
 
   it("dialfd running as THIS user (by UID — a long name is truncated by ps) is not called a permission problem", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PS_DIALF_UID: String(process.getuid?.() ?? 1000) });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, PS_DIALF_UID: String(process.getuid?.() ?? 1000) });
     expect(r.out).toMatch(/dialfd is running, but its socket isn't in the usual places/);
     expect(r.out).not.toMatch(/no permission to see/);
   });
 
   it("DIALF_SOCKET set but nothing listening: names the setting, not generic advice", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", DIALF_SOCKET: path.join(dir, "nope.sock") });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, DIALF_SOCKET: path.join(dir, "nope.sock") });
     expect(r.out).toMatch(/DIALF_SOCKET=.*nope\.sock is set, but nothing is listening there/);
   });
 
   it("a failing docker inspect mid-run doesn't abort the upgrade (set -euo pipefail)", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", INSPECT_FAIL: "1" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, INSPECT_FAIL: "1" });
     expect(r.status).toBe(0);
     expect(r.actions).toContain("run");
   });
 
   it("…nor does a failing image inspect (#250 review)", () => {
-    const r = upgrade({ RUNNING_ID: "abc", LATEST_IMAGE: "sha-new", IMAGE_INSPECT_FAIL: "1" });
+    const r = upgrade({ RUNNING_ID: "abc", LATEST_IMAGE: IMAGE_NEW, IMAGE_INSPECT_FAIL: "1" });
     expect(r.calls.some((c) => c.includes("{{.Image}}"))).toBe(true);
     // It carries on (an unknown image counts as "not the latest") and upgrades.
     expect(r.status).toBe(0);
@@ -277,7 +491,7 @@ describe("permission problems are reported, not guessed at", () => {
   });
 
   it("the DialF prompt with no terminal (EOF) answers no: the running container is left alone, the run doesn't die", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new", PREV_SOCK: "/run/user/1001/dialfd.sock" }, { answers: "" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW, PREV_SOCK: "/run/user/1001/dialfd.sock" }, { answers: "" });
     expect(r.out).toMatch(/Leaving the running vox-eval-agentd as it is/);
     expect(r.actions).toEqual([]);
     expect(r.status).toBe(0);
@@ -333,7 +547,7 @@ describe("interface names from route output are validated before use (PR #258 ro
 
   it("a hostile default-route interface name is never passed to ip addr and nothing is forwarded", () => {
     const r = upgrade({
-      RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new",
+      RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW,
       IP_ROUTE_OUT: "1.1.1.1 via 192.168.1.1 dev eth0;touch$IFS/tmp/pwned src 192.168.1.5",
       IP_ADDR_OUT: "2: eth0    inet 203.0.113.5/24 scope global eth0",
     });
@@ -346,7 +560,7 @@ describe("interface names from route output are validated before use (PR #258 ro
 
   it("a valid name is used (quoted, one argument) and its answer forwarded", () => {
     const r = upgrade({
-      RUNNING_ID: "abc", RUNNING_IMAGE: "sha-old", LATEST_IMAGE: "sha-new",
+      RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW,
       IP_ROUTE_OUT: "1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.5",
       IP_ADDR_OUT: "2: eth0    inet 203.0.113.5/24 scope global eth0",
     });

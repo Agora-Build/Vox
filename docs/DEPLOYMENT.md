@@ -46,7 +46,7 @@ stable, changed and unverified results in the selected tier/window/filter scope.
 Docker agents need live host observations for strict eligibility, not just
 startup network env vars. Set up the private, unprivileged host sampler and
 read-only directory mount described in `vox_eval_agentd/README.md`; configure
-`VOX_NETWORK_STATUS_DIR` for `vox-upgrade.sh`. No host privileges, host-network
+`VOX_NETWORK_STATUS_DIR` for `vox-manager.sh`. No host privileges, host-network
 mode, credentials, or public listener are required. The deployment script does
 not silently install or activate a host service. Missing/stale observations
 fail closed and are visible in a job's Network timeline.
@@ -253,7 +253,7 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | `WEB_SESSION_MINT_TIMEOUT_SECONDS` | Upper bound on minting one login session | `180` |
 | `GEOIP_DB_DIR` | Where GeoIP databases **and** the access-classification data sources (below) live | `./geoip` |
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
-| `VOX_PUBLIC_IP_ON_IFACE` | `true`/`false`. Whether the eval agent's default-route interface carries a public address directly (no home router) — one of the agent's `netSignals` used by access classification. Set by `scripts/vox-upgrade.sh`, which measures it on the **host** (a container only sees its own veth) and passes it through to the container; omitted when undetermined. Not meant to be set by hand. | — |
+| `VOX_PUBLIC_IP_ON_IFACE` | `true`/`false`. Whether the eval agent's default-route interface carries a public address directly (no home router) — one of the agent's `netSignals` used by access classification. Set by `scripts/vox-manager.sh`, which measures it on the **host** (a container only sees its own veth) and passes it through to the container; omitted when undetermined. Not meant to be set by hand. | — |
 | `VOX_CONTACT_EMAIL` / `VOX_GITHUB_URL` / `VOX_X_URL` | Footer contact links (the X icon is hidden when unset) | `vox@agora.build` / Vox repo / — |
 | `RATE_LIMIT_DISABLED` | `"true"` turns API rate limiting off. Never set in production. | — |
 | *(no setting)* | **Client IP behind Cloudflare.** Vox takes the caller's address from Cloudflare's `CF-Connecting-IP` only when the request really came through Cloudflare — the local proxy (Traefik) saw cloudflared or a Cloudflare edge address, or Cloudflare's edge connected directly — so per-IP rate limits and agent region detection see the real caller however many proxies are in between. A caller who reaches Traefik or the app port directly is counted by its own address, whatever headers it sends. Still keep the app's published port (e.g. `5000:5000`) firewalled from the internet: nothing should bypass Cloudflare. | — |
@@ -443,8 +443,29 @@ node dist/migrate.cjs
 
 Vox itself is one container, but a full deployment also runs:
 
-- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-upgrade.sh` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours. `vox-upgrade.sh` also detects the host's network link (wifi/ethernet/cellular) and passes it to the container as `VOX_LINK_TYPE` — a container only sees its own veth, not the host's NIC, so this is how `link` is reported at all for a Dockerized agent. Set `VOX_LINK_TYPE` by hand only for an agent not upgraded through that script (e.g. a manual `docker run`); an unrecognized value is ignored, not an error. The value is baked into the container when `vox-upgrade.sh` creates it and is refreshed only when the script recreates the container — after a host changes its link (e.g. moves from Ethernet to Wi-Fi or a cellular modem), re-run `vox-upgrade.sh`, or set `VOX_LINK_TYPE` by hand. Without it, a containerized agent reports no `link` at all: inside the container the default route is a virtual veth with nothing behind it to detect.
+- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-manager.sh [vox_agent] [--env env-file]` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). With no arguments, it uses `vox_agent`, `latest`, and `.env` in the current working directory. Use `scripts/vox-manager.sh self` to update only the local script; it does not read the env file, require Docker or change running containers. `vox` server management is reserved and fails explicitly as unsupported. `vox-upgrade.sh` remains a compatibility launcher. Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours. `vox-manager.sh` also detects the host's network link (wifi/ethernet/cellular) and passes it to the container as `VOX_LINK_TYPE` — a container only sees its own veth, not the host's NIC, so this is how `link` is reported at all for a Dockerized agent. Set `VOX_LINK_TYPE` by hand only for an agent not upgraded through that script (e.g. a manual `docker run`); an unrecognized value is ignored, not an error. The value is baked into the container when `vox-manager.sh` creates it and is refreshed only when the script recreates the container — after a host changes its link (e.g. moves from Ethernet to Wi-Fi or a cellular modem), re-run `vox-manager.sh`, or set `VOX_LINK_TYPE` by hand. Without it, a containerized agent reports no `link` at all: inside the container the default route is a virtual veth with nothing behind it to detect.
 - **Auth-session broker** and **REST broker** — sidecars (Dockerfile targets `broker` and `rest-broker` in `vox_eval_agentd/Dockerfile`) that log in to target sites and make API calls on behalf of evals, so credentials never reach an eval agent. Each registers with Vox using `VOX_CORE_URL` and a `BROKER_REG_TOKEN` minted in **Console → Brokers**, and must be reachable only on the internal network. `BROKER_ADVERTISE_URL` is the address **Vox** uses to call the broker, so it must resolve from the Vox container: on Coolify that is the broker's network alias, not its application UUID. Vox checks it when the broker registers and every minute after; **Console → Brokers** shows the result in the **From Core** column, with the reason when it can't connect.
+
+### Selecting an agent image / rollback
+
+Run `scripts/vox-manager.sh vox_agent --version <published-tag> [--env env-file]` to
+install or roll back to a specific agent/runner image. Omit `--version` (or pass
+`latest`) for the current build. Published tags are Docker build/short commit-SHA
+tags, not aeval binary versions. An immutable registry manifest digest is also
+accepted as `--version sha256:<64-hex-digest>`.
+
+Omit `--env` to load `.env` from the current working directory. The env-file and
+version options can appear in either order. Positional env-file paths still work
+for compatibility, but cannot be combined with `--env`.
+
+The selection applies to all tokens in that env file; use separate env files for
+different component versions or an image-specific digest. All images are pulled
+and resolved before any container is stopped, and containers launch by verified
+image ID. A missing tag/digest leaves running containers unchanged. Existing idle
+checks, DialF/audio/network mounts, restart policy and persistent cache handling
+still apply. No old images are pruned. This is an explicit image rollback, not an
+automatic failed-start rollback or a Core database downgrade; check old image
+compatibility with the current server and host services first.
 
 ## Other Platforms
 

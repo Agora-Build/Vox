@@ -407,7 +407,7 @@ class VoxEvalAgentDaemon {
 
   /** Current network link type (design "Detection" → link), refreshed on every
    *  register/heartbeat like capabilities — cheap, one `ip route get` exec.
-   *  `VOX_LINK_TYPE` (vox-upgrade.sh's host-side answer, since a container
+   *  `VOX_LINK_TYPE` (vox-manager.sh's host-side answer, since a container
    *  only sees its own veth) wins; undefined on failure, never thrown. */
   private currentLinkType(): ReturnType<typeof detectLinkType> {
     if (process.env.VOX_NETWORK_STATUS_FILE) return this.sampleNetwork()?.link ?? undefined;
@@ -422,7 +422,7 @@ class VoxEvalAgentDaemon {
 
   /** Current network signals (design "Last mile vs datacenter"): cloud
    *  metadata (cached 10 min) + whether the default-route interface itself
-   *  holds a public address. `VOX_PUBLIC_IP_ON_IFACE` (vox-upgrade.sh's
+   *  holds a public address. `VOX_PUBLIC_IP_ON_IFACE` (vox-manager.sh's
    *  host-side answer, since a container only sees its own veth) wins for
    *  the latter; neither probe ever throws. */
   private async currentNetSignals() {
@@ -2111,7 +2111,7 @@ class VoxEvalAgentDaemon {
             const abs = path.resolve(AEVAL_DATA_PATH, rel);
             return fs.existsSync(abs) ? abs : null;
           },
-          // Docker↔host bridge (design §6): identical-path bind mount, set by vox-upgrade.sh.
+          // Docker↔host bridge (design §6): identical-path bind mount, set by vox-manager.sh.
           exchangeDir: process.env.VOX_DIALF_EXCHANGE_DIR ?? null,
         },
         {
@@ -2470,8 +2470,8 @@ function parseArgs(): DaemonConfig {
   // env var is only a per-agent DEFAULT, every job may override it, and aeval
   // is the only framework — so the fallback can never run a wrong eval, while
   // exiting would crash-loop any host that sets the var outside
-  // vox-upgrade.sh (its own compose file, systemd, k8s) the moment it pulls
-  // this image. Same resolution vox-upgrade.sh applies before starting us.
+  // vox-manager.sh (its own compose file, systemd, k8s) the moment it pulls
+  // this image. Same resolution vox-manager.sh applies before starting us.
   if (framework !== 'aeval') {
     console.warn(`[Daemon] Unsupported EVAL_FRAMEWORK '${framework}' — using 'aeval' (the only supported framework). Remove it from your env to silence this.`);
   }

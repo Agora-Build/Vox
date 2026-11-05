@@ -255,9 +255,20 @@ Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`); each migration runs ex
 | `./scripts/full-tests-run.sh` | The full gate: unit + audio + E2E |
 | `./scripts/dev-local-run.sh start` | Start the local environment |
 | `./scripts/dev-local-run.sh clean-test-data --yes` | Remove leftover test data from the local database |
-| `./scripts/vox-upgrade.sh` | Upgrade eval agent and/or clash runner containers |
+| `./scripts/vox-manager.sh [vox_agent] [--version TAG\|sha256:DIGEST] [--env path/to/.env]` | Install, upgrade or roll back eval agent and/or clash runner containers |
+| `./scripts/vox-manager.sh self` | Update the management script itself, without touching containers |
 
-### Upgrading Eval Agents / Clash Runners
+### Installing / Upgrading / Rolling Back Eval Agents / Clash Runners
+
+Download the standalone management script (no checkout required):
+
+```bash
+curl -fsSL -o vox-manager.sh \
+  https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-manager.sh
+chmod +x vox-manager.sh
+```
+
+Create an env file with the token(s) for the containers you want to manage:
 
 ```bash
 cat > .env << 'EOF'
@@ -266,11 +277,55 @@ RUNNER_TOKEN=your-clash-runner-token
 VOX_SERVER=https://vox.agora.build
 EOF
 
-./scripts/vox-upgrade.sh             # uses .env in the current directory
-./scripts/vox-upgrade.sh /path/.env  # or a specific file
+./vox-manager.sh                                # install/upgrade latest using .env in the current directory
+./vox-manager.sh vox_agent                      # same default behavior
+./vox-manager.sh vox_agent --env /path/to/.env   # or a specific file
+./vox-manager.sh vox_agent --version c64ff76 --env /path/to/.env # select a published Docker tag
+./vox-manager.sh self                           # update this script only; no .env or Docker required
+./vox-manager.sh vox                            # reserved: Vox server management is not supported yet
 ```
 
-Only containers with a token in the file are upgraded, and a container already on the latest image is left alone. On a phone host it also detects a running DialF daemon and mounts it into the eval agent.
+In a checkout, use `./scripts/vox-manager.sh` instead. Only containers with a token
+in the env file are installed/upgraded. Existing idle checks, same-image handling,
+DialF detection/mounts, audio devices and network monitoring mounts are preserved.
+New containers still require confirmation before starting.
+
+Running `./vox-manager.sh` without arguments defaults to `vox_agent`, image
+version `latest`, and `.env` in the **current working directory**, not the script's
+directory. Use `--env /path/to/.env` to select a different file; `--env` and
+`--version` can appear in either order. Paths containing spaces must be quoted.
+
+Without `--version`, the script uses `latest`. To install or roll back to a known
+build, pass its published Docker tag (the image pipeline publishes short commit-SHA
+tags, not the aeval binary's version). Use the same command with an older tag to
+roll back, or `--version latest` to return to the current build. For an immutable
+registry reference, pass `--version sha256:<64-hex-manifest-digest>`; this is the
+image's registry manifest digest, not a local Docker image/config ID. Only a tag
+or digest is accepted, not a different registry or full image URL.
+
+The version applies to every container enabled by the env file. If agent and
+runner need different versions (or you use an image-specific digest), use separate
+env files containing only that component's token. Both images must have the
+requested tag when both tokens are configured. The script pulls and verifies
+**all** selected images before stopping any container; an unavailable version
+leaves running containers untouched. It then starts each container by its verified
+image ID, so a tag moving during an idle wait cannot change the selected build.
+Old images and the persistent model cache are not deleted. This is explicit image
+selection, not automatic recovery from a failed container start; older builds must
+still be compatible with the running Vox server and host setup.
+
+`self` downloads the latest script from the official Vox `main` branch over HTTPS,
+checks its identity and Bash syntax, then atomically replaces the installed file
+while preserving its permissions. Failed/invalid downloads leave it unchanged;
+the downloaded script is not executed during self-update. The script file and its
+directory must be writable; invoke the real path rather than a symlink.
+
+`vox-upgrade.sh` remains a compatibility launcher with the same commands and the
+old positional env-file form (`./vox-manager.sh /path/.env`) remains supported;
+use `--env` for new commands. Specify only one env file, not both forms together.
+If the new launcher is downloaded on its own, it securely downloads the manager
+alongside it. Old copies of the original script cannot acquire the new commands
+automatically: download `vox-manager.sh` once, then use `self` for future updates.
 
 ---
 

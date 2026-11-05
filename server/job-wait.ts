@@ -151,7 +151,7 @@ export function explainWaiting(
     const why = Array.from(new Set(eligible.map((a) => agentListFilter(job.config, a.metadata))));
     return {
       canTake: 0, busy: 0,
-      message: `${agentsWord(eligible.length)} may take this job but can't run it: ${why.join("; ")}. Upgrade ${eligible.length === 1 ? "it" : "them"} with vox-upgrade.sh.${yours(mine(eligible))}`,
+      message: `${agentsWord(eligible.length)} may take this job but can't run it: ${why.join("; ")}. Upgrade ${eligible.length === 1 ? "it" : "them"} with vox-manager.sh.${yours(mine(eligible))}`,
     };
   }
 

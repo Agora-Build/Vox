@@ -49,7 +49,7 @@ describe("why a pending job waits (the claim rule over the agents online)", () =
   it("an agent too old for the job (the jobs list hides it as well)", () => {
     const w = explain(phoneJob({ config: { frameworkVersion: "0.4.2" } }), [agent({ capabilities: ["phone"], metadata: { frameworkVersion: "0.4.1", sessionInjection: "1" } })]);
     expect(w.canTake).toBe(0);
-    expect(w.message).toMatch(/may take this job but can't run it: it runs aeval 0\.4\.1; this job needs 0\.4\.2 or newer\. Upgrade it with vox-upgrade\.sh/);
+    expect(w.message).toMatch(/may take this job but can't run it: it runs aeval 0\.4\.1; this job needs 0\.4\.2 or newer\. Upgrade it with vox-manager\.sh/);
   });
 
   it("the matching agent is offline", () => {
