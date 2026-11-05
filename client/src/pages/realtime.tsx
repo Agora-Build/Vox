@@ -1412,8 +1412,8 @@ export default function Dashboard() {
     : "All time";
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div className="grid grid-cols-1 gap-x-4 gap-y-4 animate-in fade-in duration-500 xl:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="contents">
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-4">
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Real-time</h1>
@@ -1482,126 +1482,127 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2" data-testid="realtime-primary-filters">
-          <Select value={timeRange} onValueChange={setTimeRange}>
-            <SelectTrigger className="w-[100px]">
-              <SelectValue placeholder="Time" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="1">1 hour</SelectItem>
-              <SelectItem value="6">6 hours</SelectItem>
-              <SelectItem value="24">24 hours</SelectItem>
-              <SelectItem value="168">7 days</SelectItem>
-              <SelectItem value="720">30 days</SelectItem>
-              <SelectItem value="all">All time</SelectItem>
-            </SelectContent>
-          </Select>
-          <RegionScopeSelector
-            locations={visibleLocations}
-            value={regionScopes}
-            onChange={setRegionScopes}
-            showUnverified={activeTab === "my-evals" && !!regionAvailability?.hasUnverified}
-          />
-          <Toggle
-            variant="outline"
-            size="sm"
-            pressed={!networkFiltersVisible}
-            onPressedChange={(selected) => {
-              setNetworkFiltersVisible(!selected);
-              if (selected) {
-                setTagFilters([]);
-                setGroupBy(undefined);
-                setNetwork("all");
-              }
-            }}
-            aria-expanded={networkFiltersVisible}
-            aria-controls="realtime-network-filters"
-            aria-label="All networks"
-            data-testid="access-toggle-all"
-            title={networkFiltersVisible ? "Show all networks and reset network filters" : "All networks (Strict off). Click to show network filters."}
-          >
-            All
-          </Toggle>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
-                <span className="truncate">
-                  {(() => {
-                    // Count only providers in the current tab's list — the hidden
-                    // set may carry ids absent here (e.g. Custom, hidden on
-                    // another tab), which would skew a raw size subtraction.
-                    const visible = providerOptions.filter(p => !hiddenProviders.has(p.id)).length;
-                    return visible === providerOptions.length
-                      ? "All providers"
-                      : `Providers ${visible}/${providerOptions.length}`;
-                  })()}
-                </span>
-                <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-56 p-2">
-              <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b">
-                <span className="text-xs font-medium text-muted-foreground">Providers</span>
-                <div className="flex gap-2">
-                  <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set())} data-testid="button-providers-all">All</button>
-                  <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set(providerOptions.map(p => p.id)))} data-testid="button-providers-none">None</button>
+        <div className="flex min-w-0 flex-col items-start gap-2 xl:col-start-2 xl:row-start-1 xl:row-span-2 xl:items-end">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end" data-testid="realtime-primary-filters">
+            {networkFiltersVisible && <NetworkPolicyControls network={network} onChange={setNetwork} />}
+            <Select value={timeRange} onValueChange={setTimeRange}>
+              <SelectTrigger className="w-[100px]">
+                <SelectValue placeholder="Time" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">1 hour</SelectItem>
+                <SelectItem value="6">6 hours</SelectItem>
+                <SelectItem value="24">24 hours</SelectItem>
+                <SelectItem value="168">7 days</SelectItem>
+                <SelectItem value="720">30 days</SelectItem>
+                <SelectItem value="all">All time</SelectItem>
+              </SelectContent>
+            </Select>
+            <RegionScopeSelector
+              locations={visibleLocations}
+              value={regionScopes}
+              onChange={setRegionScopes}
+              showUnverified={activeTab === "my-evals" && !!regionAvailability?.hasUnverified}
+            />
+            <Toggle
+              variant="outline"
+              size="sm"
+              pressed={!networkFiltersVisible}
+              onPressedChange={(selected) => {
+                setNetworkFiltersVisible(!selected);
+                if (selected) {
+                  setTagFilters([]);
+                  setGroupBy(undefined);
+                  setNetwork("all");
+                }
+              }}
+              aria-expanded={networkFiltersVisible}
+              aria-controls="realtime-network-filters"
+              aria-label="All networks"
+              data-testid="access-toggle-all"
+              title={networkFiltersVisible ? "Show all networks and reset network filters" : "All networks (Strict off). Click to show network filters."}
+            >
+              All
+            </Toggle>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" className="w-[150px] justify-between font-normal" data-testid="button-provider-filter">
+                  <span className="truncate">
+                    {(() => {
+                      // Count only providers in the current tab's list — the hidden
+                      // set may carry ids absent here (e.g. Custom, hidden on
+                      // another tab), which would skew a raw size subtraction.
+                      const visible = providerOptions.filter(p => !hiddenProviders.has(p.id)).length;
+                      return visible === providerOptions.length
+                        ? "All providers"
+                        : `Providers ${visible}/${providerOptions.length}`;
+                    })()}
+                  </span>
+                  <ChevronDown className="h-4 w-4 opacity-50 shrink-0" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-56 p-2">
+                <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b">
+                  <span className="text-xs font-medium text-muted-foreground">Providers</span>
+                  <div className="flex gap-2">
+                    <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set())} data-testid="button-providers-all">All</button>
+                    <button className="text-xs hover:text-primary" onClick={() => setHiddenProviders(new Set(providerOptions.map(p => p.id)))} data-testid="button-providers-none">None</button>
+                  </div>
                 </div>
-              </div>
-              <div className="max-h-64 overflow-auto space-y-0.5">
-                {providerOptions.map(p => (
-                  <label key={p.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-accent cursor-pointer text-sm" data-testid={`provider-filter-${p.id}`}>
-                    <Checkbox
-                      checked={!hiddenProviders.has(p.id)}
-                      onCheckedChange={() => setHiddenProviders(prev => {
-                        const next = new Set(prev);
-                        if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
-                        return next;
-                      })}
-                    />
-                    <span className="truncate">{p.name}</span>
-                  </label>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Select value={refreshInterval.toString()} onValueChange={(v) => setRefreshInterval(parseInt(v))}>
-            <SelectTrigger className="w-[100px]">
-              <SelectValue placeholder="Refresh" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="10000">10s</SelectItem>
-              <SelectItem value="30000">30s</SelectItem>
-              <SelectItem value="60000">1m</SelectItem>
-              <SelectItem value="300000">5m</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => refetch()}
-            disabled={isFetching}
-          >
-            <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
-          </Button>
+                <div className="max-h-64 overflow-auto space-y-0.5">
+                  {providerOptions.map(p => (
+                    <label key={p.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-accent cursor-pointer text-sm" data-testid={`provider-filter-${p.id}`}>
+                      <Checkbox
+                        checked={!hiddenProviders.has(p.id)}
+                        onCheckedChange={() => setHiddenProviders(prev => {
+                          const next = new Set(prev);
+                          if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                          return next;
+                        })}
+                      />
+                      <span className="truncate">{p.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+            <Select value={refreshInterval.toString()} onValueChange={(v) => setRefreshInterval(parseInt(v))}>
+              <SelectTrigger className="w-[100px]">
+                <SelectValue placeholder="Refresh" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10000">10s</SelectItem>
+                <SelectItem value="30000">30s</SelectItem>
+                <SelectItem value="60000">1m</SelectItem>
+                <SelectItem value="300000">5m</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => refetch()}
+              disabled={isFetching}
+            >
+              <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
+          {networkFiltersVisible && (
+            <div id="realtime-network-filters" className="flex w-full flex-wrap items-center gap-2 sm:justify-end" data-testid="realtime-network-filters">
+              <MetricsTagControls
+                tagFilters={tagFilters}
+                onTagFiltersChange={setTagFilters}
+                groupBy={groupBy}
+                onGroupByChange={setGroupBy}
+                customKeys={tagCustomKeys}
+                showAllAccessOption={false}
+              />
+            </div>
+          )}
         </div>
       </div>
 
-      {networkFiltersVisible && (
-        <div id="realtime-network-filters" className="flex flex-wrap items-center gap-2 sm:justify-end" data-testid="realtime-network-filters">
-          <MetricsTagControls
-            tagFilters={tagFilters}
-            onTagFiltersChange={setTagFilters}
-            groupBy={groupBy}
-            onGroupByChange={setGroupBy}
-            customKeys={tagCustomKeys}
-            showAllAccessOption={false}
-          />
-          <NetworkPolicyControls network={network} onChange={setNetwork} />
-        </div>
-      )}
-
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="contents">
+        <TabsList className="mt-4 justify-self-start xl:col-start-1 xl:row-start-2" data-testid="realtime-tier-tabs">
           <TabsTrigger value="mainline">Mainline</TabsTrigger>
           <TabsTrigger value="community">Community</TabsTrigger>
           <TabsTrigger value="my-evals" className="gap-1">
@@ -1610,7 +1611,7 @@ export default function Dashboard() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="mainline" className="space-y-4 mt-4">
+        <TabsContent value="mainline" className="col-span-full space-y-4 mt-0">
           <MetricsSection
             metrics={groupedMainline}
             isLoading={mainlineLoading}
@@ -1630,7 +1631,7 @@ export default function Dashboard() {
           />
         </TabsContent>
 
-        <TabsContent value="community" className="space-y-4 mt-4">
+        <TabsContent value="community" className="col-span-full space-y-4 mt-0">
           <MetricsSection
             metrics={groupedCommunity}
             isLoading={communityLoading}
@@ -1651,7 +1652,7 @@ export default function Dashboard() {
           />
         </TabsContent>
 
-        <TabsContent value="my-evals" className="space-y-4 mt-4">
+        <TabsContent value="my-evals" className="col-span-full space-y-4 mt-0">
           {isLoggedIn ? (
             <MetricsSection
               metrics={groupedMyEvals}
