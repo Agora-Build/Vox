@@ -238,8 +238,9 @@ type requires an implementation/allowlist change, not a new enum.
 
 Brokers are trusted operator infrastructure, not marketplace agents:
 
-1. Admin issues a hashed registration token limited to a known broker type.
-2. Broker registers an internal advertised URL using that token.
+1. Admin issues a hashed registration token for trusted broker infrastructure.
+2. Broker registers an internal advertised URL and reports a supported broker
+   type using that token; Core validates the type against its allowlist.
 3. Core issues an in-memory mint secret and lease. Registration tokens are
    stored hashed; plaintext mint secrets are not persisted.
 4. Lease-fenced heartbeats maintain availability. Missing Core mint cache
@@ -264,8 +265,10 @@ its credential references and constrains any allowed phone-number variable;
 the agent cannot redirect the credential-bearing request via arbitrary overrides.
 Responses/errors are scrubbed and bounded.
 
-Broker environment includes `BROKER_REGISTRATION_TOKEN`, `CORE_URL`,
-`BROKER_ADVERTISE_URL`, `BROKER_TYPE`, and `BROKER_PORT`.
+Broker environment includes `BROKER_REG_TOKEN`, `VOX_CORE_URL`,
+`BROKER_ADVERTISE_URL`, optional `BROKER_NAME`, and `BROKER_PORT`. Each broker
+binary reports its own fixed type (`auth-session` or `restful`), not an
+operator-supplied `BROKER_TYPE` environment variable.
 The old `SESSION_BROKER_URL/SECRET` addressing is retired. Cached mint
 credentials are process-local; multi-Core broker-cache behavior remains an
 infrastructure concern separate from database-backed trial quotas.

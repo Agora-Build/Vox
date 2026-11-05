@@ -18,6 +18,15 @@ describe("living credential design", () => {
     expect(deployment).toContain("../designs/agent-credentials-design.md");
     expect(design).toContain("docs/DEPLOYMENT.md#credential-policy-rollout-schema-67");
   });
+  it("documents the broker environment names used by both binaries", () => {
+    for (const variable of ["BROKER_REG_TOKEN", "VOX_CORE_URL", "BROKER_ADVERTISE_URL"]) {
+      expect(design).toContain(`\`${variable}\``);
+      for (const path of ["vox_eval_agentd/auth-session-broker.ts", "vox_rest_broker/rest-broker.ts"]) {
+        expect(readFileSync(path, "utf8")).toContain(`process.env.${variable}`);
+      }
+    }
+    expect(design).not.toContain("BROKER_REGISTRATION_TOKEN");
+  });
   it.each([
     "designs/2026-08-20-secret-class-protected-runtime-design.md",
     "designs/2026-08-21-broker-registry-design.md",
