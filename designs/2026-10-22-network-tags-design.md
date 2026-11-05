@@ -733,6 +733,11 @@ marks monitoring incomplete; database failures request retry without discarding
 pending events. Missing pre-upgrade history resumes at an incomplete checkpoint,
 never a fabricated fully monitored baseline. Completion carries a separate
 claim `startedAt` so old-execution results and superseded leases remain fenced.
+The job-level incomplete flag is authoritative; updating its telemetry-state
+mirror is best-effort behind a separate savepoint. A failed telemetry-table
+write therefore cannot poison result finalization. A lost database connection
+or a failure of the result/job tables themselves still returns a retryable
+server error: no database-backed result can commit while its database is down.
 More than two minutes without delivery makes monitoring incomplete even if
 local sampling continued; incomplete is sticky after reconnection. This does
 not change the separate five-minute stale-agent job-recovery rule or 90-minute

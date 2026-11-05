@@ -204,6 +204,29 @@ d("Core network history, claim fencing and strict metrics", () => {
       await pool.query("DROP FUNCTION network_test_storage_error()");
     }
   });
+  it("preserves liveness and results when the fallback telemetry marker also fails", async () => {
+    await pool.query(`CREATE FUNCTION network_test_marker_error() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'test network state unavailable'; END $$`);
+    await pool.query(`CREATE TRIGGER network_test_marker_error BEFORE UPDATE ON eval_job_network_state
+      FOR EACH ROW EXECUTE FUNCTION network_test_marker_error()`);
+    const onAck = vi.fn(), onStatus = vi.fn();
+    try {
+      expect((await receive(report())).networkReportStatus).toMatchObject({ status: "retry", incomplete: true, rejectedEvents: [] });
+      expect(await current()).toMatchObject({ status: "running", networkMonitoring: "incomplete" });
+      const done = await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId, siteId: null }, {
+        agentId, leaseId, startedAt: job.startedAt, network: { report: report(), onAck, onStatus },
+      });
+      expect(done).toMatchObject({ status: "completed", networkMonitoring: "incomplete" });
+      expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+      expect(onAck).toHaveBeenCalledWith(undefined);
+      expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ status: "retry", incomplete: true, rejectedEvents: [] }));
+    } finally {
+      await pool.query("DROP TRIGGER network_test_marker_error ON eval_job_network_state");
+      await pool.query("DROP FUNCTION network_test_marker_error()");
+    }
+    await receive(report(), true);
+    expect((await current()).networkMonitoring).toBe("incomplete");
+  });
   it("commits final events, eligibility, result and ack atomically", async () => {
     const ack = vi.fn();
     const holder = { agentId, leaseId, startedAt: job.startedAt, network: { report: report(), ip: "80.150.1.1", onAck: ack } };

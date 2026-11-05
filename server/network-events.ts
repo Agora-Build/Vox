@@ -231,8 +231,20 @@ export async function receiveAgentNetworkEvents(opts: {
     const markIncomplete = async () => {
       for (const job of affected) {
         await client.query("UPDATE eval_jobs SET network_monitoring='incomplete' WHERE id=$1", [job.id]);
-        await client.query("UPDATE eval_job_network_state SET monitoring_gap=true WHERE job_id=$1 AND started_at=$2", [job.id, job.started_at]);
       }
+      if (!affected.length) return;
+      // The job flag is authoritative and sticky. A broken telemetry table
+      // must not undo it or poison an otherwise valid result transaction.
+      await client.query("SAVEPOINT network_incomplete_state");
+      try {
+        for (const job of affected) {
+          await client.query("UPDATE eval_job_network_state SET monitoring_gap=true WHERE job_id=$1 AND started_at=$2", [job.id, job.started_at]);
+        }
+      } catch (error) {
+        await client.query("ROLLBACK TO SAVEPOINT network_incomplete_state");
+        console.error("[network-events] incomplete state unavailable:", error instanceof Error ? error.name : "unknown error");
+      }
+      await client.query("RELEASE SAVEPOINT network_incomplete_state");
     };
     await client.query("SAVEPOINT network_report");
     let response: NetworkReportResponse;

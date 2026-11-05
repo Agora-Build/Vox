@@ -30,6 +30,8 @@ describe("docs/openapi.yaml", () => {
     expect(spec.components.parameters.NetworkPolicy.schema).toMatchObject({ default: "strict", enum: ["strict", "all"] });
     for (const route of ["/metrics/realtime", "/metrics/leaderboard"]) {
       expect(spec.paths[route].get.parameters).toContainEqual({ $ref: "#/components/parameters/NetworkPolicy" });
+      expect(spec.paths[route].get.description).toContain("strict network coverage");
+      expect(spec.paths[route].get.description).toContain("network=all");
     }
   });
 });

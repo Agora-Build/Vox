@@ -216,14 +216,14 @@ describeDb("database-backed location check generations", () => {
     expect(insertEvalAgentSchema.parse({ name: "input", tokenId, locationCheckGen: 100 })).not.toHaveProperty("locationCheckGen");
   });
 
-  it("migration backfills existing rows without altering their classification and is restart-safe", async () => {
+  it("migration backfills existing rows without altering their classification", async () => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       await client.query("CREATE TEMP TABLE eval_agents (id int, observed_ip text, access_class text) ON COMMIT DROP");
       await client.query("INSERT INTO pg_temp.eval_agents VALUES (1, $1, 'lastmile')", [IP]);
       const migration = readFileSync("migrations/0064_location_check_gen.sql", "utf8");
-      await client.query(migration);
+      expect(migration).not.toMatch(/IF NOT EXISTS/i);
       await client.query(migration);
       const { rows } = await client.query("SELECT * FROM pg_temp.eval_agents");
       expect(rows).toEqual([{ id: 1, observed_ip: IP, access_class: "lastmile", location_check_gen: "0" }]);

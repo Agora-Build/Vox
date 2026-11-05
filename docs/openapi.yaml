@@ -1516,8 +1516,9 @@ paths:
       description: >
         Returns the most recent evaluation results of one tier and one transport. With no
         parameters: the Mainline tier (eval flow and eval set public+mainline, a public agent),
-        web — what this endpoint has always returned. `tier=community` is public too;
-        `tier=mine` returns your own private evals and needs an API key.
+        web, and strict network coverage. This deliberately excludes historical and
+        unverified runs; use `network=all` for the previous dataset. `tier=community`
+        is public too; `tier=mine` returns your own private evals and needs an API key.
       security:
         - {}            # mainline / community: no key
         - BearerAuth: []  # mine: API key required
@@ -1608,8 +1609,10 @@ paths:
       summary: Get leaderboard
       description: >
         Returns provider rankings (averages per provider and site) for one tier and one
-        transport. With no parameters: Mainline, web — as before. `tier=community` is public
-        too; `tier=mine` ranks your own private evals and needs an API key.
+        transport. With no parameters: Mainline, web, and strict network coverage.
+        This deliberately excludes historical and unverified runs; use `network=all`
+        for the previous dataset. `tier=community` is public too; `tier=mine` ranks
+        your own private evals and needs an API key.
       security:
         - {}            # mainline / community: no key
         - BearerAuth: []  # mine: API key required
