@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { storage, encryptValue } from "../server/storage";
+import { storage, encryptValue, buildJobSnapshot } from "../server/storage";
 import { db } from "../server/storage";
 import { orgRuntimeSecretsForJob } from "../server/routes";
 import { setOrganizations, resetOrganizations } from "../server/organizations";
@@ -56,7 +56,7 @@ d("login-class secrets are withheld from the job path", () => {
     const job = await storage.createEvalJob({
       evalFlowId: wf.id, triggerType: 2, evalSetId: null, createdBy: 1,
       siteId: "na-us-ashburn-01", config: {},
-      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+      snapshot: buildJobSnapshot(wf, null, null, null),
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 
@@ -105,7 +105,7 @@ d("login-class secrets are withheld from the job path", () => {
     const job = await storage.createEvalJob({
       evalFlowId: wf.id, triggerType: 2, evalSetId: null, createdBy: user.id,
       siteId: "na-us-ashburn-01", config: {},
-      snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+      snapshot: buildJobSnapshot(wf, null, null, null),
       status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
     } as any);
 

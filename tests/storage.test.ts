@@ -594,8 +594,13 @@ describe('buildJobSnapshot (immutable per-job provenance)', () => {
     expect(s.provider).toEqual({ id: 'abc123def456', name: 'Agora ConvoAI Engine', platformId: 'agora' });
     // Network tags: a flow without tags/lineLookup freezes [] / null.
     expect(s.evalFlow).toEqual({ name: 'WF', config: { framework: 'aeval', stepsPrefix: '- x' }, visibility: 'public', isMainline: true, ownerId: 7, organizationId: null, tags: [], lineLookup: null });
-    expect(s.evalSet).toEqual({ name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9 });
+    expect(s.evalSet).toEqual({ name: 'ES', config: { scenario: 'steps: []' }, visibility: 'private', isMainline: false, ownerId: 9, organizationId: null });
     expect(s.creatorPlan).toBe('principal');
+  });
+
+  it('freezes the eval-set organization used for trial admission', () => {
+    const s = buildJobSnapshot(wf, { ...es, organizationId: 10 }, provider, 'principal');
+    expect(s.evalSet?.organizationId).toBe(10);
   });
 
   it('freezes the flow\'s hand-set tags and line lookup', () => {

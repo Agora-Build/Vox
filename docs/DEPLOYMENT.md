@@ -51,6 +51,85 @@ mode, credentials, or public listener are required. The deployment script does
 not silently install or activate a host service. Missing/stale observations
 fail closed and are visible in a job's Network timeline.
 
+## Credential-policy rollout (schema 67)
+
+Core startup applies `0066_credential_trials.sql` before the app listens. It
+adds per-flow trial limits (5 per rolling 24 hours, 80 per rolling 30 days),
+credential-scope opt-in/budgets, and durable trial accounting. Back up the
+database and use the normal migration runner, not `db:push`. Existing agents
+remain protocol-compatible; no daemon upgrade is required for this policy.
+Keep `CREDENTIAL_ENCRYPTION_KEY`, broker registrations and the existing
+`organizations` plugin enabled/configured as before. Do not reclassify secrets
+or automatically resume paused schedules during this rollout.
+
+An owner's own Private or Shared agent can use their personal Runtime and
+Brokered credentials. Other operators' Shared agents are Brokered-only;
+authenticated sessions additionally require explicit consent for each run.
+Team agents use only their own organization's credentials. Trusted Mainline
+supports authorized Runtime and Brokered flows, including owner schedules.
+Raw Brokered credentials never reach an eval agent, even the owner's.
+
+### Existing schedules and pending jobs
+
+Before deployment, review enabled schedules that use credentials. In particular,
+organization flows in a Private pool and personal flows in a Team pool no longer
+meet the ownership matrix. The scheduler disables such schedules on its next
+tick, before minting or creating a job; they do not re-enable automatically.
+Have the schedule owner choose a same-org Team/Mainline pool for an org flow,
+or an own Private/Mainline pool for a personal flow, then explicitly re-enable.
+Provider absence/outages still skip rather than disable schedules; do not
+confuse that temporary state with a persistent policy violation.
+
+There is no grandfathered credential grant for pending legacy jobs. In-flight
+jobs also use the new delivery checks on any subsequent credential request.
+A cross-owner run lacking the durable browser-trial admission, a third-party
+Shared Runtime job, or a mismatched Private/Team scope will be denied rather
+than receive credentials. Review/drain these jobs before rollout, or have their
+owners cancel and resubmit using an authorized agent/credential scope. Do not
+fabricate trial usage rows, stamp consent on old jobs or automatically resume
+schedules to work around the policy.
+
+### Enabling and verifying public trials
+
+Borrowing stays **off by default**. To enable it, the credential owner opens
+Secrets, enables Public flow trials and saves a positive aggregate 30-day run
+budget. Previously permitted cross-owner runs of public credential-bearing
+flows now require this opt-in; public visibility alone no longer authorizes
+credential spending. Organization settings require that organization's owner/admin. Each
+public flow has separately editable per-user limits; setting either to zero
+disables its borrowed trials. Borrowing requires a signed-in browser session,
+an owner-controlled eval set and pooled Mainline. API keys and borrower
+schedules never gain access. Admitted failures/cancellations count; deleting
+history does not refund usage. These are run caps, not provider-dollar caps.
+Disabling the scope's trials denies new credential authorization checks for
+queued and running trials after the policy update commits. Already-authorized
+requests may finish, including in-flight external provider calls; values or
+sessions already delivered cannot be retracted. This is point-in-time
+authorization, not an atomic revocation barrier around an entire request.
+An exhausted positive budget blocks new admissions, not admitted jobs.
+Re-enabling permits remaining requests again. Post-admission flow/eval-set
+edits do not revoke their frozen authorization; cancel individual jobs to stop
+them, or disable the scope to block further borrowed credential delivery.
+
+Post-deploy, verify with limited test credentials:
+
+- Confirm schema version 67 or newer and that existing trial policies stay off
+  until their owner explicitly enables them.
+- Check own Private/Shared Runtime and Brokered runs, then verify a third-party
+  Shared Runtime attempt is rejected before any credit hold. Check targeted
+  Brokered-session consent separately.
+- Verify Team/org scope boundaries and an owner-authorized Mainline session
+  schedule without resuming unrelated schedules.
+- Confirm public create/edit/publish controls show 5/80 defaults and custom
+  limits, and run forms show remaining allowance or the BYOC alternative.
+- Disable borrowing and confirm queued/running trials cannot receive Runtime,
+  session or REST credentials while owner-authorized jobs remain unaffected.
+- Confirm personal/org secret deletion opens a name/scope dialog, Cancel does
+  not delete, and unauthorized users cannot delete another scope's secrets.
+
+The maintained trust matrix, accounting semantics and regression-test entry
+points are in [Agent credentials](../designs/agent-credentials-design.md).
+
 ## Prerequisites
 
 - A server or hosting platform that supports Docker

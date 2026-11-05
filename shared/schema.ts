@@ -218,6 +218,8 @@ export const evalFlows = pgTable("eval_flows", {
   organizationId: integer("organization_id"),
   visibility: visibilityEnum("visibility").default("public").notNull(),
   isMainline: boolean("is_mainline").default(false).notNull(),
+  trialLimit24Hours: integer("trial_limit_24_hours").default(5).notNull(),
+  trialLimit30Days: integer("trial_limit_30_days").default(80).notNull(),
   // Conversation transport (design §3): how the simulated user reaches this
   // evalFlow's agent. Editable on the live row; each job freezes its own copy.
   transport: transportEnum("transport").default("web").notNull(),
@@ -541,11 +543,17 @@ export type JobSnapshot = {
     tags?: Tag[];
     lineLookup?: LineLookup | null;
   } | null;
-  evalSet: { name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number } | null;
+  evalSet: {
+    name: string; config: unknown; visibility: string; isMainline: boolean; ownerId: number;
+    // Optional for snapshots created before credential-trial admission checks.
+    organizationId?: number | null;
+  } | null;
   creatorPlan: string | null;
   // Conversation transport frozen at creation (design 2026-09-21 §3). Absent on
   // pre-existing snapshots ⇒ treat as "web".
   transport?: "web" | "phone";
+  // Dispatch/claim backstop for jobs whose frozen configs reference credentials.
+  requiresCredentials?: boolean;
   // Opaque marketplace settlement handle stashed by Core after a paid `shared`
   // dispatch (see the shared-agents plugin). Core never inspects it; the plugin
   // reads it back in settle(). TS-only — `snapshot` is a jsonb column.
@@ -556,16 +564,14 @@ export type JobSnapshot = {
   // from evalFlow.ownerId/organizationId) — never from the live evalFlow, which
   // the owner can edit after dispatch (TOCTOU).
   sessionInjection?: { platformId: string; emailSecret: string; passwordSecret: string };
-  // True iff the dispatcher recorded informed credential consent AND the login
-  // secrets were attested as dedicated test accounts (shared-tier dispatch). The
+  // True iff the credential owner recorded informed session-exposure consent. The
   // session serve gate requires this before handing a bundle to a targeted
   // shared (stranger's) agent.
   credentialConsent?: boolean;
-  // True iff the dispatcher acknowledged that this run exposes runtime-class
-  // secrets to a shared (stranger's) agent. Recorded for audit alongside
-  // credentialConsent; the run route's shared branch requires it before an
-  // escrow hold is placed.
+  // Legacy audit metadata only. It never authorizes Runtime delivery to Shared.
   runtimeSecretConsent?: boolean;
+  // Core-only admission stamp. Backed by durable usage; never accepted from a client.
+  credentialTrial?: { scopeKey: string; callerId: number };
   // Tools → Analyze (design 2026-09-30): present iff kind = 'analyze'. The
   // uploaded recording, in the uploader's own bucket, and where they said it
   // was made.
@@ -814,8 +820,7 @@ export const orgSecrets = pgTable("org_secrets", {
   // the job-secrets path (getSecretsForJob) so username/password never reach an
   // eval agent, any tier.
   brokerType: text("broker_type"),
-  // Owner's attestation that this login identity is a dedicated, disposable
-  // test account — required before shared-tier dispatch of session evalFlows.
+  // Legacy metadata retained for compatibility; not a dispatch authorization.
   isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1007,6 +1012,27 @@ export const insertSystemConfigSchema = createInsertSchema(systemConfig).omit({
 export type InsertSystemConfig = z.infer<typeof insertSystemConfigSchema>;
 export type SystemConfig = typeof systemConfig.$inferSelect;
 
+export const credentialTrialPolicies = pgTable("credential_trial_policies", {
+  scopeKey: text("scope_key").primaryKey(),
+  enabled: boolean("enabled").default(false).notNull(),
+  maxRuns30Days: integer("max_runs_30_days").default(0).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [check("credential_trial_policies_max_runs_30_days_check", sql`${t.maxRuns30Days} BETWEEN 0 AND 10000`)]);
+
+export const credentialTrialUsage = pgTable("credential_trial_usage", {
+  id: serial("id").primaryKey(),
+  scopeKey: text("scope_key").notNull(),
+  callerId: integer("caller_id").notNull(),
+  requestKey: text("request_key").notNull(),
+  evalFlowId: integer("eval_flow_id").references(() => evalFlows.id, { onDelete: "set null" }),
+  jobId: integer("job_id").unique().references(() => evalJobs.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("credential_trial_usage_scope_time_idx").on(t.scopeKey, t.createdAt),
+  index("credential_trial_usage_caller_time_idx").on(t.evalFlowId, t.callerId, t.createdAt),
+  uniqueIndex("credential_trial_usage_request_idx").on(t.callerId, t.requestKey),
+]);
+
 // ==================== FUND RETURN REQUESTS ====================
 
 export const fundReturnRequests = pgTable("fund_return_requests", {
@@ -1040,8 +1066,7 @@ export const secrets = pgTable("secrets", {
   // the job-secrets path (getSecretsForJob) so username/password never reach an
   // eval agent, any tier.
   brokerType: text("broker_type"),
-  // Owner's attestation that this login identity is a dedicated, disposable
-  // test account — required before shared-tier dispatch of session evalFlows.
+  // Legacy metadata retained for compatibility; not a dispatch authorization.
   isTestAccount: boolean("is_test_account").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

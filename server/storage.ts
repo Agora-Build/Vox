@@ -1,4 +1,5 @@
 import * as yaml from "js-yaml";
+import { collectSecretRefs } from "@shared/secrets";
 import type { NetworkAck, NetworkReportStatus } from "@shared/network-events";
 import { metricsResolution, metricsDetailResolution, METRICS_DAY_MS, METRICS_RETENTION_DAYS, type MetricsWindow, type MetricsResolution } from "@shared/metrics-window";
 import {
@@ -638,10 +639,12 @@ export function buildJobSnapshot(
           visibility: evalSet.visibility,
           isMainline: evalSet.isMainline,
           ownerId: evalSet.ownerId,
+          organizationId: evalSet.organizationId ?? null,
         }
       : null,
     creatorPlan,
     transport: (evalFlow.transport as "web" | "phone" | undefined) ?? "web",
+    requiresCredentials: collectSecretRefs([evalFlow.config, evalSet?.config]).size > 0,
   };
 }
 
@@ -1501,6 +1504,13 @@ export class DatabaseStorage {
            -- applies to every arm below, targeted included.
            -- (An analysis needs no phone: its call has already happened.)
            AND ( ej.transport = 'web'::transport OR ej.kind = 'analyze' OR $8::boolean = true )
+           AND (
+             (COALESCE(ej.snapshot->>'requiresCredentials', 'false') <> 'true' AND ej.snapshot->'sessionInjection' IS NULL)
+             OR $4 = 'public'
+             OR ($4 = 'private' AND ej.snapshot->'evalFlow'->>'organizationId' IS NULL AND ej.snapshot->'evalFlow'->>'ownerId' = ($5::integer)::text)
+             OR ($4 = 'team' AND $6::integer IS NOT NULL AND ej.snapshot->'evalFlow'->>'organizationId' = ($6::integer)::text)
+             OR ($4 = 'shared' AND ((ej.snapshot->'evalFlow'->>'organizationId' IS NULL AND ej.snapshot->'evalFlow'->>'ownerId' = ($5::integer)::text) OR (ej.target_token_id = $2 AND (ej.snapshot->'sessionInjection' IS NULL OR ej.snapshot->>'credentialConsent' = 'true'))))
+           )
            AND ( ( ej.kind = 'eval' AND (
              ej.target_token_id = $2
              OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $3 AND (
@@ -1510,12 +1520,11 @@ export class DatabaseStorage {
                       -- R2 (§11): the creator's org FROZEN at creation, not their live
                       -- membership — no users join here by design (seam invariant).
                       AND $6::integer IS NOT NULL AND ej.creator_org_id = $6 )
-                 OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public'
-                      AND (ej.config -> 'sessionInjection') IS NULL )
+                 OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public' )
              ) )
              OR ( ej.target_token_id IS NULL AND ej.target_region IS NULL AND ej.site_id = $7 AND (
                     ej.created_by = $5
-                    OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
+                    OR $4 = 'public'
              ) )
            ) )
            -- Tools → Analyze (design 2026-09-30): an analyze-capable agent —
@@ -1609,6 +1618,13 @@ export class DatabaseStorage {
         WHERE ej.status = 'pending'::eval_job_status
           -- Phone-transport jobs require the phone capability (design §8).
           AND ( ej.transport = 'web'::transport OR ej.kind = 'analyze' OR $7::boolean = true )
+          AND (
+            (COALESCE(ej.snapshot->>'requiresCredentials', 'false') <> 'true' AND ej.snapshot->'sessionInjection' IS NULL)
+            OR $4 = 'public'
+            OR ($4 = 'private' AND ej.snapshot->'evalFlow'->>'organizationId' IS NULL AND ej.snapshot->'evalFlow'->>'ownerId' = ($5::integer)::text)
+            OR ($4 = 'team' AND $6::integer IS NOT NULL AND ej.snapshot->'evalFlow'->>'organizationId' = ($6::integer)::text)
+            OR ($4 = 'shared' AND ((ej.snapshot->'evalFlow'->>'organizationId' IS NULL AND ej.snapshot->'evalFlow'->>'ownerId' = ($5::integer)::text) OR (ej.target_token_id = $1 AND (ej.snapshot->'sessionInjection' IS NULL OR ej.snapshot->>'credentialConsent' = 'true'))))
+          )
           AND ( ( ej.kind = 'eval' AND (
             ej.target_token_id = $1
             OR ( ej.target_token_id IS NULL AND ej.target_region IS NOT NULL AND ej.target_region = $2 AND (
@@ -1617,12 +1633,11 @@ export class DatabaseStorage {
                      AND $4 IN ('team', 'public')
                      -- R2 (§11): frozen creator org, not live membership (seam invariant).
                      AND $6::integer IS NOT NULL AND ej.creator_org_id = $6 )
-                OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public'
-                     AND (ej.config -> 'sessionInjection') IS NULL )
+                OR ( ej.target_tier = 'public'::dispatch_tier AND $4 = 'public' )
             ) )
             OR ( ej.target_token_id IS NULL AND ej.target_region IS NULL AND ej.site_id = $3 AND (
                    ej.created_by = $5
-                   OR ( $4 = 'public' AND (ej.config -> 'sessionInjection') IS NULL )
+                   OR $4 = 'public'
             ) )
           ) )
           -- Tools → Analyze: see claimEvalJob.
@@ -3202,16 +3217,12 @@ export class DatabaseStorage {
   }
 
   async getSecretsForJob(jobId: number): Promise<Secret[]> {
-    // Find the evalFlow owner for this job, then return their secrets
     const job = await this.getEvalJob(jobId);
-    if (!job) { console.log(`[Secrets] getSecretsForJob: job ${jobId} not found`); return []; }
-    if (job.evalFlowId == null) { console.log(`[Secrets] getSecretsForJob: job ${jobId} has no evalFlow (deleted)`); return []; }
-    const evalFlow = await this.getEvalFlow(job.evalFlowId);
-    if (!evalFlow) { console.log(`[Secrets] getSecretsForJob: evalFlow ${job.evalFlowId} not found`); return []; }
-    console.log(`[Secrets] getSecretsForJob: job ${jobId} → evalFlow ${evalFlow.id} → owner ${evalFlow.ownerId}`);
+    const owner = job?.snapshot?.evalFlow;
+    if (!owner || owner.organizationId != null) return [];
     // Structural withhold: brokered rows (broker_type != null) are Core-only. They
     // feed the session broker's mint and must never reach an eval agent, any tier.
-    const all = await this.getSecretsByUserId(evalFlow.ownerId);
+    const all = await this.getSecretsByUserId(owner.ownerId);
     return all.filter((s) => s.brokerType == null);
   }
 
@@ -3681,13 +3692,12 @@ export class DatabaseStorage {
   async getJobOrgSecretScope(jobId: number): Promise<{ evalFlowOrgId: number; createdBy: number | null } | null> {
     const job = await this.getEvalJob(jobId);
     if (!job) return null;
-    if (job.evalFlowId == null) return null;
-    const evalFlow = await this.getEvalFlow(job.evalFlowId);
-    if (!evalFlow?.organizationId) return null;
+    const owner = job.snapshot?.evalFlow;
+    if (!owner?.organizationId) return null;
     // `?? null` (not `||`): the caller fails closed on a null creator exactly as
     // the old `if (!job.createdBy) return {}` did — org secrets are the SOLE
     // source for an org evalFlow, so an unknown creator gets nothing.
-    return { evalFlowOrgId: evalFlow.organizationId, createdBy: job.createdBy ?? null };
+    return { evalFlowOrgId: owner.organizationId, createdBy: job.createdBy ?? null };
   }
 
   // The org-runtime decrypt tail that used to live here (RUNTIME rows only,

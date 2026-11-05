@@ -1,5 +1,9 @@
 # Tier-Targeting (Region-Pooled Dispatch by Agent Tier) Implementation Plan
 
+> Historical archive, not current policy. Refer to the single maintained
+> [credential and dispatch design](agent-credentials-design.md). Its current
+> Mainline-session and owner-agent rules supersede the old restrictions.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace exact-site untargeted dispatch with region × tier pools: a job targets `(targetRegion, targetTier)` and any consenting agent in that region claims it, stamping its concrete site at claim.

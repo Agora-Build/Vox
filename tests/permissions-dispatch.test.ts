@@ -60,11 +60,9 @@ describe("isClaimable", () => {
     expect(isClaimable(otherJob, privateTok)).toBe(false);
   });
 
-  it("session-injected untargeted job: a PUBLIC stranger token may NOT claim it (HIGH-1)", () => {
-    // A stranger's public agent must never pull a session-injected job off the
-    // region pool — it would sit on the owner's minted test-account session.
+  it("session-injected untargeted job: trusted admin-operated Mainline may claim it", () => {
     const job = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 3, sessionInjected: true };
-    expect(isClaimable(job, publicTok)).toBe(false);
+    expect(isClaimable(job, publicTok)).toBe(true);
   });
   it("session-injected untargeted job: the owner's OWN token still claims it", () => {
     const job = { targetTokenId: null, targetRegion: null, targetTier: null, siteId: "na-us-seattle-01", createdBy: 7, sessionInjected: true };
@@ -87,10 +85,10 @@ describe("isClaimable — pooled arms (tier-targeting)", () => {
     expect(isClaimable(pooled("public"), T())).toBe(true);
     expect(isClaimable(pooled("public"), T({ region: "eu-de-frankfurt" }))).toBe(false);
   });
-  it("public pool: private/team tokens refused; session-injected refused", () => {
+  it("public pool: private/team tokens refused; trusted Mainline accepts sessions", () => {
     expect(isClaimable(pooled("public"), T({ dispatchTier: "private" }))).toBe(false);
     expect(isClaimable(pooled("public"), T({ dispatchTier: "team" }))).toBe(false);
-    expect(isClaimable(pooled("public", { sessionInjected: true }), T())).toBe(false);
+    expect(isClaimable(pooled("public", { sessionInjected: true }), T())).toBe(true);
   });
   it("private pool: only the dispatcher's own tokens, any tier", () => {
     expect(isClaimable(pooled("private", { createdBy: 7 }), T({ dispatchTier: "private" }))).toBe(true);
@@ -166,48 +164,48 @@ describe("isClaimable — analyze jobs", () => {
   });
 });
 
-describe("isSessionServable (owner + team + attested-shared)", () => {
+describe("isSessionServable (Mainline + Private + Team + consented Shared)", () => {
   // EvalFlow owned by user 7, no org.
   const personalJob = { targetTokenId: null, evalFlowOwnerId: 7, evalFlowOrgId: null, consent: false };
   // EvalFlow owned by org 20.
   const orgJob = { targetTokenId: null, evalFlowOwnerId: 7, evalFlowOrgId: 20, consent: false };
 
   it("owner arm: the evalFlow owner's own agent receives the bundle", () => {
-    const token = { id: 100, createdBy: 7 };
+    const token = { id: 100, createdBy: 7, dispatchTier: "private" };
     expect(isSessionServable(personalJob, token, { organizationId: null })).toBe(true);
   });
   it("owner arm: a stranger's agent on a personal job is refused", () => {
-    const token = { id: 100, createdBy: 3 };
+    const token = { id: 100, createdBy: 3, dispatchTier: "private" };
     expect(isSessionServable(personalJob, token, { organizationId: null })).toBe(false);
   });
   it("team arm: an org co-member's agent receives an org job's bundle", () => {
-    const token = { id: 100, createdBy: 8 };
+    const token = { id: 100, createdBy: 8, dispatchTier: "team" };
     expect(isSessionServable(orgJob, token, { organizationId: 20 })).toBe(true);
   });
   it("team arm: a different-org agent is refused", () => {
-    const token = { id: 100, createdBy: 8 };
+    const token = { id: 100, createdBy: 8, dispatchTier: "team" };
     expect(isSessionServable(orgJob, token, { organizationId: 21 })).toBe(false);
   });
   it("attested-shared arm: a targeted token with consent receives the bundle", () => {
     const sharedJob = { targetTokenId: 100, evalFlowOwnerId: 7, evalFlowOrgId: null, consent: true };
-    const token = { id: 100, createdBy: 3 };
+    const token = { id: 100, createdBy: 3, dispatchTier: "shared" };
     expect(isSessionServable(sharedJob, token, { organizationId: null })).toBe(true);
   });
   it("attested-shared arm: consent WITHOUT being the aimed token is refused", () => {
     const sharedJob = { targetTokenId: 100, evalFlowOwnerId: 7, evalFlowOrgId: null, consent: true };
-    const otherToken = { id: 101, createdBy: 3 };
+    const otherToken = { id: 101, createdBy: 3, dispatchTier: "shared" };
     expect(isSessionServable(sharedJob, otherToken, { organizationId: null })).toBe(false);
   });
   it("attested-shared arm: aimed token but NO consent is refused", () => {
     const noConsent = { targetTokenId: 100, evalFlowOwnerId: 7, evalFlowOrgId: null, consent: false };
-    const token = { id: 100, createdBy: 3 };
+    const token = { id: 100, createdBy: 3, dispatchTier: "shared" };
     expect(isSessionServable(noConsent, token, { organizationId: null })).toBe(false);
   });
 });
 
 describe("sessionPoolViolation — scheduler tier-composition gate", () => {
-  it("public pool is always a violation for session-injected dispatch", () => {
-    expect(sessionPoolViolation("public", { organizationId: 5 }, { organizationId: 5 })).toMatch(/public pool/);
+  it("public/Mainline pool is trusted for session-injected dispatch", () => {
+    expect(sessionPoolViolation("public", { organizationId: 5 }, { organizationId: 5 })).toBeNull();
   });
   it("team pool allowed only when the evalFlow belongs to the creator's org", () => {
     expect(sessionPoolViolation("team", { organizationId: 5 }, { organizationId: 5 })).toBeNull();
@@ -246,7 +244,7 @@ describe("isOwnerOperatedAgent (who may see a mint failure's detail)", () => {
     const shared = { targetTokenId: 5, evalFlowOwnerId: 7, evalFlowOrgId: null, consent: true };
     const token = { id: 5, createdBy: 99 };
     const tokenOwner = { organizationId: null };
-    expect(isSessionServable(shared, token, tokenOwner)).toBe(true);
+    expect(isSessionServable(shared, { ...token, dispatchTier: "shared" }, tokenOwner)).toBe(true);
     expect(isOwnerOperatedAgent(shared, token, tokenOwner)).toBe(false);
   });
 
