@@ -21,8 +21,8 @@ export function NetworkPolicyControls({ network, onChange }: {
         </PopoverContent>
       </Popover>
       <label className="flex items-center gap-2 cursor-pointer">
+        <span>Strict</span>
         <Switch checked={network === "strict"} onCheckedChange={(checked) => onChange(checked ? "strict" : "all")} aria-label="Strict" data-testid="strict-network-mode" />
-        Strict
       </label>
     </div>
   );

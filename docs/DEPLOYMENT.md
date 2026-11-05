@@ -19,10 +19,12 @@ for Mainline, Community and My Evals. Advanced network controls and the **Strict
 switch are hidden, with Strict off. Click the selected **All** button to reveal
 Last mile, Datacenter, tag filters, grouping and Strict; select All again to clear
 network filters/grouping, turn Strict off and collapse the controls. The extended
-controls appear on a separate row without moving the original header selectors.
-Time, region, transport and provider selections are preserved. The information
-icon before the compact Strict switch explains coverage and the frozen baseline
-used for grouping; no coverage summary or counts are displayed or polled.
+controls appear directly below the header selectors, while the information icon,
+Strict label and switch precede the time range. On desktop, opening the second
+filter row preserves the status-to-tabs gap. Time, region, transport and provider
+selections are preserved. The information icon before the compact Strict switch
+explains coverage and the frozen baseline used for grouping; no coverage summary
+or counts are displayed or polled.
 Filtered/grouped/explicit-Strict links start expanded so active constraints stay
 visible. To retain a strict benchmark, share `/realtime?network=strict` (or append
 `&network=strict` to an existing filtered URL). Older Real-time links that omit

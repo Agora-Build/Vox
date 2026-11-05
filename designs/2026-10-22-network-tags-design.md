@@ -775,9 +775,10 @@ networks, explicitly passing `network=all` for overview, zoom detail and region
 availability. The All button starts selected with advanced filters and Strict
 hidden/off; clicking it reveals the controls, and reselecting it resets network
 tags/grouping and Strict without changing primary selections. Filtered/grouped
-or explicit-Strict URLs start expanded. Extended controls occupy their own row,
-leaving the original header selectors in place. An information popover precedes
-the compact Strict switch; the UI no longer displays or polls coverage counts.
+or explicit-Strict URLs start expanded. Extended controls sit immediately below
+the header selectors. The information icon, Strict label and switch precede the
+time range. Desktop tabs remain anchored beneath the status line when the second
+filter row opens. The UI no longer displays or polls coverage counts.
 API and Leaderboard defaults remain unchanged. Older Real-time links without a
 network parameter now use All; add `network=strict` to preserve strict results.
 

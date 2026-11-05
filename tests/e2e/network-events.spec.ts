@@ -33,10 +33,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const toggle = page.getByRole("switch", { name: "Strict", exact: true });
       const primary = page.getByTestId("realtime-primary-filters");
       const extended = page.getByTestId("realtime-network-filters");
-      const primaryLayout = () => primary.locator("button").evaluateAll((buttons) => buttons.map((button) => {
-        const { x, y, width, height } = button.getBoundingClientRect();
-        return { x, y, width, height };
-      }));
+      const tabs = page.getByTestId("realtime-tier-tabs");
       await expect(all).toHaveAttribute("data-state", "on");
       await expect(all).toHaveAttribute("aria-expanded", "false");
       await expect(page.getByTestId("access-toggle-lastmile")).toHaveCount(0);
@@ -45,7 +42,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByTestId("network-policy")).toHaveCount(0);
       await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && url.searchParams.get("network") === "all")).toBe(true);
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
-      const originalLayout = await primaryLayout();
+      const originalTabs = await tabs.boundingBox();
       await all.click();
       await expect(all).toHaveAttribute("data-state", "off");
       await expect(all).toHaveAttribute("aria-expanded", "true");
@@ -57,11 +54,20 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(extended.getByTestId("access-toggle-lastmile")).toBeVisible();
       await expect(extended.getByTestId("metrics-tag-filter")).toBeVisible();
       await expect(extended.getByTestId("select-group-by")).toBeVisible();
-      await expect(extended.getByTestId("strict-network-mode")).toBeVisible();
-      expect(await primaryLayout()).toEqual(originalLayout);
+      await expect(primary.getByTestId("strict-network-mode")).toBeVisible();
+      await expect(extended.getByTestId("strict-network-mode")).toHaveCount(0);
+      expect(await toggle.evaluate((element) => element.previousElementSibling?.textContent)).toBe("Strict");
+      expect(await primary.evaluate((element) => element.firstElementChild?.getAttribute("data-testid"))).toBe("network-policy");
       const primaryBounds = await primary.boundingBox();
       const extendedBounds = await extended.boundingBox();
-      expect(extendedBounds!.y).toBeGreaterThanOrEqual(primaryBounds!.y + primaryBounds!.height);
+      expect(extendedBounds!.y - primaryBounds!.y - primaryBounds!.height).toBeCloseTo(8, 0);
+      if (viewport.width >= 1280) {
+        expect((await tabs.boundingBox())!.y).toBeCloseTo(originalTabs!.y, 0);
+        const status = await page.getByTestId("text-system-status").boundingBox();
+        expect((await tabs.boundingBox())!.y - status!.y - status!.height).toBeCloseTo(32, 0);
+      } else {
+        expect((await tabs.boundingBox())!.y).toBeGreaterThanOrEqual(extendedBounds!.y + extendedBounds!.height);
+      }
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
       await page.keyboard.press("Escape");
