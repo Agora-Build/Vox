@@ -20,8 +20,15 @@ let dir = "";
 let sock = "";
 let sockServer: net.Server;
 const shellValue = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const CAPTURE_CHILD_ENV = `if [ -n "\${VU_CHILD_ENVS:-}" ]; then
+  printf '%s\\0' "\${0##*/}" >> "$VU_CHILD_ENVS"
+  /usr/bin/env -0 >> "$VU_CHILD_ENVS"
+  printf '\\0' >> "$VU_CHILD_ENVS"
+fi
+`;
 
 const STUB_DOCKER = `#!/bin/bash
+${CAPTURE_CHILD_ENV}
 echo "docker $*" >> "$VU_LOG"
 printf '%s\\0' "$@" '' >> "$VU_ARGV"
 case "$1" in
@@ -160,6 +167,7 @@ case "$1" in
 esac
 `;
 const STUB_CURL = `#!/bin/bash
+${CAPTURE_CHILD_ENV}
 echo "curl $*" >> "$VU_LOG"
 attempt=$(grep -c '^curl ' "$VU_LOG")
 steps="\${HEALTH_STEPS:-idle}"
@@ -175,27 +183,38 @@ esac
 printf '\\n200'
 `;
 const STUB_PS = `#!/bin/bash
+${CAPTURE_CHILD_ENV}
 if [ "$*" = "-o uid= -C dialfd" ]; then [ -n "\${PS_DIALF_UID:-}" ] && echo "  $PS_DIALF_UID"; exit 0; fi
 exec /usr/bin/ps "$@"
 `;
 // No real network detection: tests supply route/address output or env overrides.
 const STUB_IP = `#!/bin/bash
+${CAPTURE_CHILD_ENV}
 echo "ip $*" >> "$VU_LOG"
 if [ "$1" = "route" ] && [ -n "\${IP_ROUTE_OUT:-}" ]; then echo "$IP_ROUTE_OUT"; exit 0; fi
 if [ "$1" = "-o" ] && [ -n "\${IP_ADDR_OUT:-}" ]; then echo "$IP_ADDR_OUT"; exit 0; fi
 exit 1
 `;
 const STUB_MKTEMP = `#!/bin/bash
+${CAPTURE_CHILD_ENV}
 [ -n "\${ENV_TEMP_FAIL:-}" ] && exit 1
 exec /usr/bin/mktemp "$@"
 `;
+const STUB_BASH = `#!/bin/bash
+if [ "\${1:-}" = -n ]; then
+${CAPTURE_CHILD_ENV}
+fi
+exec /bin/bash "$@"
+`;
 
 type ContainerFixture = { id: string; name: string; ref: string; imageId?: string; state?: string; env?: string[]; aliases?: string[] };
-function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; versions?: { eval?: string; clash?: string }; args?: string[]; containers?: ContainerFixture[]; permissiveUmask?: boolean } = {}) {
+function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; versions?: { eval?: string; clash?: string }; args?: string[]; containers?: ContainerFixture[]; permissiveUmask?: boolean; inspectEnvs?: boolean } = {}) {
   const log = path.join(dir, `calls-${Math.random()}.log`);
   fs.writeFileSync(log, "");
   const argvLog = `${log}.argv`;
   fs.writeFileSync(argvLog, "");
+  const childEnvLog = `${log}.child-envs`;
+  fs.writeFileSync(childEnvLog, "");
   const envCaptures = `${log}.env-files`;
   fs.mkdirSync(envCaptures);
   const tempRoot = env.TMPDIR ?? `${log}.tmp`;
@@ -229,6 +248,7 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
     env: {
       PATH: `${path.join(dir, "bin")}:/usr/bin:/bin`, HOME: dir, TMPDIR: tempRoot,
       VU_LOG: log, VU_ARGV: argvLog, VU_ENV_FILES: envCaptures,
+      VU_CHILD_ENVS: opts.inspectEnvs ? childEnvLog : "",
       VU_COMPONENT: opts.runner ? "vox-clash-runner" : "vox-eval-agentd", VU_BOTH: opts.both ? "1" : "", VU_CONTAINERS: containersDir,
       XDG_RUNTIME_DIR: path.join(dir, "no-runtime"), DIALF_CHECK_TRIES: "1", ...env,
     },
@@ -238,6 +258,10 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
   const actions = calls.filter((c) => /^docker (stop|rm|run|restart)\b/.test(c)).map((c) => c.split(" ")[1]);
   const argvCalls = fs.readFileSync(argvLog, "utf8").split("\0\0").filter(Boolean).map((call) => call.split("\0"));
+  const childEnvs = fs.readFileSync(childEnvLog, "utf8").split("\0\0").filter(Boolean).map((entry) => {
+    const [command, ...environment] = entry.split("\0");
+    return { command, environment };
+  });
   const tokenFiles = fs.readdirSync(envCaptures).filter((file) => file.endsWith(".env")).sort().map((file) => {
     const base = path.join(envCaptures, file.slice(0, -4));
     return {
@@ -248,7 +272,7 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
   const comparableCalls = calls.map((call) => tokenFiles.reduce((value, file) => value
     .replaceAll(path.dirname(file.path), "<private-dir>")
     .replaceAll(path.basename(path.dirname(file.path)), "<private-dir>"), call));
-  return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, comparableCalls, actions, argvCalls, tokenFiles, tempEntries: fs.readdirSync(tempRoot) };
+  return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, comparableCalls, actions, argvCalls, childEnvs, tokenFiles, tempEntries: fs.readdirSync(tempRoot) };
 }
 
 beforeAll(async () => {
@@ -258,6 +282,7 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "mktemp"), STUB_MKTEMP, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "bash"), STUB_BASH, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "curl"), STUB_CURL, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "sleep"), '#!/bin/bash\necho "sleep $*" >> "$VU_LOG"\nexit 0\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "EVAL_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
@@ -493,6 +518,29 @@ describe("token-selected services", () => {
 });
 
 describe("private Docker credential files", () => {
+  it.each(["plain", "exported", "allexport", "inherited"])("keeps %s tokens out of child environments while retaining per-service env files", (mode) => {
+    const tokenValues = {
+      EVAL_TOKEN: "private-eval-token", CLASH_TOKEN: "private-clash-token",
+      AGENT_TOKEN: "private-legacy-agent-token", RUNNER_TOKEN: "private-legacy-runner-token",
+    };
+    const envFile = path.join(dir, `token-export-${mode}.env`);
+    const assignments = Object.entries(tokenValues).map(([key, value]) => `${mode === "exported" ? "export " : ""}${key}=${shellValue(value)}`).join("\n");
+    fs.writeFileSync(envFile, mode === "inherited" ? "VOX_SERVER=http://localhost:5000\n" : `${mode === "allexport" ? "set -a\n" : ""}${assignments}\n`);
+    const r = upgrade({ RUNNING_ID: "abc", ...(mode === "inherited" ? { ...tokenValues, SHELLOPTS: "allexport" } : {}) }, {
+      both: true, defaultEnv: true, args: ["--env", envFile], inspectEnvs: true,
+    });
+    expect(r.status).toBe(0);
+    expect(new Set(r.childEnvs.map((entry) => entry.command))).toEqual(new Set(["bash", "docker", "curl", "ip", "ps", "mktemp"]));
+    for (const child of r.childEnvs) {
+      expect(child.environment.filter((entry) => /^(EVAL_TOKEN|CLASH_TOKEN|AGENT_TOKEN|RUNNER_TOKEN)=/.test(entry)), child.command).toEqual([]);
+      expect(child.environment.some((entry) => Object.values(tokenValues).some((token) => entry.includes(token))), child.command).toBe(false);
+    }
+    expect(r.tokenFiles.map((file) => file.content).sort()).toEqual([
+      "AGENT_TOKEN=private-eval-token\n", "RUNNER_TOKEN=private-clash-token\n",
+    ]);
+    expect(r.tempEntries).toEqual([]);
+  });
+
   it.each([false, true])("keeps token values out of argv with mode 0600 even under umask 000 (runner: %s)", (runner) => {
     const tokenName = runner ? "CLASH_TOKEN" : "EVAL_TOKEN";
     const runtimeName = runner ? "RUNNER_TOKEN" : "AGENT_TOKEN";

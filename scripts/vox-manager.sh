@@ -20,6 +20,9 @@
 #   chmod +x vox-manager.sh
 
 set -euo pipefail
+# Keep tokens in shell variables, not host helper environments, even under bash -a.
+set +a
+export -n EVAL_TOKEN CLASH_TOKEN AGENT_TOKEN RUNNER_TOKEN
 
 usage() {
     echo "Usage: $0 [vox_agent] [--env path/to/.env] [--force]"
@@ -211,9 +214,9 @@ fi
 # Preserve a diagnostic stream if sourcing fails while its output is suppressed.
 exec {manager_config_error_fd}>&2
 trap 'env_config_error "cannot load env file; use KEY=value assignments without overriding reserved CLI settings." >&"$manager_config_error_fd" 2>&1' EXIT
-set -a
 source "$ENV_FILE" >/dev/null 2>&1
 set +a
+export -n EVAL_TOKEN CLASH_TOKEN AGENT_TOKEN RUNNER_TOKEN
 trap - EXIT
 exec {manager_config_error_fd}>&-
 

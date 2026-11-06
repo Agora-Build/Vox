@@ -599,6 +599,15 @@ the files remain owner-only. CR/LF tokens are rejected before Docker calls. Dock
 access, root or the same OS account can still expose container credentials; this
 hardening is not a secrets boundary against those principals.
 
+Configuration is sourced without automatic export. Before any host helper runs
+(including `self` downloads and env-file syntax checks), and again after loading
+configuration, the manager removes export attributes from `EVAL_TOKEN`,
+`CLASH_TOKEN`, `AGENT_TOKEN` and `RUNNER_TOKEN`. Values remain shell-local for
+service selection and private env-file generation, but host Docker/curl and other
+helper children do not inherit them. This covers inherited exported tokens and
+explicit `export` statements in the env file. It does not scrub the manager's own
+initial process environment or sandbox commands in a trusted Bash env file.
+
 Before a maintenance stop, set `VOX_INSTANCE_DISABLED=true` in that instance's env
 file. This is an explicit opt-out from all container management, including
 `--force`, with no Docker calls; it does not stop a running container for you.

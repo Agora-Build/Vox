@@ -14,6 +14,10 @@ const INVALID_ENV_ARGS = [
   ["--env=.env", "--env=other.env"], [".env", "--env", "other.env"],
   ["--env", ".env", "other.env"], ["--env=.env", "other.env"],
 ];
+const CAPTURE_CHILD_ENV = `printf '%s\\0' "\${0##*/}" >> "$VM_CHILD_ENVS"
+/usr/bin/env -0 >> "$VM_CHILD_ENVS"
+printf '\\0' >> "$VM_CHILD_ENVS"
+`;
 
 let dir: string;
 let installed: string;
@@ -23,18 +27,25 @@ let executed: string;
 
 function run(args: string[], options: { script?: string; env?: Record<string, string> } = {}) {
   fs.writeFileSync(log, "");
+  const childEnvLog = `${log}.child-envs`;
+  fs.writeFileSync(childEnvLog, "");
   const result = spawnSync("bash", [options.script ?? installed, ...args], {
     cwd: dir,
     encoding: "utf8",
     env: {
       PATH: `${path.join(dir, "bin")}:/usr/bin:/bin`,
       VM_LOG: log, VM_FIXTURE: fixture, VM_EXECUTED: executed,
+      VM_CHILD_ENVS: childEnvLog,
       ...options.env,
     },
     timeout: 10_000,
   });
   expect(result.error).toBeUndefined();
-  return { status: result.status, out: `${result.stdout}${result.stderr}`, calls: fs.readFileSync(log, "utf8") };
+  const childEnvs = fs.readFileSync(childEnvLog, "utf8").split("\0\0").filter(Boolean).map((entry) => {
+    const [command, ...environment] = entry.split("\0");
+    return { command, environment };
+  });
+  return { status: result.status, out: `${result.stdout}${result.stderr}`, calls: fs.readFileSync(log, "utf8"), childEnvs };
 }
 
 function expectNoTemporaryFiles() {
@@ -56,6 +67,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(dir, ".env"), 'touch "$VM_EXECUTED"\nexit 99\n');
   fs.writeFileSync(path.join(dir, "bin", "docker"), '#!/bin/bash\necho docker >> "$VM_LOG"\nexit 98\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "curl"), `#!/bin/bash
+${CAPTURE_CHILD_ENV}
 echo "curl $*" >> "$VM_LOG"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --output ]; then output="$2"; shift 2; else shift; fi
@@ -69,6 +81,12 @@ if [ -n "\${VM_DOWNLOAD_TERM:-}" ]; then
   exit 143
 fi
 cp "$VM_FIXTURE" "$output"
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "bash"), `#!/bin/bash
+if [ "\${1:-}" = -n ]; then
+${CAPTURE_CHILD_ENV}
+fi
+exec /bin/bash "$@"
 `, { mode: 0o755 });
 });
 
@@ -213,6 +231,23 @@ describe("management command dispatch", () => {
 });
 
 describe("atomic self-update", () => {
+  it("does not pass inherited tokens to the downloader or validation subprocess", () => {
+    const result = run(["self"], { env: {
+      EVAL_TOKEN: "private-eval-token", CLASH_TOKEN: "private-clash-token",
+      AGENT_TOKEN: "private-legacy-agent-token", RUNNER_TOKEN: "private-legacy-runner-token",
+      SHELLOPTS: "allexport",
+    } });
+    expect(result.status).toBe(0);
+    expect(new Set(result.childEnvs.map((entry) => entry.command))).toEqual(new Set(["curl", "bash"]));
+    for (const child of result.childEnvs) {
+      expect(child.environment.filter((entry) => /^(EVAL_TOKEN|CLASH_TOKEN|AGENT_TOKEN|RUNNER_TOKEN)=/.test(entry)), child.command).toEqual([]);
+    }
+    expect(result.out).toContain("Updated script:");
+    expect(result.calls).not.toContain("docker");
+    expect(fs.existsSync(executed)).toBe(false);
+    expectNoTemporaryFiles();
+  });
+
   it("self remains available while container management is disabled", () => {
     const result = run(["self"], { env: { VOX_INSTANCE_DISABLED: "true" } });
     expect(result.status).toBe(0);

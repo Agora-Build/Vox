@@ -315,9 +315,15 @@ Tokens are passed through component-specific `0600` files inside a private `0700
 temporary directory, not Docker command-line arguments. Files are prepared before
 any existing container is stopped and removed after launch or on exit/INT/TERM.
 Token line breaks are rejected before Docker calls. This prevents token exposure
-through ordinary process listings; Docker-authorized users, root and the same
-operating-system account can still inspect credentials. Other environment values,
-mounts and device options remain quoted arrays.
+through ordinary command-line listings. The manager loads configuration without
+automatic export and removes the export attribute from `EVAL_TOKEN`, `CLASH_TOKEN`
+and legacy `AGENT_TOKEN` / `RUNNER_TOKEN` before host helpers run and after sourcing
+the env file. Docker, curl and validation children do not inherit those tokens,
+including when tokens were inherited from the invoking shell or explicitly
+exported in the file. This does not erase the manager's own initial inherited
+environment or sandbox trusted Bash code in the env file. Docker-authorized users,
+root and the same operating-system account can still inspect credentials. Other
+container environment values, mounts and device options remain quoted arrays.
 
 Discovery is independent of the selected version: the manager checks stable
 names, recorded official image references, and repository metadata for bare image
