@@ -165,6 +165,20 @@ describe("management command dispatch", () => {
 });
 
 describe("atomic self-update", () => {
+  it.each([false, true])("prints manual download/save instructions before the update without executing them (download fails: %s)", (downloadFails) => {
+    const result = run(["self"], { env: downloadFails ? { VM_DOWNLOAD_FAIL: "1" } : {} });
+    expect(result.status).toBe(downloadFails ? 1 : 0);
+    expect(result.out).toContain("  ./vox-manager.sh self");
+    expect(result.out).toContain("Manual download (saves vox-manager.sh in the current directory):");
+    expect(result.out).toContain("curl -fsSL --proto '=https' --proto-redir '=https'");
+    expect(result.out).toContain("-o vox-manager.sh");
+    expect(result.out).toContain(DOWNLOAD_URL);
+    expect(result.out).toContain("chmod +x vox-manager.sh");
+    expect(result.out.indexOf("Manual download")).toBeLessThan(result.out.indexOf("Downloading the latest"));
+    expect(result.calls.trim().split("\n")).toHaveLength(1);
+    expect(fs.existsSync(path.join(dir, "vox-manager.sh"))).toBe(false);
+  });
+
   it("replaces only the installed script, preserving permissions, without .env, Docker or executing the download", () => {
     const result = run(["self"]);
     expect(result.status).toBe(0);

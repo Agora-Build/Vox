@@ -355,6 +355,11 @@ Old images and the persistent model cache are not deleted. This is explicit imag
 selection, not automatic recovery from a failed container start; older builds must
 still be compatible with the running Vox server and host setup.
 
+Before a container upgrade or `self` update, the manager prints
+`./vox-manager.sh self` and the full manual download command, including saving `vox-manager.sh` in
+the current directory and making it executable. These instructions are printed
+only; they do not add a prompt or run an extra download.
+
 `self` downloads the latest script from the official Vox `main` branch over HTTPS,
 checks its identity and Bash syntax, then atomically replaces the installed file
 while preserving its permissions. Failed/invalid downloads leave it unchanged;

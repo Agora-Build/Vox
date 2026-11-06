@@ -58,7 +58,20 @@ usage() {
     echo "  A positional env-file path is still accepted for compatibility."
 }
 
+print_manager_update_commands() {
+    printf '%s\n' \
+        'Manager script update (run separately before upgrading containers):' \
+        '  ./vox-manager.sh self' \
+        'Manual download (saves vox-manager.sh in the current directory):' \
+        "  curl -fsSL --proto '=https' --proto-redir '=https' \\" \
+        '    -o vox-manager.sh \' \
+        '    https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-manager.sh' \
+        '  chmod +x vox-manager.sh' \
+        ''
+}
+
 self_update() (
+    print_manager_update_commands
     script_path="${BASH_SOURCE[0]}"
     if [ -L "$script_path" ]; then
         echo "Error: self-update through a symlink is not supported; run the real script path." >&2
@@ -366,6 +379,8 @@ if ! docker_err=$(docker info 2>&1 >/dev/null); then
     fi
     exit 1
 fi
+
+print_manager_update_commands
 
 # DialF's control socket on this host, or nothing. Honors DIALF_SOCKET, then
 # looks where dialfd puts it for the invoking user — including under sudo,
