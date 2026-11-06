@@ -404,7 +404,7 @@ report_dialf_check() {
 # host must detect and pass its answer in. Same precedence as the daemon: a
 # VOX_LINK_TYPE already in the environment (set in .env, or a test override —
 # this doubles as the test hook: it's the least invasive way to make this
-# deterministic in tests/vox-upgrade-dialf.test.ts without real network
+# deterministic in tests/vox-manager-dialf.test.ts without real network
 # access) wins outright and skips detection. An invalid value there is
 # ignored, same as the daemon: falls through to real autodetection below
 # rather than being forwarded as-is. Echoes one of
@@ -467,7 +467,7 @@ host_link_type() {
 # reason as host_link_type above — a container would see its own veth, not
 # the host's NIC. Same precedence/test-hook pattern: VOX_PUBLIC_IP_ON_IFACE
 # already in the environment (set in .env, or a test override — this is what
-# tests/vox-upgrade-dialf.test.ts sets to stay deterministic without real
+# tests/vox-manager-dialf.test.ts sets to stay deterministic without real
 # network access) wins outright; anything else there is ignored and real
 # detection runs. Echoes "true"/"false", or nothing if undetermined — never
 # aborts the run.

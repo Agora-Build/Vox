@@ -19,7 +19,7 @@ Copied from the spec and the project's binding rules. Every task's requirements 
 - **Do NOT touch AWS S3 region** — `userStorageConfig.s3Region` (schema.ts:447) and the daemon's `S3Config.region` (vox-agentd.ts:190,207, from `S3_REGION`).
 - **Do NOT touch historical `snapshot` jsonb keys** — frozen provenance; the job's site is a top-level column (renamed), the snapshot carries no separate region key.
 - **Migrations:** new file `migrations/0033_region_to_site_id.sql`, registered as **version 34** in `server/migrate.ts` (latest registered = version 33 / `0032_api_key_soft_delete.sql`). Plain SQL only — no `IF NOT EXISTS`, no `DO`/exception blocks; `--> statement-breakpoint` between statements. **Hand-write the `ALTER TABLE ... RENAME COLUMN`** — do NOT run `db:generate`, which may emit drop+recreate (data loss) for a column rename. Never `db:push` / `drizzle-kit push --force`.
-- **Hard cut:** no backward-compat `region` alias on the wire. Coordinated deploy (Core + daemon images via `scripts/vox-upgrade.sh`).
+- **Hard cut:** no backward-compat `region` alias on the wire. Coordinated deploy (Core + daemon images via `scripts/vox-manager.sh`).
 - **Git:** work on branch `feat/region-to-siteid-refactor` (already created; spec committed as f1a7be0). Feature branch only — NO force-push to main, NO merge to main until the user explicitly marks it. Every commit message ends with the line `🤖 Built with SMT <smt@agora.build>`. Never `git stash` (repo has a large pre-existing stash stack). Stage only files relevant to the task.
 - **Test gate:** `npm run check` must pass fully (zero TS errors) at the end of every task. Per-task, run the specific vitest files the task touches. `./scripts/full-tests-run.sh` (unit + audio + E2E) runs once at branch finish before any merge. **Baseline caveat:** `tests/api.test.ts` has pre-existing unrelated failures on `main` (caps + `:8099` daemon-health, ~8 fails); a task is green if it introduces **no new** failures vs. the `main` baseline, not if the whole suite is green.
 
@@ -485,7 +485,7 @@ Expected: no NEW failures vs. the `main` baseline (per Global Constraints). Inve
 
 - [ ] **Step 4: Finish the branch**
 
-Use superpowers:finishing-a-development-branch. Do NOT merge to `main` until the user explicitly marks it. Deploy note for the user: this is a hard cut — Core and all daemon images must ship together (`scripts/vox-upgrade.sh`); an un-upgraded daemon breaks until its image is bumped.
+Use superpowers:finishing-a-development-branch. Do NOT merge to `main` until the user explicitly marks it. Deploy note for the user: this is a hard cut — Core and all daemon images must ship together (`scripts/vox-manager.sh`); an un-upgraded daemon breaks until its image is bumped.
 
 ---
 

@@ -132,7 +132,7 @@ agents take most analyses, since most users run no agent of their own.
   doesn't hold up everyone's runs.
 - **Agents need the new daemon.** The `analyze` capability ships in the daemon
   release that carries this feature. Until agents are upgraded
-  (`vox-upgrade.sh`), nothing claims analyze jobs, and they fail after 24h with
+  (`vox-manager.sh`), nothing claims analyze jobs, and they fail after 24h with
   the reason. Upgrade the public agents in the same rollout.
 - **Nobody is online.** The job stays Queued, and after 24h it fails with the
   existing backstop's reason.

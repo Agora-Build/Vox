@@ -334,12 +334,11 @@ while preserving its permissions. Failed/invalid downloads leave it unchanged;
 the downloaded script is not executed during self-update. The script file and its
 directory must be writable; invoke the real path rather than a symlink.
 
-`vox-upgrade.sh` remains a compatibility launcher with the same commands and the
-old positional env-file form (`./vox-manager.sh /path/.env`) remains supported;
-use `--env` for new commands. Specify only one env file, not both forms together.
-If the new launcher is downloaded on its own, it securely downloads the manager
-alongside it. Old copies of the original script cannot acquire the new commands
-automatically: download `vox-manager.sh` once, then use `self` for future updates.
+`vox-manager.sh` is the only management script; there is no compatibility
+launcher. For an existing installation, download it once using the installation
+command above, then use `self` for future updates. The positional env-file form
+(`./vox-manager.sh /path/.env`) remains supported; use `--env` for new commands.
+Specify only one env file, not both forms together.
 
 ---
 

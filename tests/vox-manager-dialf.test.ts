@@ -16,7 +16,6 @@ import { dialfConnectFailure, probeDialf } from "../vox_eval_agentd/dialf-client
 // see the same container actions as before.
 
 const SCRIPT = path.resolve(__dirname, "../scripts/vox-manager.sh");
-const LEGACY_SCRIPT = path.resolve(__dirname, "../scripts/vox-upgrade.sh");
 const IMAGE_NEW = `sha256:${"a".repeat(64)}`;
 const IMAGE_OLD = `sha256:${"b".repeat(64)}`;
 let dir = "";
@@ -100,14 +99,14 @@ exit 1
 `;
 
 /** Run the real script; returns its output and the docker calls it made. */
-function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; script?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[] } = {}) {
+function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[] } = {}) {
   const log = path.join(dir, `calls-${Math.random()}.log`);
   fs.writeFileSync(log, "");
   const envFile = path.join(dir, opts.both ? "both.env" : opts.runner ? "runner.env" : "agent.env");
   const args = opts.defaultEnv ? (opts.command ? ["vox_agent"] : []) : opts.command ? ["vox_agent", envFile] : [envFile];
   if (opts.version !== undefined) args.push("--version", opts.version);
   if (opts.args) args.push(...opts.args);
-  const r = spawnSync("bash", [opts.script ?? SCRIPT, ...args], {
+  const r = spawnSync("bash", [SCRIPT, ...args], {
     cwd: dir,
     input: opts.answers ?? "",
     encoding: "utf8",
@@ -124,7 +123,7 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
 }
 
 beforeAll(async () => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "vox-upgrade-test-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "vox-manager-dialf-test-"));
   fs.mkdirSync(path.join(dir, "bin"));
   fs.writeFileSync(path.join(dir, "bin", "docker"), STUB_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
@@ -140,7 +139,7 @@ beforeAll(async () => {
 });
 afterAll(() => { sockServer?.close(); fs.rmSync(dir, { recursive: true, force: true }); });
 
-describe("hosts WITHOUT DialF: canonical and legacy commands keep the same container actions", () => {
+describe("hosts WITHOUT DialF: positional and explicit commands keep the same container actions", () => {
   const cases: Array<[string, Record<string, string>, boolean]> = [
     ["web agent, same image", { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_NEW }, false],
     ["web agent, new image", { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW }, false],
@@ -148,7 +147,7 @@ describe("hosts WITHOUT DialF: canonical and legacy commands keep the same conta
   ];
   for (const [name, env, runner] of cases) {
     it(name, () => {
-      const before = upgrade(env, { runner, script: LEGACY_SCRIPT });
+      const before = upgrade(env, { runner });
       const after = upgrade(env, { runner, command: true });
       expect(before.status).toBe(0);
       expect(after.status).toBe(0);
@@ -331,7 +330,7 @@ describe("install/upgrade command dispatch", () => {
     expect(r.out).toContain("Starting new container");
   });
 
-  it("legacy env-file invocations still match vox_agent for agents and runners", () => {
+  it("positional env-file invocations still match vox_agent for agents and runners", () => {
     for (const runner of [false, true]) {
       const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW };
       expect(upgrade(env, { runner }).calls).toEqual(upgrade(env, { runner, command: true }).calls);
@@ -420,24 +419,6 @@ describe("selected Docker image versions and rollback", () => {
     expect(implicit.status).toBe(0);
     expect(beforeEnv.calls).toEqual(equals.calls);
     expect(implicit.calls).toEqual(equals.calls);
-  });
-
-  it("the legacy launcher forwards version selection unchanged", () => {
-    const env = { RUNNING_ID: "abc" };
-    const canonical = upgrade(env, { command: true, version: "7c3b1a2" });
-    const legacy = upgrade(env, { script: LEGACY_SCRIPT, command: true, version: "7c3b1a2" });
-    expect(legacy.status).toBe(0);
-    expect(legacy.calls).toEqual(canonical.calls);
-  });
-
-  it("the legacy launcher forwards explicit --env and version selection unchanged", () => {
-    const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW };
-    const opts = { command: true, defaultEnv: true, args: ["--version", "c64ff76", "--env", path.join(dir, "agent.env")] };
-    const canonical = upgrade(env, opts);
-    const legacy = upgrade(env, { ...opts, script: LEGACY_SCRIPT });
-    expect(canonical.status).toBe(0);
-    expect(legacy.status).toBe(0);
-    expect(legacy.calls).toEqual(canonical.calls);
   });
 
   it("an unavailable version leaves the existing container untouched", () => {

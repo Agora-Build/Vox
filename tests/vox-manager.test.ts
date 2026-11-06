@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 
 const SCRIPT = path.resolve(__dirname, "../scripts/vox-manager.sh");
-const LEGACY_SCRIPT = path.resolve(__dirname, "../scripts/vox-upgrade.sh");
 const DOWNLOAD_URL = "https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-manager.sh";
 const ORIGINAL = fs.readFileSync(SCRIPT, "utf8");
 const UPDATED = `${ORIGINAL}\n# Updated test fixture; must not execute during self-update.\ntouch "$VM_EXECUTED"\n`;
@@ -18,7 +17,6 @@ const INVALID_ENV_ARGS = [
 
 let dir: string;
 let installed: string;
-let legacy: string;
 let fixture: string;
 let log: string;
 let executed: string;
@@ -49,13 +47,11 @@ beforeEach(() => {
   fs.mkdirSync(installDir);
   fs.mkdirSync(path.join(dir, "bin"));
   installed = path.join(installDir, "vox-manager.sh");
-  legacy = path.join(installDir, "vox-upgrade.sh");
   fixture = path.join(dir, "download.sh");
   log = path.join(dir, "calls.log");
   executed = path.join(dir, "executed");
   fs.copyFileSync(SCRIPT, installed);
   fs.chmodSync(installed, 0o750);
-  fs.copyFileSync(LEGACY_SCRIPT, legacy);
   fs.writeFileSync(fixture, UPDATED);
   fs.writeFileSync(path.join(dir, ".env"), 'touch "$VM_EXECUTED"\nexit 99\n');
   fs.writeFileSync(path.join(dir, "bin", "docker"), '#!/bin/bash\necho docker >> "$VM_LOG"\nexit 98\n', { mode: 0o755 });
@@ -79,6 +75,11 @@ cp "$VM_FIXTURE" "$output"
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe("management command dispatch", () => {
+  it("ships only the standalone manager, without a compatibility launcher", () => {
+    expect(fs.existsSync(SCRIPT)).toBe(true);
+    expect(fs.existsSync(path.resolve(__dirname, "../scripts/vox-upgrade.sh"))).toBe(false);
+  });
+
   it.each(["--help", "-h", "help"])("%s documents all commands without reading .env or calling external services", (command) => {
     const result = run([command]);
     expect(result.status).toBe(0);
@@ -262,83 +263,5 @@ describe("atomic self-update", () => {
     expect(result.calls).toBe("");
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(installed, "utf8")).toBe(ORIGINAL);
-  });
-});
-
-describe("legacy vox-upgrade.sh entry point", () => {
-  it.each(INVALID_ENV_ARGS)("standalone env arguments %j cannot trigger a bootstrap download", (...args) => {
-    fs.unlinkSync(installed);
-    const result = run(args, { script: legacy });
-    expect(result.status).toBe(2);
-    expect(result.out).toContain("Usage:");
-    expect(result.calls).toBe("");
-    expect(fs.existsSync(installed)).toBe(false);
-    expect(fs.existsSync(executed)).toBe(false);
-  });
-
-  it.each([["--help"], ["unknown"], ["self", "extra"], ["vox_agent", "a", "b"], ["vox_agent", "--version"], ["vox_agent", "--version", "x y"], ["vox_agent", "--version=latest", "--version", "old"]])("standalone arguments %j do not trigger a bootstrap download", (...args) => {
-    fs.unlinkSync(installed);
-    const result = run(args, { script: legacy });
-    expect(result.status).toBe(args[0] === "--help" ? 0 : 2);
-    expect(result.out).toContain("Usage:");
-    expect(result.calls).toBe("");
-    expect(fs.existsSync(installed)).toBe(false);
-  });
-
-  it("self delegates to the existing manager without replacing the compatibility script", () => {
-    const before = fs.readFileSync(legacy, "utf8");
-    expect(run(["self"], { script: legacy }).status).toBe(0);
-    expect(fs.readFileSync(installed, "utf8")).toBe(UPDATED);
-    expect(fs.readFileSync(legacy, "utf8")).toBe(before);
-    expect(fs.existsSync(executed)).toBe(false);
-    expectNoTemporaryFiles();
-  });
-
-  it("a standalone legacy download bootstraps the canonical script once without executing it for self", () => {
-    fs.unlinkSync(installed);
-    const result = run(["self"], { script: legacy });
-    expect(result.status).toBe(0);
-    expect(result.out).toContain("Installed the latest management script");
-    expect(fs.readFileSync(installed, "utf8")).toBe(UPDATED);
-    expect(fs.statSync(installed).mode & 0o777).toBe(0o755);
-    expect(result.calls.match(/curl /g)).toHaveLength(1);
-    expect(result.calls).not.toContain("docker");
-    expect(fs.existsSync(executed)).toBe(false);
-    expectNoTemporaryFiles();
-  });
-
-  it.each(["download failure", "invalid response"])("a standalone legacy %s does not install or execute a bad script", (failure) => {
-    fs.unlinkSync(installed);
-    fs.writeFileSync(fixture, "<html>error</html>\n");
-    const result = run(["self"], { script: legacy, env: failure === "download failure" ? { VM_DOWNLOAD_FAIL: "1" } : {} });
-    expect(result.status).toBe(1);
-    expect(fs.existsSync(installed)).toBe(false);
-    expect(fs.existsSync(executed)).toBe(false);
-    expect(result.calls).not.toContain("docker");
-    expectNoTemporaryFiles();
-  });
-
-  it.each([
-    ["vox_agent", "--version", "7c3b1a2", "--env", "/path with spaces/agent.env"],
-    ["--env", "/path with spaces/agent.env", "--version=7c3b1a2"],
-    ["vox_agent", "--env=/path with spaces/agent.env"],
-    ["vox_agent", "/path with spaces/agent.env"],
-  ])("a standalone legacy launcher forwards arguments %j unchanged", (...args) => {
-    fs.unlinkSync(installed);
-    fs.writeFileSync(fixture, '#!/usr/bin/env bash\n# vox-manager-script: 1\nprintf "argument: <%s>\\n" "$@"\n');
-    const result = run(args, { script: legacy });
-    expect(result.status).toBe(0);
-    expect(result.out).toContain(args.map((arg) => `argument: <${arg}>`).join("\n"));
-    expect(result.calls.match(/curl /g)).toHaveLength(1);
-    expectNoTemporaryFiles();
-  });
-
-  it("vox never bootstraps or touches Docker", () => {
-    fs.unlinkSync(installed);
-    const result = run(["vox"], { script: legacy });
-    expect(result.status).toBe(2);
-    expect(result.out).toContain("not supported yet");
-    expect(result.calls).toBe("");
-    expect(fs.existsSync(installed)).toBe(false);
   });
 });

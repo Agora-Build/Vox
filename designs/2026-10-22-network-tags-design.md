@@ -112,7 +112,7 @@ numbers stay Core-internal and are never added to agent or result responses.
 - **`link` — the agent.** Linux: the interface of the default route (`ip route get 1.1.1.1`)
   → `/sys/class/net/<if>/wireless` = wifi, a `wwan*`/cdc/qmi interface = cellular,
   otherwise ethernet. macOS: `route get default` + `networksetup -listallhardwareports`.
-  A container sees its own veth, not the host's NIC — `vox-upgrade.sh` passes the
+  A container sees its own veth, not the host's NIC — `vox-manager.sh` passes the
   host's answer in (`VOX_LINK_TYPE`, detected on the host at upgrade time), and the
   daemon prefers it. Satellite can't be seen from an interface: it's inferred at
   claim from `isp:starlink` (or any satellite ASN in the map) unless `link` is set otherwise.
@@ -124,7 +124,7 @@ numbers stay Core-internal and are never added to agent or result responses.
   Detection runs no shell: commands are argument arrays (`execFileSync`) and an
   interface name from the OS's own output is checked against
   `^[A-Za-z0-9._@:-]{1,32}$` (not `.`/`..`) before it is used anywhere — anything
-  else reads as "couldn't tell". `vox-upgrade.sh` validates the same way.
+  else reads as "couldn't tell". `vox-manager.sh` validates the same way.
 - **`sim`** — system-only. Core matches the SIM's reported MCC/MNC against a
   lookup of its own number. Missing operator fields mean no SIM tag, not a
   manual fallback; see [SIM matching](#sim-is-system-only--detected-on-both-sides-must-match)
@@ -291,7 +291,7 @@ the cache key. The keyless rate limit and the tier/transport rules are unchanged
 2. Keep `GEOIP_DB_DIR` on persistent storage where possible. Access data refreshes
    weekly; startup failures retry after 15, 30, then 60 minutes. No historical
    hosting-ASN fallback is used while the data is missing.
-3. Agent upgrade is optional for Core compatibility. `vox-upgrade.sh` supplies
+3. Agent upgrade is optional for Core compatibility. `vox-manager.sh` supplies
    host `VOX_LINK_TYPE` and `VOX_PUBLIC_IP_ON_IFACE` values; upgraded agents send
    richer link/network/SIM reports. Old agents continue running, with missing
    fields left unknown or absent.
@@ -465,7 +465,7 @@ direction is safe. Disagreement means `unknown`, never a guess.
   A late check for an old IP cannot overwrite the new IP's result. The class is a `detected` tag
   `access:<class>` (same transaction as today). Analyze jobs still get `[]`.
 - Agent signals travel on register/heartbeat as `netSignals: { cloudMetadata, publicIpOnInterface }`
-  (omitted when unknown). In a container the interface is a veth, so `vox-upgrade.sh`
+  (omitted when unknown). In a container the interface is a veth, so `vox-manager.sh`
   measures `publicIpOnInterface` on the host and passes `VOX_PUBLIC_IP_ON_IFACE`;
   the metadata probe works from inside a container (short timeout, once per beat
   at most every 10 minutes).
@@ -652,7 +652,7 @@ React/TanStack Query, Vitest, and Playwright.
 | 4. Atomic claim freezing | `server/job-tags.ts`, `claimEvalJob` in `server/storage.ts`: snapshot + agent + detected tags in the claim UPDATE | `tests/network-tags-claim.test.ts`; edits after claim never rewrite history |
 | 5. Number lookup | `server/number-lookup.ts`, `server/paid-lookup-budget.ts`, `server/sensitive-paths.ts`: provider seam, cache, safe async writes, credentials, spending | `tests/number-lookup.test.ts`, `tests/number-lookup-api.test.ts` |
 | 6. Metrics | `server/metrics-params.ts`, `server/tag-sql.ts`, storage and console/v1 routes: tag AND filters, grouping, metadata, cache keys | `tests/network-tags-metrics.test.ts`, `tests/network-tags-sql.test.ts`, `tests/network-tags-detail.test.ts` |
-| 7. Agent link detection | `vox_eval_agentd/link-type.ts`, `vox-agentd.ts`, Dockerfile, `scripts/vox-upgrade.sh`: OS detection and host override | `tests/link-type.test.ts`, daemon/upgrade tests; real Docker build when packaging changes |
+| 7. Agent link detection | `vox_eval_agentd/link-type.ts`, `vox-agentd.ts`, Dockerfile, `scripts/vox-manager.sh`: OS detection and host override | `tests/link-type.test.ts`, daemon/upgrade tests; real Docker build when packaging changes |
 | 8. Console | `tag-input.tsx`, `line-lookup.tsx`, `metrics-tag-controls.tsx`, `twilio-lookup-card.tsx`; flow, agent, job, realtime, and leaderboard pages | `tests/e2e/network-tags.spec.ts`; screenshot review of changed views |
 | 9. Docs | `CLAUDE.md`, `README.md`, `docs/DEPLOYMENT.md`, `docs/openapi.yaml`, `client/src/pages/api-docs.tsx` | Keep runtime, API, and deployment contracts synchronized |
 

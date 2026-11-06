@@ -283,7 +283,7 @@ written.
   on eval flows its author could edit; anywhere else the run is refused with
   the message above, before any job is created. Eval sets without secret
   references run on any eval flow as before.
-- Agents need `./scripts/vox-upgrade.sh`, including the phone host (which also
+- Agents need `./scripts/vox-manager.sh`, including the phone host (which also
   gets the original `call.dial` fix).
 
 ## Tests
