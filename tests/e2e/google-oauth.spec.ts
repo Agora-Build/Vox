@@ -3,8 +3,8 @@ import { test, expect } from "@playwright/test";
 /**
  * Google OAuth E2E Tests
  *
- * Full integration tests for Google OAuth sign-in flow.
- * Uses real Google credentials to test the complete authentication flow.
+ * Tests provider configuration, the login button, and Vox's OAuth redirect.
+ * Completing a real Google login remains a separate manual check.
  */
 
 // Test credentials from environment (set in .env.dev.data for local testing)
@@ -40,6 +40,11 @@ test.describe("Google OAuth Integration", () => {
   test("should redirect to Google OAuth when clicking sign-in", async ({
     page,
   }) => {
+    // Exercise Vox's real redirect, not Google's network/login availability.
+    await page.route("https://accounts.google.com/**", (route) => route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>OAuth authorization destination</title>",
+    }));
     await page.goto("/login");
     await page.waitForLoadState("domcontentloaded");
 
@@ -47,16 +52,16 @@ test.describe("Google OAuth Integration", () => {
     const googleButton = page.locator(
       'button:has-text("Google"), a:has-text("Google"), a[href*="google"]'
     );
+    const authorizationRequest = page.waitForRequest("https://accounts.google.com/**");
     await googleButton.first().click();
 
-    // Should redirect to Google's OAuth page
-    await page.waitForURL(/accounts\.google\.com|google\.com\/.*oauth/, {
-      timeout: 15000,
-    });
-
-    // Verify we're on Google's login page
-    const url = page.url();
-    expect(url).toMatch(/google\.com/);
+    // A redirected request proves the browser followed Vox's Location header;
+    // waiting for Google's document to load would reintroduce a network dependency.
+    const url = new URL((await authorizationRequest).url());
+    expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(url.searchParams.get("state")).toMatch(/^[0-9a-f]{48}$/);
+    expect(url.searchParams.get("client_id")).toBeTruthy();
+    expect(url.searchParams.get("redirect_uri")).toMatch(/\/api\/plugins\/oauth\/google\/callback$/);
   });
 
   test.skip("should complete full Google OAuth flow", async ({ page }) => {

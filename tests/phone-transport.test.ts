@@ -244,6 +244,7 @@ d("phone transport — callMetadata + metrics transport filter", () => {
 
 d("phone transport — evalFlow API (HTTP, dev server)", () => {
   let cookie: string;
+  let evalSetId: number;
   const created: number[] = [];
 
   beforeAll(async () => {
@@ -254,11 +255,19 @@ d("phone transport — evalFlow API (HTTP, dev server)", () => {
     });
     expect(login.ok).toBe(true);
     cookie = login.headers.get("set-cookie")!.split(";")[0];
+    const evalSet = await fetch(`${BASE_URL}/api/eval-sets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ name: `phA-http-set-${suffix}`, visibility: "private", config: { scenario: "steps: []" } }),
+    });
+    expect(evalSet.ok).toBe(true);
+    evalSetId = (await evalSet.json()).id;
   });
 
   afterAll(async () => {
-    if (!hasDb || created.length === 0) return;
-    await pool.query(`DELETE FROM eval_flows WHERE id = ANY($1::int[])`, [created]);
+    if (!hasDb) return;
+    if (created.length) await pool.query(`DELETE FROM eval_flows WHERE id = ANY($1::int[])`, [created]);
+    if (evalSetId) await pool.query(`DELETE FROM eval_sets WHERE id = $1`, [evalSetId]);
   });
 
   const mkEvalFlow = async (body: Record<string, unknown>) => {
@@ -350,10 +359,17 @@ d("phone transport — evalFlow API (HTTP, dev server)", () => {
     const bare = await mkEvalFlow({ transport: "phone" });
     const bareWf = await bare.json();
     created.push(bareWf.id);
-    const run = await fetch(`${BASE_URL}/api/eval-flows/${bareWf.id}/run`, {
+    const missingSet = await fetch(`${BASE_URL}/api/eval-flows/${bareWf.id}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
+    });
+    expect(missingSet.status).toBe(400);
+    expect((await missingSet.json()).error).toBe("Eval set required");
+    const run = await fetch(`${BASE_URL}/api/eval-flows/${bareWf.id}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ evalSetId, region: "na-us-ashburn", targetTier: "private" }),
     });
     expect(run.status).toBe(400);
     expect((await run.json()).error).toContain("establish no call");
@@ -370,7 +386,7 @@ d("phone transport — evalFlow API (HTTP, dev server)", () => {
     const runTrigger = await fetch(`${BASE_URL}/api/eval-flows/${triggerWf.id}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
-      body: JSON.stringify({ region: "na-us-ashburn", targetTier: "private" }),
+      body: JSON.stringify({ evalSetId, region: "na-us-ashburn", targetTier: "private" }),
     });
     expect(runTrigger.status).toBe(400);
     expect((await runTrigger.json()).error).toContain("DialF R7");

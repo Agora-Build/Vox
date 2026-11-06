@@ -783,6 +783,14 @@ and reset to All on refresh; they are never written to the page URL. Legacy
 `network`, `tag` and `groupBy` URL parameters are ignored and removed without
 discarding unrelated URL state. Strict benchmarks are selected via the UI switch.
 
+The shared Strict information popover uses the heading "Strict agent health
+checks". It explicitly states that checks currently cover network monitoring and
+detected network changes only; CPU and memory checks are not implemented. Turning
+Strict off includes otherwise eligible runs with issues or missing monitoring,
+but does not bypass other filters. Grouping still uses the frozen initial network
+tags. This terminology change does not add health measurements or change API
+parameters or filtering behavior.
+
 **Leaderboard UI follow-up (2026-11-05):** Leaderboard shares the compact Strict
 placement, extended-filter row and All reset/collapse behavior with Real-time.
 It also defaults to All networks with controls collapsed and Strict off. Filter

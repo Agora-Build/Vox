@@ -15,9 +15,10 @@ export function NetworkPolicyControls({ network, onChange }: {
           </button>
         </PopoverTrigger>
         <PopoverContent className="max-w-[calc(100vw-2rem)] space-y-2 text-sm" align="end" data-testid="strict-network-info">
-          <p className="font-medium">Strict network benchmarks</p>
-          <p>Only fully monitored runs without a detected network change are included. Changed, legacy and incompletely monitored runs are excluded.</p>
-          <p className="text-muted-foreground">Turn Strict off to include every run. Grouping always uses each run&apos;s initial network tags.</p>
+          <p className="font-medium">Strict agent health checks</p>
+          <p>Only fully monitored runs without detected agent-health issues are included. Runs with issues or incomplete or missing monitoring data are excluded.</p>
+          <p>Health checks currently cover network monitoring and detected network changes only. CPU and memory checks are not yet available.</p>
+          <p className="text-muted-foreground">Turn Strict off to include these runs. Other filters still apply. Grouping always uses each run&apos;s initial network tags.</p>
         </PopoverContent>
       </Popover>
       <label className="flex items-center gap-2 cursor-pointer">
