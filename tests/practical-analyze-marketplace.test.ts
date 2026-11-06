@@ -59,7 +59,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
   // the "not enough credits" case.
   let pricyTokenId = 0;
   const WELCOME = 100;
-  const wav = makeConversationWav();
+  let wav: Uint8Array;
 
   /** A new premium user with storage set up — and, since #234, exactly the 100 welcome credits. */
   async function renter(): Promise<{ id: number; cookie: string }> {
@@ -107,6 +107,7 @@ d("practical: Analyze on a marketplace agent, for credits", () => {
     });
 
   beforeAll(async () => {
+    wav = makeConversationWav();
     admin = await login("admin@vox.local", "admin123456");
     region = (await storage.getAllRegionLocations()).find((l) => l.isActive)!.baseId;
     provider = (await storage.getAllProviders())[0].id;

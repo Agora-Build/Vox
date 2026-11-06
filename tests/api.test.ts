@@ -1297,6 +1297,7 @@ describe('Vox API Tests', () => {
   });
 
   describe('Complete Job Flow', () => {
+    const flowTag = `job-flow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     let flowEvalFlowId: number;
     let flowEvalSetId: number;
     let flowAgentToken: string;
@@ -1337,6 +1338,7 @@ describe('Vox API Tests', () => {
           description: 'Testing complete job submission flow',
           visibility: 'public',
           providerId: testProviderId,
+          tags: [{ key: 'fixture', value: flowTag }],
         }),
       });
       expect(response.ok).toBe(true);
@@ -1547,11 +1549,30 @@ describe('Vox API Tests', () => {
     it('completed result appears in the snapshot-based community tier', async () => {
       // Public evalFlow + public eval set + non-mainline → community. Proves the
       // rewritten tier query (reads eval_jobs.snapshot) returns real results.
-      const response = await fetch(`${BASE_URL}/api/metrics/community`);
+      // These completions have no network-monitoring report, so request All.
+      const query = new URLSearchParams({ tag: `fixture:${flowTag}`, network: 'all' });
+      const response = await fetch(`${BASE_URL}/api/metrics/community?${query}`);
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
       expect(data.length).toBeGreaterThan(0);
+    });
+
+    it('strict community metrics exclude results without verified network monitoring', async () => {
+      const detailRes = await authFetch(adminSession, `${BASE_URL}/api/eval-jobs/${flowJobId}/detail`);
+      expect(detailRes.ok).toBe(true);
+      const { job } = await detailRes.json();
+      expect(job.networkMonitoring).toBe('incomplete');
+
+      const query = new URLSearchParams({ tag: `fixture:${flowTag}` });
+      const all = await fetch(`${BASE_URL}/api/metrics/community?${query}&network=all`);
+      expect(all.ok).toBe(true);
+      expect((await all.json()).length).toBeGreaterThan(0);
+      for (const policy of ['', '&network=strict']) {
+        const strict = await fetch(`${BASE_URL}/api/metrics/community?${query}${policy}`);
+        expect(strict.ok).toBe(true);
+        expect(await strict.json()).toEqual([]);
+      }
     });
 
     it('job + result survive evalFlow and eval-set deletion (snapshot preserved)', async () => {

@@ -81,14 +81,16 @@ d("pooled claim SQL mirrors isClaimable", () => {
       // strike (#82 made earlier strikes requeue — see the tests below).
       status: "pending", priority: 0, retryCount: 0, unclaimedCount: 3, maxRetries: 3,
     } as any);
-    // timeoutMinutes=0: everything pending is past the cutoff immediately.
-    // excludeTeamTier is now a required argument (a future sweep caller must
-    // decide). `true` here, not `false`: with timeout 0 this sweep is GLOBAL over
-    // the shared dev DB, and neither fixture above is team-tier — excluding team
-    // rows keeps it from reaping a parallel suite's team-tier fixtures
-    // (tests/organizations-absence.test.ts) while leaving this case's own
-    // verdicts (a pooled row survives, a site-pinned row fails) untouched.
-    await storage.failPendingJobsWithNoAgent(0, 5, true);
+    // Postgres stores microseconds; a fresh row can be newer than a JS cutoff
+    // in the same millisecond. Make both fixtures unambiguously old instead.
+    await pool.query(
+      `UPDATE eval_jobs SET created_at = now() - interval '10 minutes',
+        updated_at = now() - interval '10 minutes' WHERE id = ANY($1::int[])`,
+      [[pooled.id, pinned.id]],
+    );
+    // A positive cutoff leaves other suites' fresh rows alone. Exclude team
+    // fixtures because this sweep shares the database with org-absence tests.
+    await storage.failPendingJobsWithNoAgent(5, 5, true);
     const pooledAfter = await storage.getEvalJob(pooled.id);
     const pinnedAfter = await storage.getEvalJob(pinned.id);
     expect(pooledAfter!.status).toBe("pending"); // pools are queues (spec §7)

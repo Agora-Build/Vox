@@ -27,9 +27,10 @@ d("practical: Tools → Analyze, upload to My Evals", () => {
   let userId = 0;
   let provider = { id: "", name: "" };
   let region = "";
-  const wav = makeConversationWav();
+  let wav: Uint8Array;
 
   beforeAll(async () => {
+    wav = makeConversationWav();
     // An agent that can run it, heartbeating now; otherwise this proves nothing.
     const capable = await pool.query(
       `SELECT 1 FROM eval_agents a JOIN eval_agent_tokens t ON t.id = a.token_id
