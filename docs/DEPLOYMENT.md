@@ -539,8 +539,16 @@ for compatibility, but cannot be combined with `--env`.
 
 The selection applies to all tokens in that env file; use separate env files for
 different component versions or an image-specific digest. All images are pulled
-and resolved before any container is stopped, and containers launch by verified
-image ID. A missing tag/digest leaves running containers unchanged. Existing idle
+and resolved before any container is stopped. Containers launch by the verified
+official repository digest (`ghcr.io/agora-build/vox-eval-agentd@sha256:...` or
+`ghcr.io/agora-build/vox-clash-runner@sha256:...`), with `--pull=never`. The
+reference must resolve to the selected local image ID before stopping anything.
+The requested image reference and tag/digest remain available in container labels
+`org.agora.vox.image` and `org.agora.vox.version`; the manager's final table shows
+the version alongside Docker's named immutable image. To inspect the selection:
+`docker inspect --format '{{index .Config.Labels "org.agora.vox.image"}}' vox-eval-agentd`
+(use `vox-clash-runner` for the runner). A missing tag/digest or failed reference
+verification leaves running containers unchanged. Existing idle
 checks, DialF/audio/network mounts, restart policy and persistent cache handling
 still apply. No old images are pruned. This is an explicit image rollback, not an
 automatic failed-start rollback or a Core database downgrade; check old image

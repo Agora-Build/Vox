@@ -539,6 +539,7 @@ container_inode() { docker exec "$1" stat -c %i "$2" 2>/dev/null || true; }
 declare -A new_containers
 declare -A running_containers=()
 declare -A target_images=()
+declare -A target_refs=()
 
 # Resolve every requested image before stopping anything. A missing rollback
 # version must not leave a multi-container installation partially replaced.
@@ -569,12 +570,38 @@ for name in "${!images[@]}"; do
         exit 1
     fi
     target_images[$name]="$selected_image_id"
-    echo "Verified $image ($selected_image_id)"
+
+    # Keep the official repository name without trusting a movable tag at launch.
+    pinned_image=""
+    if [[ "$manager_version" = sha256:* ]]; then
+        pinned_image="$image"
+    else
+        if ! repo_digests=$(docker image inspect "$selected_image_id" --format='{{range .RepoDigests}}{{println .}}{{end}}'); then
+            echo "Error: could not inspect registry digests for $image. No containers were changed." >&2
+            exit 1
+        fi
+        while IFS= read -r repo_digest; do
+            digest="${repo_digest#"${REGISTRY}/${name}@"}"
+            if [ "$digest" != "$repo_digest" ] && [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+                pinned_image="$repo_digest"
+                break
+            fi
+        done <<< "$repo_digests"
+    fi
+    if [ -z "$pinned_image" ] ||
+        ! pinned_id=$(docker image inspect "$pinned_image" --format='{{.Id}}') ||
+        [ "$pinned_id" != "$selected_image_id" ]; then
+        echo "Error: could not verify an immutable ${REGISTRY}/${name} reference for $image. No containers were changed." >&2
+        exit 1
+    fi
+    target_refs[$name]="$pinned_image"
+    echo "Verified $image ($pinned_image -> $selected_image_id)"
 done
 
 for name in "${!images[@]}"; do
     image="${images[$name]}"
     selected_image_id="${target_images[$name]}"
+    pinned_image="${target_refs[$name]}"
     running_id="${running_containers[$name]}"
     echo "Applying $name ($image)..."
 
@@ -833,9 +860,11 @@ for name in "${!images[@]}"; do
 
     # Docker assigns a free loopback-only host port for each component.
     # Expose health for future upgrades; --restart so it survives reboots;
-    # --name gives it a stable identity. Use the verified ID so a tag cannot
-    # move to a different image while we wait for the old container to be idle.
-    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "127.0.0.1::${HEALTH_PORT}" $device_args $mount_args $env_args "$selected_image_id")
+    # Launch the verified named digest, never a bare ID or a movable tag.
+    # Labels retain the operator's selected tag/version for inspect and tooling.
+    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" --pull=never \
+        --label "org.agora.vox.image=$image" --label "org.agora.vox.version=$manager_version" \
+        -p "127.0.0.1::${HEALTH_PORT}" $device_args $mount_args $env_args "$pinned_image")
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id ($image -> $selected_image_id)"
@@ -861,7 +890,7 @@ done
 
 echo ""
 echo "Running containers:"
-docker container ls --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}"
+docker container ls --format 'table {{.ID}}\t{{.Image}}\t{{.Label "org.agora.vox.version"}}\t{{.Status}}\t{{.Names}}'
 echo ""
 
 # A restart policy only helps if the Docker daemon itself starts on boot.

@@ -18,6 +18,10 @@ import { dialfConnectFailure, probeDialf } from "../vox_eval_agentd/dialf-client
 const SCRIPT = path.resolve(__dirname, "../scripts/vox-manager.sh");
 const IMAGE_NEW = `sha256:${"a".repeat(64)}`;
 const IMAGE_OLD = `sha256:${"b".repeat(64)}`;
+const MANIFEST_NEW = `sha256:${"c".repeat(64)}`;
+const MANIFEST_OLD = `sha256:${"d".repeat(64)}`;
+const AGENT_REF = `ghcr.io/agora-build/vox-eval-agentd@${MANIFEST_NEW}`;
+const RUNNER_REF = `ghcr.io/agora-build/vox-clash-runner@${MANIFEST_NEW}`;
 let dir = "";
 let sock = "";
 let sockServer: net.Server;
@@ -33,6 +37,21 @@ case "$1" in
     exit 0 ;;
   image)
     [ -n "\${TARGET_INSPECT_FAIL:-}" ] && exit 1
+    if [[ "$*" == *RepoDigests* ]]; then
+      [ -n "\${DIGEST_INSPECT_FAIL:-}" ] && exit 1
+      [ -n "\${DIGEST_FAIL_AT:-}" ] && [ "$(grep -c 'docker image inspect.*RepoDigests' "$VU_LOG")" = "$DIGEST_FAIL_AT" ] && exit 1
+      if [ "\${REPO_DIGESTS+x}" ]; then printf '%s\\n' "$REPO_DIGESTS"
+      else
+        manifest=${MANIFEST_NEW}
+        [ "$3" = ${IMAGE_OLD} ] && manifest=${MANIFEST_OLD}
+        printf 'ghcr.io/agora-build/vox-eval-agentd@%s\\nghcr.io/agora-build/vox-clash-runner@%s\\n' "$manifest" "$manifest"
+      fi
+      exit 0
+    fi
+    if [[ "$3" == *@sha256:* ]]; then
+      [ -n "\${PINNED_INSPECT_FAIL:-}" ] && exit 1
+      if [ "\${PINNED_IMAGE_ID+x}" ]; then echo "$PINNED_IMAGE_ID"; exit 0; fi
+    fi
     if [[ "$*" == *vox-clash-runner* ]] && [ -n "\${RUNNER_TARGET_IMAGE:-}" ]; then echo "$RUNNER_TARGET_IMAGE"
     else echo "\${LATEST_IMAGE-${IMAGE_NEW}}"; fi ;;
   inspect)
@@ -158,6 +177,77 @@ describe("hosts WITHOUT DialF: positional and explicit commands keep the same co
       expect(after.out).not.toMatch(/WARNING|Restart|recreat|Continue|\(y\/n\)/); // nothing alarming, no prompt
     });
   }
+});
+
+describe("official image names and deployment provenance", () => {
+  it.each([
+    [false, "latest"], [true, "latest"],
+    [false, "7c3b1a2"], [true, "7c3b1a2"],
+    [false, MANIFEST_OLD], [true, MANIFEST_OLD],
+  ] as const)("preserves the official repository, selected version, and immutable launch (runner=%s, version=%s)", (runner, version) => {
+    const component = runner ? "vox-clash-runner" : "vox-eval-agentd";
+    const repo = `ghcr.io/agora-build/${component}`;
+    const isDigest = version.startsWith("sha256:");
+    const selected = `${repo}${isDigest ? "@" : ":"}${version}`;
+    const pinned = `${repo}@${isDigest ? version : MANIFEST_NEW}`;
+    const r = upgrade({ RUNNING_ID: "abc" }, { runner, version });
+    expect(r.status).toBe(0);
+    const run = r.calls.find((call) => call.startsWith("docker run"));
+    expect(run?.endsWith(` ${pinned}`)).toBe(true);
+    expect(run).toContain(`--name ${component} `);
+    expect(run).toContain("--pull=never ");
+    expect(run).toContain(`--label org.agora.vox.image=${selected} `);
+    expect(run).toContain(`--label org.agora.vox.version=${version} `);
+    expect(run?.endsWith(` ${IMAGE_NEW}`)).toBe(false);
+    expect(r.calls.find((call) => call.startsWith("docker container ls"))).toContain('{{.Label "org.agora.vox.version"}}');
+  });
+
+  it("resolves the manifest from the verified ID, not a second read of the mutable tag", () => {
+    const r = upgrade({ RUNNING_ID: "abc" });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain(`docker image inspect ${IMAGE_NEW} --format={{range .RepoDigests}}{{println .}}{{end}}`);
+    expect(r.calls.filter((call) => call === "docker image inspect ghcr.io/agora-build/vox-eval-agentd:latest --format={{.Id}}")).toHaveLength(1);
+    expect(r.calls).toContain(`docker image inspect ${AGENT_REF} --format={{.Id}}`);
+  });
+
+  it("ignores digests from other registries or repositories on the same local image", () => {
+    const r = upgrade({
+      RUNNING_ID: "abc",
+      REPO_DIGESTS: `example.com/vox-eval-agentd@${MANIFEST_NEW}\n${RUNNER_REF}\n${AGENT_REF}`,
+    });
+    expect(r.status).toBe(0);
+    expect(r.calls.find((call) => call.startsWith("docker run"))?.endsWith(` ${AGENT_REF}`)).toBe(true);
+  });
+
+  it.each([
+    "", "sha256:short", `example.com/vox-eval-agentd@${MANIFEST_NEW}`,
+    RUNNER_REF, "ghcr.io/agora-build/vox-eval-agentd@sha256:short",
+  ])("missing or invalid official digest %j leaves running containers untouched", (repoDigests) => {
+    const r = upgrade({ RUNNING_ID: "abc", REPO_DIGESTS: repoDigests });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("could not verify an immutable ghcr.io/agora-build/vox-eval-agentd reference");
+    expect(r.out).toContain("No containers were changed");
+  });
+
+  it.each([
+    { DIGEST_INSPECT_FAIL: "1" },
+    { PINNED_INSPECT_FAIL: "1" },
+    { PINNED_IMAGE_ID: IMAGE_OLD },
+  ])("digest inspection/verification failure %j never falls back to a bare ID or tag", (failure) => {
+    const r = upgrade({ RUNNING_ID: "abc", ...failure });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("No containers were changed");
+  });
+
+  it("a second-component digest failure cannot partially replace the first component", () => {
+    const r = upgrade({ RUNNING_ID: "abc", DIGEST_FAIL_AT: "2" }, { both: true });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.calls.filter((call) => call.startsWith("docker image inspect") && call.includes("RepoDigests"))).toHaveLength(2);
+    expect(r.out).toContain("No containers were changed");
+  });
 });
 
 describe("health checks fail closed before interrupting work", () => {
@@ -307,7 +397,7 @@ describe("install/upgrade command dispatch", () => {
     const run = r.calls.find((call) => call.startsWith("docker run"));
     expect(run).toContain("AGENT_TOKEN=evtest");
     expect(run).toContain("VOX_SERVER=http://localhost:5000");
-    expect(run).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+    expect(run?.endsWith(` ${AGENT_REF}`)).toBe(true);
   });
 
   it.each([false, true])("--env selects the specified file with spaces (implicit command: %s)", (implicit) => {
@@ -353,11 +443,11 @@ describe("selected Docker image versions and rollback", () => {
     expect(r.actions).toEqual([]);
   });
 
-  it("still pulls latest by default and launches the verified immutable image ID", () => {
+  it("still pulls latest by default and launches the verified official named digest", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW }, { command: true });
     expect(r.status).toBe(0);
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
-    expect(r.calls.find((call) => call.startsWith("docker run"))).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+    expect(r.calls.find((call) => call.startsWith("docker run"))?.endsWith(` ${AGENT_REF}`)).toBe(true);
   });
 
   it.each([false, true])("selects a published image tag (runner: %s)", (runner) => {
@@ -366,7 +456,7 @@ describe("selected Docker image versions and rollback", () => {
     expect(r.status).toBe(0);
     expect(r.calls).toContain(`docker pull ${image}`);
     expect(r.calls).toContain(`docker image inspect ${image} --format={{.Id}}`);
-    expect(r.calls.find((call) => call.startsWith("docker run"))).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+    expect(r.calls.find((call) => call.startsWith("docker run"))?.endsWith(` ${runner ? RUNNER_REF : AGENT_REF}`)).toBe(true);
     expect(r.calls.join("\n")).not.toContain(":latest");
     expect(r.out).toContain(`Verified ${image}`);
   });
@@ -388,7 +478,7 @@ describe("selected Docker image versions and rollback", () => {
     expect(run).toContain("--restart unless-stopped");
     expect(run).toContain("vox-aeval-cache:/root/.cache");
     expect(run).toContain(`-v ${sock}:${sock}`);
-    expect(run).toMatch(new RegExp(` ${IMAGE_OLD}$`));
+    expect(run?.endsWith(` ghcr.io/agora-build/vox-eval-agentd@${MANIFEST_OLD}`)).toBe(true);
     expect(r.out).toContain("vox-eval-agentd:previous-build");
     expect(r.out).toContain("Selected image differs from running image");
   });
@@ -398,7 +488,7 @@ describe("selected Docker image versions and rollback", () => {
     const r = upgrade({ RUNNING_ID: "abc" }, { command: true, version: digest });
     expect(r.status).toBe(0);
     expect(r.calls).toContain(`docker pull ghcr.io/agora-build/vox-eval-agentd@${digest}`);
-    expect(r.calls.find((call) => call.startsWith("docker run"))).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+    expect(r.calls.find((call) => call.startsWith("docker run"))?.endsWith(` ghcr.io/agora-build/vox-eval-agentd@${digest}`)).toBe(true);
   });
 
   it("does not replace a container already running the selected version", () => {
@@ -450,7 +540,7 @@ describe("selected Docker image versions and rollback", () => {
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-clash-runner:7c3b1a2");
     const firstStop = r.calls.findIndex((call) => call.startsWith("docker stop"));
     const inspections = r.calls.flatMap((call, index) => call.startsWith("docker image inspect") ? [index] : []);
-    expect(inspections).toHaveLength(2);
+    expect(inspections).toHaveLength(6);
     expect(inspections.every((index) => index < firstStop)).toBe(true);
   });
 
@@ -461,7 +551,7 @@ describe("selected Docker image versions and rollback", () => {
     // The runner already has IMAGE_OLD; only the agent needs replacement.
     expect(runs).toHaveLength(1);
     expect(runs[0]).toContain("--name vox-eval-agentd");
-    expect(runs[0]).toMatch(new RegExp(` ${IMAGE_NEW}$`));
+    expect(runs[0].endsWith(` ${AGENT_REF}`)).toBe(true);
     expect(r.out).toContain("Already running the selected image (ghcr.io/agora-build/vox-clash-runner:7c3b1a2)");
   });
 

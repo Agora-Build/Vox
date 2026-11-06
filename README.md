@@ -332,8 +332,15 @@ runner need different versions (or you use an image-specific digest), use separa
 env files containing only that component's token. Both images must have the
 requested tag when both tokens are configured. The script pulls and verifies
 **all** selected images before stopping any container; an unavailable version
-leaves running containers untouched. It then starts each container by its verified
-image ID, so a tag moving during an idle wait cannot change the selected build.
+leaves running containers untouched. It resolves each verified image to an
+official repository digest and launches that immutable reference with
+`--pull=never`, so a tag moving during an idle wait cannot change the build.
+Docker retains the official names `ghcr.io/agora-build/vox-eval-agentd` and
+`ghcr.io/agora-build/vox-clash-runner`, rather than a bare local image ID. The
+`org.agora.vox.image` and `org.agora.vox.version` container labels record the
+requested full image reference and tag/digest; the final container table includes
+the selected version. A missing or mismatched official digest stops the operation
+before any container is changed.
 Old images and the persistent model cache are not deleted. This is explicit image
 selection, not automatic recovery from a failed container start; older builds must
 still be compatible with the running Vox server and host setup.
