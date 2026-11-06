@@ -748,9 +748,16 @@ not change the separate five-minute stale-agent job-recovery rule or 90-minute
 execution deadline.
 Installer safety is independent of these timers: a failed local `/health`
 request cannot establish that the process is idle, even if Core may already
-have recovered its job. The manager requires a successful, valid explicit idle
-response before an automatic stop/restart; unknown or busy health is retried for
-five minutes and then requires explicit force-stop confirmation (No/EOF skips).
+have recovered its job. For running containers, the manager normally requires a
+successful, valid explicit idle response before an automatic stop/restart;
+unknown or busy health is retried for five minutes and then requires explicit
+force-stop confirmation (No/EOF skips). Docker-native inactive/restarting states
+(`created`, `exited`, `dead`, `restarting`) get a 10-second recheck: still inactive
+means replacement can proceed without health polling; running again means normal
+health checks. Failed state inspection and paused containers do not establish
+inactivity. The explicit `--force` option skips health waits and confirms
+installation/replacement for automation, with warnings that it may interrupt
+active work or drop DialF support; it never bypasses image preflight validation.
 Complete coverage needs a continuous monitor and every sequence from start
 through end; summaries alone cannot manufacture it. Acknowledged events that
 have left the agent queue still count toward coverage in Core.

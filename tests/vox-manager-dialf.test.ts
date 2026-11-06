@@ -30,7 +30,9 @@ const STUB_DOCKER = `#!/bin/bash
 echo "docker $*" >> "$VU_LOG"
 case "$1" in
   info) [ -n "\${DOCKER_DENIED:-}" ] && { echo "permission denied while trying to connect to the Docker daemon socket" >&2; exit 1; }; echo ok ;;
-  ps) echo "\${RUNNING_ID:-}" ;;
+  ps)
+    if [[ " $* " == *" -aq "* ]]; then echo "\${EXISTING_ID:-\${RUNNING_ID:-}}"
+    else echo "\${RUNNING_ID:-}"; fi ;;
   pull)
     [ -n "\${PULL_FAIL_IMAGE:-}" ] && [[ "$2" == *"$PULL_FAIL_IMAGE"* ]] && exit 1
     [ -n "\${PULL_FAIL_AT:-}" ] && [ "$(grep -c '^docker pull' "$VU_LOG")" = "$PULL_FAIL_AT" ] && exit 1
@@ -56,6 +58,13 @@ case "$1" in
     else echo "\${LATEST_IMAGE-${IMAGE_NEW}}"; fi ;;
   inspect)
     case "$*" in
+      *"State.Status"*)
+        [ -n "\${STATE_INSPECT_FAIL:-}" ] && exit 1
+        attempt=$(grep -c 'docker inspect.*State.Status' "$VU_LOG")
+        states="\${DOCKER_STATES:-running}"
+        state=$(printf '%s\\n' "$states" | sed -n "\${attempt}p")
+        [ -n "$state" ] || state=$(printf '%s\\n' "$states" | tail -1)
+        echo "$state" ;;
       *"{{.Image}}"*) [ -n "\${IMAGE_INSPECT_FAIL:-}" ] && exit 1; echo "\${RUNNING_IMAGE:-${IMAGE_OLD}}" ;;
       *"Config.Env"*) [ -n "\${INSPECT_FAIL:-}" ] && exit 1; [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"; [ -n "\${PREV_HEALTH_PORT:-}" ] && echo "HEALTH_PORT=$PREV_HEALTH_PORT"; echo "AGENT_TOKEN=x" ;;
       *"RestartPolicy"*) echo "unless-stopped" ;;
@@ -148,7 +157,7 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "curl"), STUB_CURL, { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, "bin", "sleep"), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "sleep"), '#!/bin/bash\necho "sleep $*" >> "$VU_LOG"\nexit 0\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "AGENT_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "runner.env"), "RUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "both.env"), "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
@@ -329,6 +338,135 @@ describe("health checks fail closed before interrupting work", () => {
     expect(r.status).toBe(0);
     expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
     expect(r.out).toContain("container is unknown after 300s");
+  });
+});
+
+describe("unattended upgrades and Docker-native recovery", () => {
+  it.each(["timeout", "occupied", "uploading"])("--force skips %s health waits and prompts", (health) => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: health }, { command: true, args: ["--force"] });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.calls.some((call) => /^(curl |sleep 10$)/.test(call))).toBe(false);
+    expect(r.out).toContain("--force bypasses idle checks");
+    expect(r.out).toContain("active evaluations may be interrupted");
+    expect(r.out).not.toContain("Timeout:");
+  });
+
+  it("--force works as the first option with --version and --env, including a fresh unattended install", () => {
+    const r = upgrade({}, { defaultEnv: true, args: ["--force", "--version", "7c3b1a2", "--env", path.join(dir, "agent.env")] });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.out).toContain("--force confirms starting a new container");
+    expect(r.calls.find((call) => call.startsWith("docker run"))).toContain("--label org.agora.vox.version=7c3b1a2");
+  });
+
+  it("--force handles both configured components without input", () => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "timeout" }, { both: true, args: ["--force"] });
+    expect(r.status).toBe(0);
+    expect(r.calls.filter((call) => call.startsWith("docker run"))).toHaveLength(2);
+    expect(r.calls.some((call) => /^(curl |sleep 10$)/.test(call))).toBe(false);
+  });
+
+  it("--force explicitly accepts loss of a previous DialF mount", () => {
+    const r = upgrade({ RUNNING_ID: "abc", PREV_SOCK: "/missing/dialfd.sock", HEALTH_STEPS: "timeout" }, { args: ["--force"] });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.out).toContain("--force confirms replacement without DialF support");
+  });
+
+  it.each([
+    { PULL_FAIL_IMAGE: "vox-eval-agentd" },
+    { DIGEST_INSPECT_FAIL: "1" },
+    { PINNED_IMAGE_ID: IMAGE_OLD },
+  ])("--force cannot bypass image preflight failure %j", (failure) => {
+    const r = upgrade({ RUNNING_ID: "abc", ...failure }, { args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("No containers were changed");
+  });
+
+  it.each([false, true])("same-image inactive recovery retains DialF-loss consent (force: %s)", (force) => {
+    const r = upgrade({
+      EXISTING_ID: "abc", DOCKER_STATES: "exited", RUNNING_IMAGE: IMAGE_NEW,
+      PREV_SOCK: "/missing/dialfd.sock",
+    }, { args: force ? ["--force"] : [] });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(force ? ["stop", "rm", "rm", "run"] : []);
+    expect(r.out).toContain("a new container WON'T take phone jobs");
+    if (force) expect(r.out).toContain("--force confirms replacement without DialF support");
+    else expect(r.out).toContain("Leaving the running vox-eval-agentd as it is");
+  });
+
+  it.each(["created", "exited", "dead", "restarting"].flatMap((state) => [
+    [state, false], [state, true],
+  ] as const))("Docker state %s bypasses unknown health after a 10-second recheck (runner: %s)", (state, runner) => {
+    const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: state, HEALTH_STEPS: "timeout" }, { runner });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.calls).toContain(`docker ps -aq --filter name=^/${runner ? "vox-clash-runner" : "vox-eval-agentd"}$`);
+    expect(r.calls.some((call) => call.startsWith("curl "))).toBe(false);
+    expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(1);
+    expect(r.out).toContain(`Docker state: ${state}`);
+    expect(r.out).toContain("after recheck — proceeding without a health wait");
+    expect(r.out).not.toContain("Timeout:");
+  });
+
+  it.each(["created", "exited", "dead", "restarting"])("recovers a %s container even when the selected image has not changed", (state) => {
+    const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: state, RUNNING_IMAGE: IMAGE_NEW });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.out).toContain(`Docker state is ${state}; recreating container`);
+    expect(r.out).not.toContain("Skipping replacement");
+  });
+
+  it("rechecks Docker state during the health wait and confirms a crash after 10 seconds", () => {
+    const r = upgrade({ RUNNING_ID: "abc", DOCKER_STATES: "running\nrunning\nexited", HEALTH_STEPS: "timeout" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(1);
+    expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(2);
+    expect(r.out).toContain("Docker state: exited");
+    expect(r.out).not.toContain("Timeout:");
+  });
+
+  it.each(["created", "exited", "dead", "restarting"])("a %s container that becomes running after 10 seconds must pass health checks", (state) => {
+    const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: `${state}\n${state}\nrunning`, HEALTH_STEPS: "occupied\nidle" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(2);
+    expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(2);
+    expect(r.out).toContain("Docker state after recheck: running — checking health");
+    expect(r.out).toContain("Status: idle after 20s");
+    expect(r.out).not.toContain("proceeding without a health wait");
+  });
+
+  it.each([
+    { DOCKER_STATES: "restarting\nrestarting\nrunning" },
+    { DOCKER_STATES: "exited\nexited\nunknown" },
+  ])("state recovery or an inconclusive recheck %j never bypasses unknown health", (state) => {
+    const r = upgrade({ EXISTING_ID: "abc", HEALTH_STEPS: "timeout", ...state });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("stopping may interrupt active work");
+    expect(r.out).not.toContain("proceeding without a health wait");
+  });
+
+  it.each([
+    { DOCKER_STATES: "running" }, { DOCKER_STATES: "paused" },
+    { DOCKER_STATES: "unknown" }, { STATE_INSPECT_FAIL: "1" },
+  ])("state %j never treats unreachable health as inactive without --force", (state) => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "timeout", ...state });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("stopping may interrupt active work");
+    expect(r.out).toContain("Skipping vox-eval-agentd");
+  });
+
+  it("a new install without --force still declines safely on EOF", () => {
+    const r = upgrade({});
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("Skipping vox-eval-agentd");
   });
 });
 

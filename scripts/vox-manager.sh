@@ -6,9 +6,10 @@
 # Reads tokens from .env file. If AGENT_TOKEN is set, upgrades vox-eval-agentd.
 # If RUNNER_TOKEN is set, upgrades vox-clash-runner. Both can be set.
 #
-# Before stopping a container, checks the /health endpoint to ensure it's idle.
-# If busy or health is unknown, polls every 10s for up to 5 minutes before
-# prompting to force stop. New health ports are Docker-assigned on loopback.
+# Before stopping a running container, checks /health to ensure it's idle.
+# Busy/unknown health polls for up to 5 minutes before force-stop confirmation.
+# Inactive/restarting containers get a 10-second state recheck; --force explicitly
+# bypasses health waits and confirmations. Health ports are assigned on loopback.
 #
 # Containers are started with `--restart unless-stopped` so they relaunch
 # automatically after a host reboot (override with RESTART_POLICY=...). A
@@ -32,9 +33,10 @@
 #   chmod +x vox-manager.sh
 #
 # Usage:
-#   ./vox-manager.sh [vox_agent] [--version TAG|sha256:DIGEST] [--env path/to/.env]
+#   ./vox-manager.sh [vox_agent] [--version TAG|sha256:DIGEST] [--env path/to/.env] [--force]
 #   ./vox-manager.sh                              # latest images, .env in the current directory
 #   ./vox-manager.sh vox_agent --version c64ff76 --env /path/to/.env
+#   ./vox-manager.sh vox_agent --force            # unattended; may interrupt active evals
 #   ./vox-manager.sh self                        # update this script only
 #   ./vox-manager.sh vox                         # not supported yet
 #
@@ -42,13 +44,14 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [vox_agent] [--version TAG|sha256:DIGEST] [--env path/to/.env]"
+    echo "Usage: $0 [vox_agent] [--version TAG|sha256:DIGEST] [--env path/to/.env] [--force]"
     echo "       $0 self"
     echo "       $0 vox"
     echo ""
     echo "  vox_agent  Install, upgrade or roll back agent/runner containers (default command)."
     echo "  --version  Docker image tag or sha256 manifest digest for all configured containers (default: latest)."
     echo "  --env      Env file to load (default: .env in the current working directory)."
+    echo "  --force    Skip health waits and confirm install/replacement; may interrupt evals or remove DialF support."
     echo "  self       Update this script from the official Vox main branch; no Docker or .env needed."
     echo "  vox        Vox server installation/upgrade is not supported yet."
     echo "  No arguments installs/upgrades vox_agent using latest images and .env in the current directory."
@@ -112,7 +115,7 @@ case "${1:-}" in
     vox_agent)
         shift
         ;;
-    ""|--version|--version=*|--env|--env=*) ;;
+    ""|--version|--version=*|--env|--env=*|--force) ;;
     *)
         # Preserve the original positional env-file invocation, not unknown commands.
         if [ ! -f "$1" ] && [[ "$1" != */* && "$1" != .env* ]]; then
@@ -126,8 +129,17 @@ esac
 manager_version="latest"
 manager_version_seen=""
 manager_env_file=""
+manager_force=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --force)
+            if [ -n "$manager_force" ]; then
+                echo "Error: --force may only be specified once." >&2
+                usage >&2; exit 2
+            fi
+            manager_force=1
+            shift
+            ;;
         --version|--version=*)
             if [ -n "$manager_version_seen" ]; then
                 echo "Error: --version may only be specified once." >&2
@@ -294,9 +306,29 @@ health_status() {
 }
 
 wait_for_idle() {
-    local container_id="$1" status="unknown" waited=0 choice
+    local container_id="$1" status="unknown" waited=0 choice docker_state
     local health_url=""
     while :; do
+        docker_state=$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null) || docker_state="unknown"
+        case "$docker_state" in
+            created|exited|dead|restarting)
+                echo "  Docker state: $docker_state — checking again in ${POLL_INTERVAL}s."
+                sleep "$POLL_INTERVAL"
+                waited=$((waited + POLL_INTERVAL))
+                docker_state=$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null) || docker_state="unknown"
+                case "$docker_state" in
+                    created|exited|dead|restarting)
+                        echo "  Docker state: $docker_state after recheck — proceeding without a health wait."
+                        return 0
+                        ;;
+                esac
+                echo "  Docker state after recheck: $docker_state — checking health."
+                ;;
+        esac
+        if [ -n "$manager_force" ]; then
+            echo "  WARNING: --force bypasses idle checks; active evaluations may be interrupted."
+            return 0
+        fi
         [ -n "$health_url" ] || health_url=$(container_health_url "$container_id") || true
         status="unknown"
         if [ -n "$health_url" ]; then
@@ -321,7 +353,7 @@ wait_for_idle() {
 }
 
 # Can this user drive Docker at all? Otherwise `docker ps` fails silently below
-# (its errors are discarded), the script reports "No running container found",
+# (its errors are discarded), the script reports "No existing container found",
 # and only fails later at `docker pull` — say it plainly, before touching anything.
 if ! docker_err=$(docker info 2>&1 >/dev/null); then
     if echo "$docker_err" | grep -qi "permission denied"; then
@@ -547,15 +579,16 @@ for name in "${!images[@]}"; do
     image="${images[$name]}"
     echo "Checking $name ($image)..."
 
-    # Find the managed container BEFORE pulling. The pull re-points the :latest
+    # Find the managed container (including stopped ones) BEFORE pulling.
+    # The pull re-points the :latest
     # tag to the new image, after which `ancestor=<tag>` no longer matches a
     # container started from the OLD image (and `docker ps` then shows that
     # container's image as a bare sha256 ID instead of the tag). So prefer the
     # stable --name; fall back to ancestor for containers started by older
     # versions of this script that had no name.
-    running_id=$(docker ps -q --filter "name=^/${name}$" 2>/dev/null | head -1 || true)
+    running_id=$(docker ps -aq --filter "name=^/${name}$" 2>/dev/null | head -1 || true)
     if [ -z "$running_id" ]; then
-        running_id=$(docker ps -q --filter "ancestor=$image" 2>/dev/null | head -1 || true)
+        running_id=$(docker ps -aq --filter "ancestor=$image" 2>/dev/null | head -1 || true)
     fi
     running_containers[$name]="$running_id"
 
@@ -638,7 +671,13 @@ for name in "${!images[@]}"; do
     # for nobody (what happened to a phone host after an upgrade, 2026-10).
     running_image_id=""
     [ -n "$running_id" ] && running_image_id=$(docker inspect --format='{{.Image}}' "$running_id" 2>/dev/null || true)
-    if [ -n "$prev_dialf_socket" ] && [ -z "$host_dialf_socket" ] && [ "$running_image_id" == "$selected_image_id" ]; then
+    recovery_needed=""
+    docker_state=""
+    if [ -n "$running_id" ]; then
+        docker_state=$(docker inspect --format '{{.State.Status}}' "$running_id" 2>/dev/null) || docker_state="unknown"
+        case "$docker_state" in created|exited|dead|restarting) recovery_needed=1 ;; esac
+    fi
+    if [ -n "$prev_dialf_socket" ] && [ -z "$host_dialf_socket" ] && [ "$running_image_id" == "$selected_image_id" ] && [ -z "$recovery_needed" ]; then
         # Not replacing (same image), but say it: the running container's socket
         # is gone too, so it isn't taking phone jobs either.
         echo "WARNING: the running container was started with DialF ($prev_dialf_socket), but that"
@@ -652,7 +691,12 @@ for name in "${!images[@]}"; do
         else echo "         Is dialfd running? Start it, or set DIALF_SOCKET=/path/to/dialfd.sock in .env."; fi
         # No terminal (cron, `ssh host ... < /dev/null`): EOF means "no" — the
         # safe answer — instead of set -e ending the whole run here.
-        read -p "         Replace it anyway, without DialF? (y/n): " choice || choice=n
+        if [ -n "$manager_force" ]; then
+            echo "         --force confirms replacement without DialF support."
+            choice=y
+        else
+            read -p "         Replace it anyway, without DialF? (y/n): " choice || choice=n
+        fi
         case "$choice" in
             y|Y ) ;;
             * ) echo "Leaving the running $name as it is. Start dialfd (or set DIALF_SOCKET), then re-run."
@@ -673,7 +717,7 @@ for name in "${!images[@]}"; do
             echo "Stopping ${running_id:0:12}..."
             docker stop "$running_id" > /dev/null
             docker rm "$running_id" > /dev/null
-        elif [ "$running_image_id" == "$selected_image_id" ] && [ -n "$dialf_stale_in_container" ]; then
+        elif [ "$running_image_id" == "$selected_image_id" ] && [ -n "$dialf_stale_in_container" ] && [ -z "$recovery_needed" ]; then
             # A restart re-mounts the host path, picking up dialfd's current
             # socket; no new container needed.
             echo "Already on the selected image, but its DialF socket is stale: dialfd recreated"
@@ -690,7 +734,7 @@ for name in "${!images[@]}"; do
             fi
             echo "-----------------------------------"
             continue
-        elif [ "$running_image_id" == "$selected_image_id" ]; then
+        elif [ "$running_image_id" == "$selected_image_id" ] && [ -z "$recovery_needed" ]; then
             echo "Already running the selected image ($image). Skipping replacement."
             # Still ensure it auto-starts after a host reboot, even though we
             # aren't recreating it (docker update applies without a restart).
@@ -702,7 +746,11 @@ for name in "${!images[@]}"; do
             echo "-----------------------------------"
             continue
         else
-            echo "Selected image differs from running image ($running_image_id)."
+            if [ "$running_image_id" == "$selected_image_id" ]; then
+                echo "Selected image is already installed, but Docker state is $docker_state; recreating container."
+            else
+                echo "Selected image differs from running image ($running_image_id)."
+            fi
 
             if ! wait_for_idle "$running_id"; then
                 echo "Skipping $name (user chose not to force stop)."
@@ -715,8 +763,13 @@ for name in "${!images[@]}"; do
             docker rm "$running_id" > /dev/null
         fi
     else
-        echo "No running container found."
-        read -p "Start a new container? (y/n): " choice
+        echo "No existing container found."
+        if [ -n "$manager_force" ]; then
+            echo "--force confirms starting a new container."
+            choice=y
+        else
+            read -p "Start a new container? (y/n): " choice || choice=n
+        fi
         case "$choice" in
             y|Y ) echo "Starting new container..." ;;
             * )

@@ -291,6 +291,7 @@ EOF
 ./vox-manager.sh vox_agent                      # same default behavior
 ./vox-manager.sh vox_agent --env /path/to/.env   # or a specific file
 ./vox-manager.sh vox_agent --version c64ff76 --env /path/to/.env # select a published Docker tag
+./vox-manager.sh vox_agent --env /path/to/.env --force # unattended; may interrupt active evaluations
 ./vox-manager.sh self                           # update this script only; no .env or Docker required
 ./vox-manager.sh vox                            # reserved: Vox server management is not supported yet
 ```
@@ -298,14 +299,23 @@ EOF
 In a checkout, use `./scripts/vox-manager.sh` instead. Only containers with a token
 in the env file are installed/upgraded. Existing idle checks, same-image handling,
 DialF detection/mounts, audio devices and network monitoring mounts are preserved.
-New containers still require confirmation before starting.
+New containers require confirmation before starting unless `--force` is set.
 
-Before stopping or restarting a running container, the manager requires a valid
-`/health` response with `status: idle`. Busy, uploading, unreachable, HTTP-error
-and invalid responses are retried for five minutes; after that, only an explicit
-`y` permits a force stop. Declining or reaching end-of-input leaves it running.
-This local safety check is separate from Core's heartbeat recovery: a missing
-health response does not prove that an evaluation has stopped.
+The manager finds both running and stopped containers. When Docker reports
+`created`, `exited`, `dead` or `restarting`, it waits 10 seconds and checks again.
+If still inactive/restarting, replacement proceeds without waiting for health;
+if running, it follows the normal health checks. Inactive containers are
+recreated even when they already use the selected image.
+
+Before stopping or restarting a running container, the manager normally requires
+a valid `/health` response with `status: idle`. Busy, uploading, unreachable,
+HTTP-error and invalid responses are retried for five minutes; after that, only
+an explicit `y` permits a force stop. Declining or reaching end-of-input leaves
+it running. For cron/CI, `--force` skips health waits and confirms installation
+and replacement, including loss of a previous DialF mount. **It can interrupt
+active evaluations.** It does not bypass image/version verification or argument
+validation. This local safety check is separate from Core's heartbeat recovery:
+a missing health response does not prove that an evaluation has stopped.
 
 New agent and runner containers each publish health on a Docker-assigned,
 loopback-only host port, so they can run together without competing for port

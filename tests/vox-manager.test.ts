@@ -86,6 +86,8 @@ describe("management command dispatch", () => {
     expect(result.out).toContain("vox_agent");
     expect(result.out).toContain("--version");
     expect(result.out).toContain("--env");
+    expect(result.out).toContain("--force");
+    expect(result.out).toContain("may interrupt evals");
     expect(result.out).toContain("current working directory");
     expect(result.out).toContain("self");
     expect(result.out).toContain("not supported yet");
@@ -102,7 +104,10 @@ describe("management command dispatch", () => {
     expect(fs.existsSync(executed)).toBe(false);
   });
 
-  it.each([["unknown"], ["self", "extra"], ["vox_agent", "a", "b"]])("invalid arguments %j have no side effects", (...args) => {
+  it.each([
+    ["unknown"], ["self", "extra"], ["vox_agent", "a", "b"],
+    ["self", "--force"], ["--force", "--force"], ["vox_agent", "--force=true"],
+  ])("invalid arguments %j have no side effects", (...args) => {
     const result = run(args);
     expect(result.status).toBe(2);
     expect(result.out).toContain("Usage:");

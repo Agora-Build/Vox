@@ -556,13 +556,29 @@ compatibility with the current server and host services first.
 
 ### Upgrade health checks and ports
 
-Only a successful, valid local `/health` response with `status: idle` authorizes
-an automatic stop or restart. Occupied/uploading containers and unknown health
-(including missing endpoints, HTTP errors and malformed JSON) are retried for
-five minutes, then require explicit force-stop confirmation. No/EOF leaves the
-container running. Local health failure is not evidence that Core's separate
-five-minute stale-heartbeat recovery has stopped the agent's local process.
-Network telemetry's two-minute incomplete-monitoring rule is unchanged.
+Docker-native state is checked before local health and during polling. Containers
+in `created`, `exited`, `dead` or `restarting` get a 10-second grace period and a
+second state check. If still inactive/restarting, replacement proceeds without
+health polling. If running again, normal health checks apply. A failed state
+inspection or `paused` state is not proof of inactivity. Stopped containers are
+discovered too, and inactive containers are recreated even on the selected image.
+
+For running containers, a successful, valid local `/health` response with
+`status: idle` normally authorizes an automatic stop or restart. Occupied/uploading
+containers and unknown health (including missing endpoints, HTTP errors and
+malformed JSON) are retried for five minutes, then require explicit force-stop
+confirmation. No/EOF leaves the container running.
+
+Use `scripts/vox-manager.sh vox_agent --env /path/to/.env --force` for explicit
+unattended installation/replacement. This skips health waits and confirmation
+prompts, including replacement without a previous DialF mount. **Active
+evaluations can be interrupted and phone capability can be lost.** Native-state
+rechecks still wait 10 seconds when inactive/restarting. Image verification,
+version validation and normal same-image skip behavior remain in force.
+
+Local health failure is not evidence that Core's separate five-minute
+stale-heartbeat recovery has stopped the agent's local process. Network
+telemetry's two-minute incomplete-monitoring rule is unchanged.
 
 New containers use `-p 127.0.0.1::<internal-health-port>`, allowing agent and runner
 to coexist without a fixed host-port conflict or exposing health publicly. The
