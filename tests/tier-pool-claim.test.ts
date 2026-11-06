@@ -88,7 +88,9 @@ d("pooled claim SQL mirrors isClaimable", () => {
         updated_at = now() - interval '10 minutes' WHERE id = ANY($1::int[])`,
       [[pooled.id, pinned.id]],
     );
-    await storage.failPendingJobsWithNoAgent(0, 5, true);
+    // A positive cutoff leaves other suites' fresh rows alone. Exclude team
+    // fixtures because this sweep shares the database with org-absence tests.
+    await storage.failPendingJobsWithNoAgent(5, 5, true);
     const pooledAfter = await storage.getEvalJob(pooled.id);
     const pinnedAfter = await storage.getEvalJob(pinned.id);
     expect(pooledAfter!.status).toBe("pending"); // pools are queues (spec §7)

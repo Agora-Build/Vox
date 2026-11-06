@@ -89,6 +89,7 @@ test.describe("Run Your Own Page", () => {
 
 test.describe("API Documentation", () => {
   test("should serve Swagger UI", async ({ page }) => {
+    expect(require("swagger-ui-dist/package.json").version).toBe("5.9.0");
     // Render the real library without depending on the CDN's availability.
     for (const [asset, contentType] of [
       ["swagger-ui.css", "text/css"],

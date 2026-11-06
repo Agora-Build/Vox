@@ -64,7 +64,7 @@ const STUB_GREP = `#!/bin/bash
 if [ "$#" = 3 ] && [ "$1" = -q ] && [ "$2" = VirtualAudio ] && [ "$3" = /proc/asound/cards ]; then
   [ "\${HOST_AUDIO:-present}" = present ]; exit $?
 fi
-exec /usr/bin/grep "$@"
+command -p grep "$@"
 `;
 const STUB_SYSTEMCTL = `#!/bin/bash
 if [ "$*" = 'is-enabled docker' ]; then
