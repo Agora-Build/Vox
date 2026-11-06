@@ -574,6 +574,11 @@ overall command exit nonzero. EXIT/INT/TERM preserve pending old containers and
 clean private files; SIGKILL or power loss cannot run cleanup. If Docker reports
 cleanup or name-restoration errors, inspect those before running recovery.
 
+Service-local restart, restart-policy update, or DialF exchange-directory failures
+also report an error, continue to the other configured service, and make the
+overall command exit nonzero. Exchange directories are prepared before stopping
+the old agent, so a preparation failure leaves it unchanged.
+
 ### Upgrade health checks and ports
 
 CLI state is readonly before loading the env file: configuration cannot toggle
@@ -653,6 +658,12 @@ prompts, including replacement without a previous DialF mount. **Active
 evaluations can be interrupted and phone capability can be lost.** Native-state
 rechecks still wait 10 seconds when inactive/restarting. Image verification,
 version validation and normal same-image skip behavior remain in force.
+
+The manager does not fully reconcile environment settings on a running,
+same-image container. Apart from restart policy and existing DialF mount/socket
+handling, settings are applied on container creation/replacement. Changing a
+token, server URL, name, health port, or sampler directory in the env file alone
+does not update that container; `--force` does not disable same-image skipping.
 
 Local health failure is not evidence that Core's separate five-minute
 stale-heartbeat recovery has stopped the agent's local process. Network

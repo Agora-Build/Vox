@@ -868,7 +868,12 @@ for name in "${!images[@]}"; do
             else
                 # Epoch seconds avoid Docker interpreting UTC text in local time.
                 restarted_at=$(date +%s)
-                docker restart "$running_id" > /dev/null
+                if ! docker restart "$running_id" > /dev/null; then
+                    echo "Error: could not restart $name; continuing with other services." >&2
+                    manager_failed=1
+                    echo "-----------------------------------"
+                    continue
+                fi
                 echo "Restarted ${running_id:0:12}."
                 report_dialf_check "$running_id" "$restarted_at"
             fi
@@ -879,7 +884,10 @@ for name in "${!images[@]}"; do
             current_policy=$(docker inspect --format='{{.HostConfig.RestartPolicy.Name}}' "$running_id" 2>/dev/null || true)
             if [ "$current_policy" != "$RESTART_POLICY" ]; then
                 echo "Applying restart policy '$RESTART_POLICY' (was '${current_policy:-none}')..."
-                docker update --restart "$RESTART_POLICY" "$running_id" > /dev/null
+                if ! docker update --restart "$RESTART_POLICY" "$running_id" > /dev/null; then
+                    echo "Error: could not update restart policy for $name; continuing with other services." >&2
+                    manager_failed=1
+                fi
             fi
             echo "-----------------------------------"
             continue
@@ -963,7 +971,12 @@ for name in "${!images[@]}"; do
         if [ -n "$dialf_socket" ] && [ -S "$dialf_socket" ]; then
             dialf_detected=1
             exchange_dir="${DIALF_EXCHANGE_DIR:-$HOME/vox-phone-exchange}"
-            mkdir -p "$exchange_dir/corpus" "$exchange_dir/recordings"
+            if ! mkdir -p "$exchange_dir/corpus" "$exchange_dir/recordings"; then
+                echo "Error: cannot prepare DialF exchange directories; leaving $name unchanged." >&2
+                manager_failed=1
+                echo "-----------------------------------"
+                continue
+            fi
             mount_args+=(-v "$dialf_socket:$dialf_socket" -v "$exchange_dir:$exchange_dir")
             env_args+=(-e "VOX_DIALF_SOCKET=$dialf_socket" -e "VOX_DIALF_EXCHANGE_DIR=$exchange_dir")
             echo "DialF detected: socket $dialf_socket mounted; exchange dir $exchange_dir"
@@ -1014,7 +1027,7 @@ for name in "${!images[@]}"; do
     start_succeeded=""
     if docker run -d --name "$name" --restart "$RESTART_POLICY" --pull=never \
         --label "org.agora.vox.image=$image" --label "org.agora.vox.version=$selected_version" \
-        -p "127.0.0.1::${HEALTH_PORT}" "${device_args[@]}" "${mount_args[@]}" \
+        -p "127.0.0.1::${HEALTH_PORT}" ${device_args[@]+"${device_args[@]}"} ${mount_args[@]+"${mount_args[@]}"} \
         --cidfile "$candidate_id_file" --env-file "${token_env_files[$name]}" "${env_args[@]}" "$pinned_image" > /dev/null; then
         if new_container_id=$(candidate_container_id) &&
             new_state=$(docker inspect --format '{{.State.Status}}' "$new_container_id") &&

@@ -114,14 +114,20 @@ case "$1" in
           [ -n "\${PREV_HEALTH_PORT:-}" ] && echo "HEALTH_PORT=$PREV_HEALTH_PORT"
           printf 'AGENT_TOKEN=evtest\\nRUNNER_TOKEN=crtest\\n'
         fi ;;
-      *"RestartPolicy"*) echo "unless-stopped" ;;
+      *"RestartPolicy"*) echo "\${CURRENT_RESTART_POLICY:-unless-stopped}" ;;
       *"NetworkSettings"*) echo "\${CONTAINER_IP:-}" ;;
       *) echo "" ;;
     esac ;;
-  exec) case "$*" in *stat*) [ -n "\${CONT_INO:-}" ] && echo "$CONT_INO" || exit 1 ;; *) exit 0 ;; esac ;;
+  exec) case "$*" in
+    *stat*) [ -n "\${CONT_INO:-}" ] && echo "$CONT_INO" || exit 1 ;;
+    *"grep -q VirtualAudio /proc/asound/cards"*) [ "\${CONTAINER_AUDIO:-present}" = present ] ;;
+    *) exit 0 ;;
+  esac ;;
   logs) [ -n "\${PROBE_LINE:-}" ] && echo "$PROBE_LINE"; echo "[Daemon] Heartbeat sent" ;;
   port) [ -z "\${NO_HEALTH_MAPPING:-}" ] && echo "\${HEALTH_MAPPING:-127.0.0.1:49152}" ;;
   stop) [ -z "\${STOP_FAIL:-}" ] ;;
+  restart) [ -z "\${RESTART_FAIL:-}" ] ;;
+  update) [ -z "\${UPDATE_FAIL:-}" ] ;;
   rename)
     attempt=$(grep -c '^docker rename' "$VU_LOG")
     [ "$attempt" != "\${RENAME_FAIL_AT:-}" ] ;;
@@ -206,6 +212,18 @@ ${CAPTURE_CHILD_ENV}
 fi
 exec /bin/bash "$@"
 `;
+const STUB_GREP = `#!/bin/bash
+if [ "$#" = 3 ] && [ "$1" = -q ] && [ "$2" = VirtualAudio ] && [ "$3" = /proc/asound/cards ]; then
+  [ "\${HOST_AUDIO:-present}" = present ]; exit $?
+fi
+command -p grep "$@"
+`;
+const STUB_SYSTEMCTL = `#!/bin/bash
+if [ "$*" = 'is-enabled docker' ]; then
+  [ "\${DOCKER_BOOT_ENABLED:-true}" = true ]; exit $?
+fi
+exit 1
+`;
 
 type ContainerFixture = { id: string; name: string; ref: string; imageId?: string; state?: string; env?: string[]; aliases?: string[] };
 function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; versions?: { eval?: string; clash?: string }; args?: string[]; containers?: ContainerFixture[]; permissiveUmask?: boolean; inspectEnvs?: boolean } = {}) {
@@ -283,6 +301,8 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "mktemp"), STUB_MKTEMP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "bash"), STUB_BASH, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "grep"), STUB_GREP, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "systemctl"), STUB_SYSTEMCTL, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "curl"), STUB_CURL, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "sleep"), '#!/bin/bash\necho "sleep $*" >> "$VU_LOG"\nexit 0\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "EVAL_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
@@ -314,6 +334,39 @@ describe("hosts WITHOUT DialF: positional and explicit commands keep the same co
       expect(after.out).not.toMatch(/WARNING|Restart required|recreat|Continue|\(y\/n\)/);
     });
   }
+});
+
+describe("host prerequisite warnings", () => {
+  it.each(["true", "false"])("reports Docker boot configuration independently of upgrades (enabled=%s)", (enabled) => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, DOCKER_BOOT_ENABLED: enabled });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out.includes("WARNING: the Docker service is NOT enabled at boot")).toBe(enabled === "false");
+  });
+
+  it("warns when the host lacks VirtualAudio without hiding a successful upgrade", () => {
+    const r = upgrade({ RUNNING_ID: "abc", HOST_AUDIO: "missing" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
+    expect(r.out).toContain("WARNING: no VirtualAudio ALSA card on this host");
+    expect(r.out).not.toContain("Audio check: VirtualAudio visible inside the container");
+  });
+
+  it("distinguishes a missing container card from a missing host card", () => {
+    const r = upgrade({ RUNNING_ID: "abc", CONTAINER_AUDIO: "missing" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
+    expect(r.out).toContain("WARNING: VirtualAudio is NOT visible INSIDE the container");
+    expect(r.out).not.toContain("WARNING: no VirtualAudio ALSA card on this host");
+  });
+
+  it("keeps phone-only guidance when DialF exists but host VirtualAudio does not", () => {
+    const r = upgrade({ RUNNING_ID: "abc", DIALF_SOCKET: sock, HOST_AUDIO: "missing" });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("NOTE: no VirtualAudio ALSA card");
+    expect(r.out).toContain("Phone vs Agent jobs are unaffected");
+    expect(r.out).not.toContain("WARNING: no VirtualAudio ALSA card on this host");
+  });
 });
 
 describe("official image names and deployment provenance", () => {
@@ -726,6 +779,45 @@ describe("maintenance opt-out", () => {
     expect(r.status).toBe(1);
     expect(r.calls).toEqual([]);
     expect(r.out).toContain("VOX_INSTANCE_DISABLED must be");
+  });
+});
+
+describe("per-service failures do not skip the other configured service", () => {
+  it("continues after a failed stale DialF restart", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, DIALF_SOCKET: sock,
+      PREV_SOCK: sock, CONT_INO: "1", RESTART_FAIL: "1", RUNNER_TARGET_IMAGE: IMAGE_OLD }, { both: true });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("Error: could not restart vox-eval-agentd");
+    expect(r.out).toContain("Started vox-clash-runner");
+    expect(r.out).toContain("Finished with errors");
+    expect(r.argvCalls).not.toContainEqual(["stop", "abc"]);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("continues after a failed restart-policy update", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW,
+      CURRENT_RESTART_POLICY: "no", UPDATE_FAIL: "1" }, { both: true });
+    expect(r.status).toBe(1);
+    expect(r.argvCalls.filter((args) => args[0] === "update")).toHaveLength(2);
+    expect(r.out).toContain("Error: could not update restart policy for vox-eval-agentd");
+    expect(r.out).toContain("Error: could not update restart policy for vox-clash-runner");
+    expect(r.out).toContain("Finished with errors");
+    expect(r.actions).toEqual([]);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("leaves the old agent untouched and continues when DialF exchange preparation fails", () => {
+    const blockedExchange = path.join(dir, "blocked-exchange");
+    fs.writeFileSync(blockedExchange, "not a directory");
+    const r = upgrade({ RUNNING_ID: "abc", DIALF_SOCKET: sock,
+      DIALF_EXCHANGE_DIR: blockedExchange }, { both: true });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("Error: cannot prepare DialF exchange directories; leaving vox-eval-agentd unchanged");
+    expect(r.out).toContain("Started vox-clash-runner");
+    expect(r.out).toContain("Finished with errors");
+    expect(r.argvCalls).not.toContainEqual(["stop", "abc"]);
+    expect(r.argvCalls).not.toContainEqual(["rm", "abc"]);
+    expect(r.tempEntries).toEqual([]);
   });
 });
 
