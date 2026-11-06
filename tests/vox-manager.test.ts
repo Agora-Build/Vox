@@ -107,6 +107,7 @@ describe("management command dispatch", () => {
   it.each([
     ["unknown"], ["self", "extra"], ["vox_agent", "a", "b"],
     ["self", "--force"], ["--force", "--force"], ["vox_agent", "--force=true"],
+    ["vox_agent", "--start-stopped"],
   ])("invalid arguments %j have no side effects", (...args) => {
     const result = run(args);
     expect(result.status).toBe(2);
@@ -165,6 +166,14 @@ describe("management command dispatch", () => {
 });
 
 describe("atomic self-update", () => {
+  it("self remains available while container management is disabled", () => {
+    const result = run(["self"], { env: { VOX_INSTANCE_DISABLED: "true" } });
+    expect(result.status).toBe(0);
+    expect(result.out).toContain("Updated script:");
+    expect(result.calls).not.toContain("docker");
+    expect(fs.existsSync(executed)).toBe(false);
+  });
+
   it.each([false, true])("prints manual download/save instructions before the update without executing them (download fails: %s)", (downloadFails) => {
     const result = run(["self"], { env: downloadFails ? { VM_DOWNLOAD_FAIL: "1" } : {} });
     expect(result.status).toBe(downloadFails ? 1 : 0);

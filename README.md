@@ -301,6 +301,24 @@ in the env file are installed/upgraded. Existing idle checks, same-image handlin
 DialF detection/mounts, audio devices and network monitoring mounts are preserved.
 New containers require confirmation before starting unless `--force` is set.
 
+Discovery is independent of the selected version: the manager checks stable
+names, recorded official image references, and repository metadata for bare image
+IDs. Legacy containers must use the configured token; other credentials are left
+alone. A stable name alone is not enough: named containers must also have a
+verified official component repository reference or matching bare-ID repository
+metadata. Unknown or unrelated images abort without changing containers.
+A unique running/restarting/paused legacy container takes precedence over
+exited leftovers. Ambiguous live matches, conflicting named/live instances, or
+multiple inactive matches without a live one abort before any image pull or
+container change, even with `--force`. Exited leftovers are not deleted.
+
+For maintenance, set `VOX_INSTANCE_DISABLED=true` in the env file before manually
+stopping the instance. The manager then exits successfully without any Docker
+operation, even with `--force`; `self` remains available. This flag does not itself
+stop an already running container. Unset it or use `false` to resume normal
+management and recovery. `1`/`0` are also accepted; other values fail closed. If
+the env file configures both an agent and a runner, the flag applies to both.
+
 The manager finds both running and stopped containers. When Docker reports
 `created`, `exited`, `dead` or `restarting`, it waits 10 seconds and checks again.
 If still inactive/restarting, replacement proceeds without waiting for health;
@@ -323,6 +341,14 @@ loopback-only host port, so they can run together without competing for port
 `vox-clash-runner`). `HEALTH_PORT` optionally changes the internal container port;
 use that port in the lookup instead. Later upgrades discover the existing mapping,
 including older fixed-port installations, automatically.
+
+`RESTART_POLICY` defaults to `unless-stopped`. Supported values are `no`, `always`,
+`unless-stopped`, and `on-failure[:N]`, with a nonnegative retry count up to Docker's
+64-bit integer limit. The policy loaded from the env file is validated before
+any Docker operation, including same-image updates. Invalid policies leave
+existing containers untouched. Docker env, mount, and device arguments use arrays
+so quoted env-file values containing whitespace, globs or option-like text remain
+literal values (for example, `VOX_AGENT_NAME='My phone agent'`).
 
 Running `./vox-manager.sh` without arguments defaults to `vox_agent`, image
 version `latest`, and `.env` in the **current working directory**, not the script's

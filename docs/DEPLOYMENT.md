@@ -556,6 +556,32 @@ compatibility with the current server and host services first.
 
 ### Upgrade health checks and ports
 
+Before a maintenance stop, set `VOX_INSTANCE_DISABLED=true` in that instance's env
+file. This is an explicit opt-out from all container management, including
+`--force`, with no Docker calls; it does not stop a running container for you.
+`self` updates still work because they never read the env file. Unset the flag or
+set `false` to restore normal recovery. `1`/`0` are also accepted; invalid values
+fail closed. Use separate env files if the agent and runner need independent
+maintenance states. There is no `--start-stopped` option.
+
+Legacy discovery checks recorded official image references and bare-ID repository
+metadata independently of the requested image tag/digest. It matches the configured
+credential and prefers a unique live legacy container over inactive leftovers.
+Stable names never bypass repository validation: named containers must have an
+official component reference or matching bare-ID repository metadata. Unknown or
+unrelated images using the stable name cause an error, not container removal.
+Ambiguous live matches, a named/live conflict, or ambiguous inactive-only matches
+fail before pulls or container mutations; `--force` cannot override discovery.
+Other credentials and inactive leftovers are not deleted. Replacement removes
+only the discovered container ID, never an unconditionally force-removed name.
+
+Restart policy is validated after loading the env file, before any Docker call:
+`no`, `always`, `unless-stopped` (default), or `on-failure[:N]`, where N is a
+nonnegative 64-bit signed integer. Invalid names, inappropriate retry suffixes,
+negative/nonnumeric/overflowing counts fail without stopping anything. Argument
+arrays preserve whitespace/globs in tokens, URLs, agent names and DialF paths;
+quote such values in the Bash-sourced env file.
+
 Docker-native state is checked before local health and during polling. Containers
 in `created`, `exited`, `dead` or `restarting` get a 10-second grace period and a
 second state check. If still inactive/restarting, replacement proceeds without

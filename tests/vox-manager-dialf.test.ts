@@ -6,14 +6,7 @@ import os from "os";
 import path from "path";
 import { dialfConnectFailure, probeDialf } from "../vox_eval_agentd/dialf-client";
 
-// scripts/vox-manager.sh and DialF (Phone vs Agent). A phone agent stopped
-// taking phone jobs after an upgrade: the script mounts dialfd's socket only
-// if it finds it, said nothing when it didn't, skipped "same image" containers
-// that lacked the mount, and couldn't tell a stale socket or a permission
-// problem from anything else. These run the REAL script against a stub
-// `docker` (which records every call and plays back container state) and a
-// real Unix socket standing in for dialfd — and pin that hosts WITHOUT DialF
-// see the same container actions as before.
+// Run the manager against recorded Docker stubs and a real Unix socket for DialF.
 
 const SCRIPT = path.resolve(__dirname, "../scripts/vox-manager.sh");
 const IMAGE_NEW = `sha256:${"a".repeat(64)}`;
@@ -28,17 +21,30 @@ let sockServer: net.Server;
 
 const STUB_DOCKER = `#!/bin/bash
 echo "docker $*" >> "$VU_LOG"
+printf '%s\\0' "$@" '' >> "$VU_ARGV"
 case "$1" in
   info) [ -n "\${DOCKER_DENIED:-}" ] && { echo "permission denied while trying to connect to the Docker daemon socket" >&2; exit 1; }; echo ok ;;
   ps)
-    if [[ " $* " == *" -aq "* ]]; then echo "\${EXISTING_ID:-\${RUNNING_ID:-}}"
-    else echo "\${RUNNING_ID:-}"; fi ;;
+    [ -n "\${PS_FAIL:-}" ] && exit 1
+    if [ -n "\${VU_CONTAINERS:-}" ]; then cat "$VU_CONTAINERS/inventory"
+    else
+      existing="\${EXISTING_ID:-\${RUNNING_ID:-}}"
+      [ -n "$existing" ] && echo "$existing"
+      [ -n "$existing" ] && [ -n "\${VU_BOTH:-}" ] && echo "runner-$existing"
+    fi
+    exit 0 ;;
   pull)
     [ -n "\${PULL_FAIL_IMAGE:-}" ] && [[ "$2" == *"$PULL_FAIL_IMAGE"* ]] && exit 1
     [ -n "\${PULL_FAIL_AT:-}" ] && [ "$(grep -c '^docker pull' "$VU_LOG")" = "$PULL_FAIL_AT" ] && exit 1
     exit 0 ;;
   image)
     [ -n "\${TARGET_INSPECT_FAIL:-}" ] && exit 1
+    if [[ "$*" == *RepoTags* ]]; then
+      [ -n "\${ALIAS_INSPECT_FAIL:-}" ] && exit 1
+      if [ -f "\${VU_CONTAINERS:-}/$3.aliases" ]; then cat "$VU_CONTAINERS/$3.aliases"
+      else printf 'ghcr.io/agora-build/vox-eval-agentd:previous-build\\nghcr.io/agora-build/vox-clash-runner:previous-build\\n'; fi
+      exit 0
+    fi
     if [[ "$*" == *RepoDigests* ]]; then
       [ -n "\${DIGEST_INSPECT_FAIL:-}" ] && exit 1
       [ -n "\${DIGEST_FAIL_AT:-}" ] && [ "$(grep -c 'docker image inspect.*RepoDigests' "$VU_LOG")" = "$DIGEST_FAIL_AT" ] && exit 1
@@ -57,16 +63,33 @@ case "$1" in
     if [[ "$*" == *vox-clash-runner* ]] && [ -n "\${RUNNER_TARGET_IMAGE:-}" ]; then echo "$RUNNER_TARGET_IMAGE"
     else echo "\${LATEST_IMAGE-${IMAGE_NEW}}"; fi ;;
   inspect)
+    inspected_id="\${!#}"
     case "$*" in
+      *"{{.Name}}"*)
+        [ -n "\${DISCOVERY_INSPECT_FAIL:-}" ] && exit 1
+        if [ -n "\${VU_CONTAINERS:-}" ]; then cat "$VU_CONTAINERS/$inspected_id.meta"
+        else
+          component="$VU_COMPONENT"
+          [[ "$inspected_id" == runner-* ]] && component=vox-clash-runner
+          state=$(printf '%s\\n' "\${DOCKER_STATES:-running}" | head -1)
+          printf '/%s\\nghcr.io/agora-build/%s:previous-build\\n%s\\n%s\\n' "$component" "$component" "\${RUNNING_IMAGE:-${IMAGE_OLD}}" "$state"
+        fi ;;
       *"State.Status"*)
         [ -n "\${STATE_INSPECT_FAIL:-}" ] && exit 1
-        attempt=$(grep -c 'docker inspect.*State.Status' "$VU_LOG")
+        attempt=$(grep -c '^docker inspect --format {{.State.Status}} ' "$VU_LOG")
         states="\${DOCKER_STATES:-running}"
         state=$(printf '%s\\n' "$states" | sed -n "\${attempt}p")
         [ -n "$state" ] || state=$(printf '%s\\n' "$states" | tail -1)
         echo "$state" ;;
       *"{{.Image}}"*) [ -n "\${IMAGE_INSPECT_FAIL:-}" ] && exit 1; echo "\${RUNNING_IMAGE:-${IMAGE_OLD}}" ;;
-      *"Config.Env"*) [ -n "\${INSPECT_FAIL:-}" ] && exit 1; [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"; [ -n "\${PREV_HEALTH_PORT:-}" ] && echo "HEALTH_PORT=$PREV_HEALTH_PORT"; echo "AGENT_TOKEN=x" ;;
+      *"Config.Env"*)
+        [ -n "\${INSPECT_FAIL:-}" ] && exit 1
+        if [ -n "\${VU_CONTAINERS:-}" ]; then cat "$VU_CONTAINERS/$inspected_id.env"
+        else
+          [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"
+          [ -n "\${PREV_HEALTH_PORT:-}" ] && echo "HEALTH_PORT=$PREV_HEALTH_PORT"
+          printf 'AGENT_TOKEN=evtest\\nRUNNER_TOKEN=crtest\\n'
+        fi ;;
       *"RestartPolicy"*) echo "unless-stopped" ;;
       *"NetworkSettings"*) echo "\${CONTAINER_IP:-}" ;;
       *) echo "" ;;
@@ -112,13 +135,7 @@ const STUB_PS = `#!/bin/bash
 if [ "$*" = "-o uid= -C dialfd" ]; then [ -n "\${PS_DIALF_UID:-}" ] && echo "  $PS_DIALF_UID"; exit 0; fi
 exec /usr/bin/ps "$@"
 `;
-// Shadows the real `ip` (network tags' host_link_type, Linux branch) so
-// autodetection is deterministic here regardless of the test host's actual
-// network: with no route to report, host_link_type always returns nothing
-// unless a test overrides VOX_LINK_TYPE directly (the documented, least-
-// invasive test hook — same precedence host_link_type gives a real .env).
-// A test may set IP_ROUTE_OUT to make `ip route get` report a route (every
-// ip call is logged as "ip <args>"); unset, it reports none.
+// No real network detection: tests supply route/address output or env overrides.
 const STUB_IP = `#!/bin/bash
 echo "ip $*" >> "$VU_LOG"
 if [ "$1" = "route" ] && [ -n "\${IP_ROUTE_OUT:-}" ]; then echo "$IP_ROUTE_OUT"; exit 0; fi
@@ -126,10 +143,24 @@ if [ "$1" = "-o" ] && [ -n "\${IP_ADDR_OUT:-}" ]; then echo "$IP_ADDR_OUT"; exit
 exit 1
 `;
 
-/** Run the real script; returns its output and the docker calls it made. */
-function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[] } = {}) {
+type ContainerFixture = { id: string; name: string; ref: string; imageId?: string; state?: string; env?: string[]; aliases?: string[] };
+function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[]; containers?: ContainerFixture[] } = {}) {
   const log = path.join(dir, `calls-${Math.random()}.log`);
   fs.writeFileSync(log, "");
+  const argvLog = `${log}.argv`;
+  fs.writeFileSync(argvLog, "");
+  let containersDir = "";
+  if (opts.containers) {
+    containersDir = `${log}.containers`;
+    fs.mkdirSync(containersDir);
+    fs.writeFileSync(path.join(containersDir, "inventory"), opts.containers.map((c) => c.id).join("\n"));
+    for (const container of opts.containers) {
+      const imageId = container.imageId ?? IMAGE_OLD;
+      fs.writeFileSync(path.join(containersDir, `${container.id}.meta`), `/${container.name}\n${container.ref}\n${imageId}\n${container.state ?? "running"}\n`);
+      fs.writeFileSync(path.join(containersDir, `${container.id}.env`), (container.env ?? []).join("\n"));
+      if (container.aliases) fs.writeFileSync(path.join(containersDir, `${imageId}.aliases`), container.aliases.join("\n"));
+    }
+  }
   const envFile = path.join(dir, opts.both ? "both.env" : opts.runner ? "runner.env" : "agent.env");
   const args = opts.defaultEnv ? (opts.command ? ["vox_agent"] : []) : opts.command ? ["vox_agent", envFile] : [envFile];
   if (opts.version !== undefined) args.push("--version", opts.version);
@@ -139,7 +170,8 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
     input: opts.answers ?? "",
     encoding: "utf8",
     env: {
-      PATH: `${path.join(dir, "bin")}:/usr/bin:/bin`, HOME: dir, VU_LOG: log,
+      PATH: `${path.join(dir, "bin")}:/usr/bin:/bin`, HOME: dir, VU_LOG: log, VU_ARGV: argvLog,
+      VU_COMPONENT: opts.runner ? "vox-clash-runner" : "vox-eval-agentd", VU_BOTH: opts.both ? "1" : "", VU_CONTAINERS: containersDir,
       XDG_RUNTIME_DIR: path.join(dir, "no-runtime"), DIALF_CHECK_TRIES: "1", ...env,
     },
     timeout: 30_000,
@@ -147,7 +179,8 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
   expect(r.error).toBeUndefined();
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
   const actions = calls.filter((c) => /^docker (stop|rm|run|restart)\b/.test(c)).map((c) => c.split(" ")[1]);
-  return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, actions };
+  const argvCalls = fs.readFileSync(argvLog, "utf8").split("\0\0").filter(Boolean).map((call) => call.split("\0"));
+  return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, actions, argvCalls };
 }
 
 beforeAll(async () => {
@@ -179,11 +212,11 @@ describe("hosts WITHOUT DialF: positional and explicit commands keep the same co
       const after = upgrade(env, { runner, command: true });
       expect(before.status).toBe(0);
       expect(after.status).toBe(0);
-      expect(after.actions).toEqual(env.RUNNING_IMAGE === env.LATEST_IMAGE ? [] : ["stop", "rm", "rm", "run"]);
-      expect(after.actions).toEqual(before.actions);                       // stop/rm/run unchanged
+      expect(after.actions).toEqual(env.RUNNING_IMAGE === env.LATEST_IMAGE ? [] : ["stop", "rm", "run"]);
+      expect(after.actions).toEqual(before.actions);
       const runOf = (r: typeof after) => r.calls.find((c) => c.startsWith("docker run"));
-      expect(runOf(after)).toEqual(runOf(before));                           // same container config
-      expect(after.out).not.toMatch(/WARNING|Restart|recreat|Continue|\(y\/n\)/); // nothing alarming, no prompt
+      expect(runOf(after)).toEqual(runOf(before));
+      expect(after.out).not.toMatch(/WARNING|Restart required|recreat|Continue|\(y\/n\)/);
     });
   }
 });
@@ -259,18 +292,228 @@ describe("official image names and deployment provenance", () => {
   });
 });
 
+describe("version-independent legacy discovery", () => {
+  function legacy(id: string, runner = false, overrides: Partial<ContainerFixture> = {}): ContainerFixture {
+    const component = runner ? "vox-clash-runner" : "vox-eval-agentd";
+    return { id, name: `legacy_${id}`, ref: `ghcr.io/agora-build/${component}:latest`, env: [runner ? "RUNNER_TOKEN=crtest" : "AGENT_TOKEN=evtest"], ...overrides };
+  }
+
+  it.each([false, true].flatMap((runner) => ["tag", "digest", "id"].map((kind) => [runner, kind] as const)))("finds a legacy container independently of the rollback version (runner: %s, reference: %s)", (runner, kind) => {
+    const repo = `ghcr.io/agora-build/${runner ? "vox-clash-runner" : "vox-eval-agentd"}`;
+    const ref = kind === "id" ? IMAGE_OLD : kind === "digest" ? `${repo}@${MANIFEST_OLD}` : `${repo}:latest`;
+    const r = upgrade({}, { runner, version: "rollback-build", containers: [legacy("older", runner, { ref, aliases: [`${repo}@${MANIFEST_OLD}`] })] });
+    expect(r.status).toBe(0);
+    expect(r.argvCalls).toContainEqual(["stop", "older"]);
+    expect(r.argvCalls).toContainEqual(["rm", "older"]);
+    expect(r.calls.some((call) => call.includes("ancestor="))).toBe(false);
+    expect(r.calls).toContain(`docker pull ${repo}:rollback-build`);
+    expect(r.argvCalls.filter((args) => args[0] === "run")).toHaveLength(1);
+  });
+
+  it.each([false, true])("prefers the unique running legacy container over newer exited leftovers (runner: %s)", (runner) => {
+    const r = upgrade({}, { runner, containers: [legacy("newer-exited", runner, { state: "exited" }), legacy("older-running", runner)] });
+    expect(r.status).toBe(0);
+    expect(r.argvCalls.filter((args) => args[0] === "stop" || args[0] === "rm")).toEqual([["stop", "older-running"], ["rm", "older-running"]]);
+  });
+
+  it("keeps a managed named container while leaving exited legacy leftovers untouched", () => {
+    const r = upgrade({}, { containers: [legacy("named", false, { name: "vox-eval-agentd" }), legacy("old-exited", false, { state: "exited" })] });
+    expect(r.status).toBe(0);
+    expect(r.argvCalls.filter((args) => args[0] === "stop" || args[0] === "rm")).toEqual([["stop", "named"], ["rm", "named"]]);
+  });
+
+  it.each([
+    [legacy("one"), legacy("two")],
+    [legacy("one", false, { state: "paused" }), legacy("two")],
+    [legacy("one", false, { state: "exited" }), legacy("two", false, { state: "exited" })],
+    [legacy("one", false, { name: "vox-eval-agentd" }), legacy("two")],
+  ])("ambiguous matches fail before any image pull or mutation, even with --force (%j)", (...containers) => {
+    const r = upgrade({}, { containers, args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("ambiguous");
+    expect(r.out).toContain("No containers were changed");
+    expect(r.calls.some((call) => call.startsWith("docker pull"))).toBe(false);
+    expect(r.out).not.toContain("evtest");
+  });
+
+  it("ambiguity in the second component prevents replacement of either component", () => {
+    const r = upgrade({}, { both: true, args: ["--force"], containers: [legacy("agent"), legacy("runner-one", true), legacy("runner-two", true)] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.calls.some((call) => call.startsWith("docker pull"))).toBe(false);
+  });
+
+  it.each([
+    { ref: "ghcr.io/someone-else/vox-eval-agentd:latest" },
+    { ref: "ghcr.io/agora-build/vox-eval-agentd-other:latest" },
+    { env: ["AGENT_TOKEN=other-owner-token"] },
+  ])("does not adopt another repository or another credential's container (%j)", (overrides) => {
+    const r = upgrade({}, { args: ["--force"], containers: [legacy("other-owner", false, overrides)] });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["run"]);
+  });
+
+  it("fails closed for a bare-ID container with the configured token but no repository identity", () => {
+    const r = upgrade({}, { args: ["--force"], containers: [legacy("unknown", false, { ref: IMAGE_OLD, aliases: [] })] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("image repository is unknown");
+  });
+
+  it.each([false, true].flatMap((runner) => ["unrelated-tag", "foreign-repo", "other-component", "unknown-id", "foreign-id", "other-component-id"].map((kind) => [runner, kind] as const)))("managed names require verified repository identity before any pull or mutation (runner: %s, reference: %s)", (runner, kind) => {
+    const component = runner ? "vox-clash-runner" : "vox-eval-agentd";
+    const otherComponent = runner ? "vox-eval-agentd" : "vox-clash-runner";
+    const otherRepo = `ghcr.io/agora-build/${otherComponent}:latest`;
+    const ref = kind.endsWith("id") ? IMAGE_OLD : kind === "foreign-repo" ? `ghcr.io/someone-else/${component}:latest` : kind === "other-component" ? otherRepo : "unrelated:latest";
+    const aliases = kind === "foreign-id" ? ["unrelated:latest"] : kind === "other-component-id" ? [otherRepo] : [];
+    const r = upgrade({}, { runner, args: ["--force"], containers: [legacy("unrelated", runner, { name: component, ref, aliases })] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("belongs to another image");
+    expect(r.out).toContain("No containers were changed");
+    expect(r.argvCalls.some((args) => args[0] === "pull" || args[0] === "update")).toBe(false);
+  });
+
+  it.each([false, true].flatMap((runner) => ["tag", "digest", "id-tag", "id-digest"].map((kind) => [runner, kind] as const)))("accepts a managed name with verified official repository metadata (runner: %s, reference: %s)", (runner, kind) => {
+    const component = runner ? "vox-clash-runner" : "vox-eval-agentd";
+    const repo = `ghcr.io/agora-build/${component}`;
+    const ref = kind.startsWith("id-") ? IMAGE_OLD : kind === "digest" ? `${repo}@${MANIFEST_OLD}` : `${repo}:previous-build`;
+    const aliases = [kind === "id-tag" ? `${repo}:previous-build` : `${repo}@${MANIFEST_OLD}`];
+    const r = upgrade({}, { runner, containers: [legacy("verified", runner, { name: component, ref, aliases })] });
+    expect(r.status).toBe(0);
+    expect(r.argvCalls.filter((args) => args[0] === "stop" || args[0] === "rm")).toEqual([["stop", "verified"], ["rm", "verified"]]);
+  });
+
+  it.each([{ PS_FAIL: "1" }, { DISCOVERY_INSPECT_FAIL: "1" }, { INSPECT_FAIL: "1" }, { ALIAS_INSPECT_FAIL: "1" }])("discovery failures never mean no existing container (%j)", (failure) => {
+    const r = upgrade(failure, { containers: [legacy("old", false, { ref: IMAGE_OLD })], args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("No containers were changed");
+  });
+});
+
+describe("Docker argument boundaries and runtime preflight", () => {
+  const shellValue = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+  it.each([false, true])("preserves whitespace, globs, quotes, newlines and option-like text as literal env values (runner: %s)", (runner) => {
+    const tokenName = runner ? "RUNNER_TOKEN" : "AGENT_TOKEN";
+    const values = {
+      [tokenName]: "token with spaces\t* [xy] ' \" --privileged\nnext-line",
+      VOX_SERVER: "https://vox.example.test/path with space?x=* &y=[abc] --privileged",
+      VOX_AGENT_NAME: "* [xy] ' \" --privileged --mount=type=bind,src=/,dst=/host",
+      LOCAL_DEBUG: "debug * --privileged", HEADLESS: "false --network host",
+    };
+    const envFile = path.join(dir, `literal-${runner}.env`);
+    fs.writeFileSync(envFile, Object.entries(values).map(([key, value]) => `${key}=${shellValue(value)}`).join("\n"));
+    fs.writeFileSync(path.join(dir, "VOX_AGENT_NAME=glob-expanded"), "");
+    const r = upgrade({ RUNNING_ID: "abc" }, { runner, defaultEnv: true, args: ["--env", envFile, "--force"] });
+    expect(r.status).toBe(0);
+    const run = r.argvCalls.find((args) => args[0] === "run")!;
+    const envValues = run.filter((_, index) => run[index - 1] === "-e");
+    for (const [key, value] of Object.entries(values)) expect(envValues).toContain(`${key}=${value}`);
+    expect(envValues).toHaveLength(Object.keys(values).length + 1);
+    expect(run).not.toContain("--privileged");
+    expect(run).not.toContain("--network");
+    expect(run.some((arg) => arg.startsWith("--mount="))).toBe(false);
+    expect(run.at(-1)).toBe(runner ? RUNNER_REF : AGENT_REF);
+  });
+
+  it("keeps DialF socket/exchange paths containing spaces and glob characters in single arguments", async () => {
+    const specialSock = path.join(dir, "phone * [a] ' socket");
+    const specialExchange = path.join(dir, "exchange * [a] ' --privileged");
+    const specialServer = net.createServer().listen(specialSock);
+    await new Promise((resolve) => specialServer.once("listening", resolve));
+    try {
+      const r = upgrade({ RUNNING_ID: "abc", DIALF_SOCKET: specialSock, DIALF_EXCHANGE_DIR: specialExchange });
+      expect(r.status).toBe(0);
+      const run = r.argvCalls.find((args) => args[0] === "run")!;
+      const mounts = run.filter((_, index) => run[index - 1] === "-v");
+      expect(mounts).toContain(`${specialSock}:${specialSock}`);
+      expect(mounts).toContain(`${specialExchange}:${specialExchange}`);
+      expect(run).toContain(`VOX_DIALF_SOCKET=${specialSock}`);
+      expect(run).toContain(`VOX_DIALF_EXCHANGE_DIR=${specialExchange}`);
+      expect(run).not.toContain("--privileged");
+    } finally { specialServer.close(); }
+  });
+
+  it("resets argument arrays between agent and runner", () => {
+    const r = upgrade({ RUNNING_ID: "abc", DIALF_SOCKET: sock, VOX_LINK_TYPE: "wifi" }, { both: true });
+    expect(r.status).toBe(0);
+    const runs = r.argvCalls.filter((args) => args[0] === "run");
+    const agent = runs.find((args) => args.at(-1) === AGENT_REF)!;
+    const runner = runs.find((args) => args.at(-1) === RUNNER_REF)!;
+    expect(agent).toContain("AGENT_TOKEN=evtest");
+    expect(agent).toContain("-v");
+    expect(runner).toContain("RUNNER_TOKEN=crtest");
+    expect(runner).not.toContain("-v");
+    expect(runner.some((arg) => /^(AGENT_TOKEN|VOX_DIALF_|VOX_LINK_TYPE)=/.test(arg))).toBe(false);
+  });
+
+  it.each(["no", "always", "unless-stopped", "on-failure", "on-failure:0", "on-failure:3", "on-failure:0003", "on-failure:9223372036854775807"])("validates and forwards restart policy %s", (policy) => {
+    const r = upgrade({ RUNNING_ID: "abc", RESTART_POLICY: policy });
+    expect(r.status).toBe(0);
+    const run = r.argvCalls.find((args) => args[0] === "run")!;
+    expect(run[run.indexOf("--restart") + 1]).toBe(policy === "on-failure:0003" ? "on-failure:3" : policy);
+  });
+
+  it.each([
+    "never", "always:3", "unless-stopped:3", "no:1", "on-failure:", "on-failure:-1",
+    "on-failure:1.5", "on-failure:abc", "always --privileged", "on-failure:9223372036854775808",
+    `on-failure:${"9".repeat(100)}`,
+  ])("invalid restart policy %s fails before any Docker call, including with --force", (policy) => {
+    const r = upgrade({ RUNNING_ID: "abc", RESTART_POLICY: policy }, { args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain("RESTART_POLICY");
+    expect(r.out).toContain("No containers were changed");
+  });
+
+  it("validates the policy loaded from the env file, not only the inherited environment", () => {
+    const envFile = path.join(dir, "invalid-restart.env");
+    fs.writeFileSync(envFile, "AGENT_TOKEN=evtest\nRESTART_POLICY=invalid\n");
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, RESTART_POLICY: "always" }, { defaultEnv: true, args: ["--env", envFile] });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+  });
+});
+
+describe("maintenance opt-out", () => {
+  it.each([false, true])("VOX_INSTANCE_DISABLED=true in the env file prevents every Docker operation (force: %s)", (force) => {
+    const envFile = path.join(dir, "disabled.env");
+    fs.writeFileSync(envFile, "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nVOX_INSTANCE_DISABLED=true\nRESTART_POLICY=invalid\n");
+    const r = upgrade({ RUNNING_ID: "abc", DOCKER_STATES: "exited" }, { both: true, defaultEnv: true, args: ["--env", envFile, ...(force ? ["--force"] : [])] });
+    expect(r.status).toBe(0);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain("skipping all container operations, including --force");
+  });
+
+  it.each(["false", "0"])("VOX_INSTANCE_DISABLED=%s leaves recovery enabled", (disabled) => {
+    const r = upgrade({ RUNNING_ID: "abc", DOCKER_STATES: "exited", VOX_INSTANCE_DISABLED: disabled });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
+  });
+
+  it.each(["yes", "TRUE", "disabled"])("invalid maintenance value %s fails closed without Docker calls", (disabled) => {
+    const r = upgrade({ VOX_INSTANCE_DISABLED: disabled });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain("VOX_INSTANCE_DISABLED must be");
+  });
+});
+
 describe("health checks fail closed before interrupting work", () => {
   it.each([false, true])("requires an explicit idle response (runner: %s)", (runner) => {
     const r = upgrade({ RUNNING_ID: "abc" }, { runner });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.out).toContain("Status: idle after 0s");
   });
 
   it.each(["occupied", "uploading", "timeout", "http-error"])("retries %s and stops only after explicit idle", (status) => {
     const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: `${status}\nidle` });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.out).toContain("Status: idle after 10s");
     expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(2);
   });
@@ -336,7 +579,7 @@ describe("health checks fail closed before interrupting work", () => {
   it("only explicit confirmation permits force-stopping an unknown container", () => {
     const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "timeout" }, { answers: "y\n" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.out).toContain("container is unknown after 300s");
   });
 });
@@ -345,7 +588,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it.each(["timeout", "occupied", "uploading"])("--force skips %s health waits and prompts", (health) => {
     const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: health }, { command: true, args: ["--force"] });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.calls.some((call) => /^(curl |sleep 10$)/.test(call))).toBe(false);
     expect(r.out).toContain("--force bypasses idle checks");
     expect(r.out).toContain("active evaluations may be interrupted");
@@ -355,7 +598,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it("--force works as the first option with --version and --env, including a fresh unattended install", () => {
     const r = upgrade({}, { defaultEnv: true, args: ["--force", "--version", "7c3b1a2", "--env", path.join(dir, "agent.env")] });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.actions).toEqual(["run"]);
     expect(r.out).toContain("--force confirms starting a new container");
     expect(r.calls.find((call) => call.startsWith("docker run"))).toContain("--label org.agora.vox.version=7c3b1a2");
   });
@@ -370,7 +613,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it("--force explicitly accepts loss of a previous DialF mount", () => {
     const r = upgrade({ RUNNING_ID: "abc", PREV_SOCK: "/missing/dialfd.sock", HEALTH_STEPS: "timeout" }, { args: ["--force"] });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.out).toContain("--force confirms replacement without DialF support");
   });
 
@@ -391,7 +634,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
       PREV_SOCK: "/missing/dialfd.sock",
     }, { args: force ? ["--force"] : [] });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(force ? ["stop", "rm", "rm", "run"] : []);
+    expect(r.actions).toEqual(force ? ["stop", "rm", "run"] : []);
     expect(r.out).toContain("a new container WON'T take phone jobs");
     if (force) expect(r.out).toContain("--force confirms replacement without DialF support");
     else expect(r.out).toContain("Leaving the running vox-eval-agentd as it is");
@@ -402,8 +645,8 @@ describe("unattended upgrades and Docker-native recovery", () => {
   ] as const))("Docker state %s bypasses unknown health after a 10-second recheck (runner: %s)", (state, runner) => {
     const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: state, HEALTH_STEPS: "timeout" }, { runner });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
-    expect(r.calls).toContain(`docker ps -aq --filter name=^/${runner ? "vox-clash-runner" : "vox-eval-agentd"}$`);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.calls).toContain("docker ps -aq --no-trunc");
     expect(r.calls.some((call) => call.startsWith("curl "))).toBe(false);
     expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(1);
     expect(r.out).toContain(`Docker state: ${state}`);
@@ -414,7 +657,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it.each(["created", "exited", "dead", "restarting"])("recovers a %s container even when the selected image has not changed", (state) => {
     const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: state, RUNNING_IMAGE: IMAGE_NEW });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.out).toContain(`Docker state is ${state}; recreating container`);
     expect(r.out).not.toContain("Skipping replacement");
   });
@@ -422,7 +665,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it("rechecks Docker state during the health wait and confirms a crash after 10 seconds", () => {
     const r = upgrade({ RUNNING_ID: "abc", DOCKER_STATES: "running\nrunning\nexited", HEALTH_STEPS: "timeout" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(1);
     expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(2);
     expect(r.out).toContain("Docker state: exited");
@@ -432,7 +675,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it.each(["created", "exited", "dead", "restarting"])("a %s container that becomes running after 10 seconds must pass health checks", (state) => {
     const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: `${state}\n${state}\nrunning`, HEALTH_STEPS: "occupied\nidle" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(2);
     expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(2);
     expect(r.out).toContain("Docker state after recheck: running — checking health");
@@ -495,16 +738,15 @@ describe("Docker-assigned loopback health ports", () => {
   it("loads a custom internal port from the selected env file for both components", () => {
     const envFile = path.join(dir, "custom-health.env");
     fs.writeFileSync(envFile, "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nHEALTH_PORT=8123\n");
-    const r = upgrade({ RUNNING_ID: "abc" }, { defaultEnv: true, args: ["--env", envFile] });
+    const r = upgrade({ RUNNING_ID: "abc" }, { both: true, defaultEnv: true, args: ["--env", envFile] });
     expect(r.status).toBe(0);
     const runs = r.calls.filter((call) => call.startsWith("docker run"));
     expect(runs).toHaveLength(2);
     expect(runs.every((call) => call.includes("-p 127.0.0.1::8123 "))).toBe(true);
     expect(runs.every((call) => call.includes("-e HEALTH_PORT=8123 "))).toBe(true);
-    // Existing containers without HEALTH_PORT still listen on their default.
-    expect(r.calls.filter((call) => call.startsWith("docker port abc "))).toEqual([
-      "docker port abc 8099/tcp", "docker port abc 8099/tcp",
-    ]);
+    expect(r.calls.filter((call) => call.startsWith("docker port "))).toEqual(expect.arrayContaining([
+      "docker port abc 8099/tcp", "docker port runner-abc 8099/tcp",
+    ]));
   });
 
   it.each(["0", "65536", "abc", "8099:8099", "-1"])("invalid internal health port %s fails before touching Docker", (port) => {
@@ -542,7 +784,7 @@ describe("install/upgrade command dispatch", () => {
     fs.copyFileSync(path.join(dir, "agent.env"), path.join(dir, ".env"));
     const r = upgrade({}, { defaultEnv: true, answers: "y\n" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.actions).toEqual(["run"]);
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
     const run = r.calls.find((call) => call.startsWith("docker run"));
     expect(run).toContain("AGENT_TOKEN=evtest");
@@ -566,7 +808,7 @@ describe("install/upgrade command dispatch", () => {
   it("vox_agent also installs a new agent when no container exists", () => {
     const r = upgrade({}, { command: true, answers: "y\n" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.actions).toEqual(["run"]);
     expect(r.out).toContain("Starting new container");
   });
 
@@ -614,7 +856,7 @@ describe("selected Docker image versions and rollback", () => {
   it("installs a specific version on a new host after confirmation", () => {
     const r = upgrade({}, { command: true, version: "7c3b1a2", answers: "y\n" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["rm", "run"]);
+    expect(r.actions).toEqual(["run"]);
     expect(r.out).toContain("Starting new container");
     expect(r.out).toContain("vox-eval-agentd:7c3b1a2");
   });
@@ -623,7 +865,7 @@ describe("selected Docker image versions and rollback", () => {
     const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_OLD, DIALF_SOCKET: sock };
     const r = upgrade(env, { command: true, version: "previous-build" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     const run = r.calls.find((call) => call.startsWith("docker run"));
     expect(run).toContain("--restart unless-stopped");
     expect(run).toContain("vox-aeval-cache:/root/.cache");
@@ -698,7 +940,6 @@ describe("selected Docker image versions and rollback", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNER_TARGET_IMAGE: IMAGE_OLD }, { command: true, both: true, version: "7c3b1a2" });
     expect(r.status).toBe(0);
     const runs = r.calls.filter((call) => call.startsWith("docker run"));
-    // The runner already has IMAGE_OLD; only the agent needs replacement.
     expect(runs).toHaveLength(1);
     expect(runs[0]).toContain("--name vox-eval-agentd");
     expect(runs[0].endsWith(` ${AGENT_REF}`)).toBe(true);
@@ -730,7 +971,7 @@ describe("hosts WITH DialF", () => {
   it("same image, but the running container lacks the DialF mount: recreated with it", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_NEW, DIALF_SOCKET: sock });
     expect(r.out).toMatch(/wasn't started with it — recreating it/);
-    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "rm", "run"]);
     expect(r.calls.find((c) => c.startsWith("docker run"))).toContain(`VOX_DIALF_SOCKET=${sock}`);
   });
 
@@ -808,9 +1049,6 @@ describe("VOX_PUBLIC_IP_ON_IFACE (network tags part 2 — host interface detecti
     expect(r.calls.find((c) => c.startsWith("docker run"))).not.toContain("VOX_PUBLIC_IP_ON_IFACE");
   });
 
-  // The script's own address classifier, run on its own (extracted from the
-  // real script): only IPv4 counts. Dual-stack homes and IPv6 hotspots hold
-  // global 2000::/3 addresses, which say nothing about a home router.
   const classify = (out: string) => {
     const fn = fs.readFileSync(SCRIPT, "utf8").match(/^host_addr_is_public\(\) \{[\s\S]*?^\}/m)?.[0];
     expect(fn).toBeTruthy();
@@ -868,7 +1106,6 @@ describe("permission problems are reported, not guessed at", () => {
   it("…nor does a failing image inspect (#250 review)", () => {
     const r = upgrade({ RUNNING_ID: "abc", LATEST_IMAGE: IMAGE_NEW, IMAGE_INSPECT_FAIL: "1" });
     expect(r.calls.some((c) => c.includes("{{.Image}}"))).toBe(true);
-    // It carries on (an unknown image counts as "not the latest") and upgrades.
     expect(r.status).toBe(0);
     expect(r.actions).toContain("run");
   });

@@ -312,6 +312,10 @@ Run `./scripts/dev-local-run.sh clean-test-data [--yes]` on a DB that has accumu
 
 Manager automation: `vox_agent --force` skips health waits and confirms install/replacement (including losing a prior DialF mount), so it can interrupt active evals. Docker `created`/`exited`/`dead`/`restarting` states get a 10-second recheck even with `--force`; if still inactive, recreate without health polling, including on the same image. If running again, use normal health checks unless forced. Discovery includes stopped containers. Unknown/failed state inspection and paused containers never establish inactivity. Image preflight validation is never bypassed.
 
+Manager maintenance/safety: `VOX_INSTANCE_DISABLED=true` in the selected env file skips every Docker operation, even with `--force`; it does not stop a running container and does not affect `self`. False/unset restores normal recovery; no `--start-stopped` flag. Legacy discovery matches recorded official references (or bare-ID repository metadata) plus the configured token, preferring a unique live match over exited leftovers and rejecting ambiguity before any pull/mutation. Never restore versioned `ancestor=` discovery or blind name-based removal. Env/mount/device arguments are quoted arrays. Validate `RESTART_POLICY` (`no`, `always`, `unless-stopped`, `on-failure[:nonnegative-64-bit-count]`) after sourcing env, before any Docker operation.
+
+Stable names are not ownership proof: even named containers need an official component repository reference or matching bare-ID repository metadata. Unknown/foreign bare-ID images fail closed before pulls or mutations; never allow a name-only or bare-ID-only ownership exception.
+
 ## Deployment & Notes
 
 - CI/CD: GitHub Actions → Coolify webhook on push to main (`.github/workflows/deploy.yml`)

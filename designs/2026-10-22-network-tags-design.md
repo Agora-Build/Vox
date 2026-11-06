@@ -758,6 +758,10 @@ health checks. Failed state inspection and paused containers do not establish
 inactivity. The explicit `--force` option skips health waits and confirms
 installation/replacement for automation, with warnings that it may interrupt
 active work or drop DialF support; it never bypasses image preflight validation.
+For maintenance, the operator sets `VOX_INSTANCE_DISABLED=true` in the env file
+before stopping the instance. The manager then skips every Docker operation,
+even with `--force`; unset/false re-enables normal state-based recovery. The flag
+does not stop an already running process and does not affect script self-updates.
 Complete coverage needs a continuous monitor and every sequence from start
 through end; summaries alone cannot manufacture it. Acknowledged events that
 have left the agent queue still count toward coverage in Core.
