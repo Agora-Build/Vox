@@ -282,8 +282,8 @@ Create an env file with the token(s) for the containers you want to manage:
 
 ```bash
 cat > .env << 'EOF'
-AGENT_TOKEN=your-eval-agent-token
-RUNNER_TOKEN=your-clash-runner-token
+EVAL_TOKEN=your-eval-agent-token
+CLASH_TOKEN=your-clash-runner-token
 VOX_SERVER=https://vox.agora.build
 EOF
 
@@ -300,6 +300,23 @@ In a checkout, use `./scripts/vox-manager.sh` instead. Only containers with a to
 in the env file are installed/upgraded. Existing idle checks, same-image handling,
 DialF detection/mounts, audio devices and network monitoring mounts are preserved.
 New containers require confirmation before starting unless `--force` is set.
+
+`EVAL_TOKEN` selects only the eval service; `CLASH_TOKEN` selects only Clash.
+Missing/empty tokens leave that service untouched, and no tokens is a successful
+no-op without Docker calls. Rename older manager env-file keys `AGENT_TOKEN` to
+`EVAL_TOKEN` and `RUNNER_TOKEN` to `CLASH_TOKEN`; the old keys no longer select
+services. Existing container images still receive their original internal runtime
+keys, so pinned installs, rollbacks and legacy discovery remain compatible.
+Missing/unloadable env files, missing tokens or invalid settings print a sample
+using placeholders, never configured credentials. The sample is not saved.
+
+Tokens are passed through component-specific `0600` files inside a private `0700`
+temporary directory, not Docker command-line arguments. Files are prepared before
+any existing container is stopped and removed after launch or on exit/INT/TERM.
+Token line breaks are rejected before Docker calls. This prevents token exposure
+through ordinary process listings; Docker-authorized users, root and the same
+operating-system account can still inspect credentials. Other environment values,
+mounts and device options remain quoted arrays.
 
 Discovery is independent of the selected version: the manager checks stable
 names, recorded official image references, and repository metadata for bare image

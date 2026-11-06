@@ -316,6 +316,8 @@ Manager maintenance/safety: `VOX_INSTANCE_DISABLED=true` in the selected env fil
 
 Stable names are not ownership proof: even named containers need an official component repository reference or matching bare-ID repository metadata. Unknown/foreign bare-ID images fail closed before pulls or mutations; never allow a name-only or bare-ID-only ownership exception.
 
+Manager token inputs are `EVAL_TOKEN` and `CLASH_TOKEN`; missing/empty means ignore that service, and neither configured is a successful no-op before Docker. Old manager keys do not select services. Keep mapping to existing images' `AGENT_TOKEN`/`RUNNER_TOKEN` runtime names for pinned-version rollback and legacy discovery. Tokens must not appear in Docker argv: prepare separate mode-0600 env files in a mode-0700 temp directory before any stop, remove after launch and on EXIT/INT/TERM. Reject CR/LF tokens before Docker. Missing/unloadable env files, missing tokens and invalid settings print a placeholder-only sample, never configured values or an automatically saved file. Docker/root/same-user access can still inspect container credentials.
+
 ## Deployment & Notes
 
 - CI/CD: GitHub Actions → Coolify webhook on push to main (`.github/workflows/deploy.yml`)

@@ -18,6 +18,7 @@ const RUNNER_REF = `ghcr.io/agora-build/vox-clash-runner@${MANIFEST_NEW}`;
 let dir = "";
 let sock = "";
 let sockServer: net.Server;
+const shellValue = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 const STUB_DOCKER = `#!/bin/bash
 echo "docker $*" >> "$VU_LOG"
@@ -98,6 +99,18 @@ case "$1" in
   logs) [ -n "\${PROBE_LINE:-}" ] && echo "$PROBE_LINE"; echo "[Daemon] Heartbeat sent" ;;
   port) [ -z "\${NO_HEALTH_MAPPING:-}" ] && echo "\${HEALTH_MAPPING:-127.0.0.1:49152}" ;;
   run)
+    attempt=$(grep -c '^docker run' "$VU_LOG")
+    for ((i=1; i<=$#; i++)); do
+      if [ "\${!i}" = --env-file ]; then
+        next=$((i+1)); token_file="\${!next}"
+        cp -- "$token_file" "$VU_ENV_FILES/$attempt.env" || exit 125
+        printf '%s' "$token_file" > "$VU_ENV_FILES/$attempt.path"
+        stat -c '%a' -- "$token_file" > "$VU_ENV_FILES/$attempt.mode"
+        stat -c '%a' -- "\${token_file%/*}" > "$VU_ENV_FILES/$attempt.dir-mode"
+      fi
+    done
+    [ -n "\${RUN_SIGNAL:-}" ] && { kill -s "$RUN_SIGNAL" "$PPID"; exit 143; }
+    [ -n "\${RUN_FAIL:-}" ] && exit 125
     binding=""
     for ((i=1; i<=$#; i++)); do
       if [ "\${!i}" = -p ]; then next=$((i+1)); binding="\${!next}"; break; fi
@@ -142,13 +155,21 @@ if [ "$1" = "route" ] && [ -n "\${IP_ROUTE_OUT:-}" ]; then echo "$IP_ROUTE_OUT";
 if [ "$1" = "-o" ] && [ -n "\${IP_ADDR_OUT:-}" ]; then echo "$IP_ADDR_OUT"; exit 0; fi
 exit 1
 `;
+const STUB_MKTEMP = `#!/bin/bash
+[ -n "\${ENV_TEMP_FAIL:-}" ] && exit 1
+exec /usr/bin/mktemp "$@"
+`;
 
 type ContainerFixture = { id: string; name: string; ref: string; imageId?: string; state?: string; env?: string[]; aliases?: string[] };
-function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[]; containers?: ContainerFixture[] } = {}) {
+function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[]; containers?: ContainerFixture[]; permissiveUmask?: boolean } = {}) {
   const log = path.join(dir, `calls-${Math.random()}.log`);
   fs.writeFileSync(log, "");
   const argvLog = `${log}.argv`;
   fs.writeFileSync(argvLog, "");
+  const envCaptures = `${log}.env-files`;
+  fs.mkdirSync(envCaptures);
+  const tempRoot = env.TMPDIR ?? `${log}.tmp`;
+  fs.mkdirSync(tempRoot, { recursive: true });
   let containersDir = "";
   if (opts.containers) {
     containersDir = `${log}.containers`;
@@ -165,12 +186,14 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
   const args = opts.defaultEnv ? (opts.command ? ["vox_agent"] : []) : opts.command ? ["vox_agent", envFile] : [envFile];
   if (opts.version !== undefined) args.push("--version", opts.version);
   if (opts.args) args.push(...opts.args);
-  const r = spawnSync("bash", [SCRIPT, ...args], {
+  const bashArgs = opts.permissiveUmask ? ["-c", 'umask 000; exec bash "$@"', "_", SCRIPT, ...args] : [SCRIPT, ...args];
+  const r = spawnSync("bash", bashArgs, {
     cwd: dir,
     input: opts.answers ?? "",
     encoding: "utf8",
     env: {
-      PATH: `${path.join(dir, "bin")}:/usr/bin:/bin`, HOME: dir, VU_LOG: log, VU_ARGV: argvLog,
+      PATH: `${path.join(dir, "bin")}:/usr/bin:/bin`, HOME: dir, TMPDIR: tempRoot,
+      VU_LOG: log, VU_ARGV: argvLog, VU_ENV_FILES: envCaptures,
       VU_COMPONENT: opts.runner ? "vox-clash-runner" : "vox-eval-agentd", VU_BOTH: opts.both ? "1" : "", VU_CONTAINERS: containersDir,
       XDG_RUNTIME_DIR: path.join(dir, "no-runtime"), DIALF_CHECK_TRIES: "1", ...env,
     },
@@ -180,7 +203,15 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
   const actions = calls.filter((c) => /^docker (stop|rm|run|restart)\b/.test(c)).map((c) => c.split(" ")[1]);
   const argvCalls = fs.readFileSync(argvLog, "utf8").split("\0\0").filter(Boolean).map((call) => call.split("\0"));
-  return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, actions, argvCalls };
+  const tokenFiles = fs.readdirSync(envCaptures).filter((file) => file.endsWith(".env")).sort().map((file) => {
+    const base = path.join(envCaptures, file.slice(0, -4));
+    return {
+      content: fs.readFileSync(`${base}.env`, "utf8"), path: fs.readFileSync(`${base}.path`, "utf8"),
+      mode: fs.readFileSync(`${base}.mode`, "utf8").trim(), directoryMode: fs.readFileSync(`${base}.dir-mode`, "utf8").trim(),
+    };
+  });
+  const comparableCalls = calls.map((call) => tokenFiles.reduce((value, file) => value.replaceAll(file.path, `<private-env/${path.basename(file.path)}>`), call));
+  return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, comparableCalls, actions, argvCalls, tokenFiles, tempEntries: fs.readdirSync(tempRoot) };
 }
 
 beforeAll(async () => {
@@ -189,11 +220,12 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, "bin", "docker"), STUB_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "mktemp"), STUB_MKTEMP, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "curl"), STUB_CURL, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "sleep"), '#!/bin/bash\necho "sleep $*" >> "$VU_LOG"\nexit 0\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, "agent.env"), "AGENT_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
-  fs.writeFileSync(path.join(dir, "runner.env"), "RUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
-  fs.writeFileSync(path.join(dir, "both.env"), "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
+  fs.writeFileSync(path.join(dir, "agent.env"), "EVAL_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
+  fs.writeFileSync(path.join(dir, "runner.env"), "CLASH_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
+  fs.writeFileSync(path.join(dir, "both.env"), "EVAL_TOKEN=evtest\nCLASH_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
   sock = path.join(dir, "dialfd.sock");
   sockServer = net.createServer().listen(sock);
   await new Promise((r) => sockServer.once("listening", r));
@@ -214,8 +246,9 @@ describe("hosts WITHOUT DialF: positional and explicit commands keep the same co
       expect(after.status).toBe(0);
       expect(after.actions).toEqual(env.RUNNING_IMAGE === env.LATEST_IMAGE ? [] : ["stop", "rm", "run"]);
       expect(after.actions).toEqual(before.actions);
-      const runOf = (r: typeof after) => r.calls.find((c) => c.startsWith("docker run"));
+      const runOf = (r: typeof after) => r.argvCalls.find((args) => args[0] === "run")?.map((arg, index, args) => args[index - 1] === "--env-file" ? "<private-env-file>" : arg);
       expect(runOf(after)).toEqual(runOf(before));
+      expect(after.tokenFiles.map((file) => file.content)).toEqual(before.tokenFiles.map((file) => file.content));
       expect(after.out).not.toMatch(/WARNING|Restart required|recreat|Continue|\(y\/n\)/);
     });
   }
@@ -393,15 +426,120 @@ describe("version-independent legacy discovery", () => {
   });
 });
 
+describe("token-selected services", () => {
+  it.each([
+    { contents: "EVAL_TOKEN=evtest\n", components: ["vox-eval-agentd"] },
+    { contents: "EVAL_TOKEN=evtest\nCLASH_TOKEN=\n", components: ["vox-eval-agentd"] },
+    { contents: "CLASH_TOKEN=crtest\n", components: ["vox-clash-runner"] },
+    { contents: "CLASH_TOKEN=crtest\nEVAL_TOKEN=\n", components: ["vox-clash-runner"] },
+    { contents: "EVAL_TOKEN=evtest\nCLASH_TOKEN=crtest\n", components: ["vox-clash-runner", "vox-eval-agentd"] },
+    { contents: "", components: [] },
+    { contents: "EVAL_TOKEN=\nCLASH_TOKEN=\n", components: [] },
+    { contents: "AGENT_TOKEN=legacy-eval\nRUNNER_TOKEN=legacy-clash\n", components: [] },
+  ])("only manages services selected by nonempty new token inputs (%j)", ({ contents, components }) => {
+    const envFile = path.join(dir, "selected-services.env");
+    fs.writeFileSync(envFile, contents);
+    const r = upgrade({}, { defaultEnv: true, args: ["--env", envFile, "--force"], containers: [
+      { id: "eval", name: "vox-eval-agentd", ref: "ghcr.io/agora-build/vox-eval-agentd:old", env: ["AGENT_TOKEN=evtest"] },
+      { id: "clash", name: "vox-clash-runner", ref: "ghcr.io/agora-build/vox-clash-runner:old", env: ["RUNNER_TOKEN=crtest"] },
+    ] });
+    expect(r.status).toBe(0);
+    expect(r.argvCalls.filter((args) => args[0] === "run").map((args) => args[args.indexOf("--name") + 1]).sort()).toEqual(components);
+    expect(r.argvCalls.filter((args) => args[0] === "pull").map((args) => args[1]).sort()).toEqual(components.map((component) => `ghcr.io/agora-build/${component}:latest`));
+    expect(r.argvCalls.filter((args) => args[0] === "stop" || args[0] === "rm").every((args) => components.includes(args[1] === "eval" ? "vox-eval-agentd" : "vox-clash-runner"))).toBe(true);
+    if (components.length === 0) {
+      expect(r.calls).toEqual([]);
+      expect(r.out).toContain("Sample .env");
+    }
+    expect(r.tempEntries).toEqual([]);
+  });
+});
+
+describe("private Docker credential files", () => {
+  it.each([false, true])("keeps token values out of argv with mode 0600 even under umask 000 (runner: %s)", (runner) => {
+    const tokenName = runner ? "CLASH_TOKEN" : "EVAL_TOKEN";
+    const runtimeName = runner ? "RUNNER_TOKEN" : "AGENT_TOKEN";
+    const token = "  private * [xy] ' \" $literal --privileged \\ trailing  ";
+    const envFile = path.join(dir, `private-token-${runner}.env`);
+    fs.writeFileSync(envFile, `${tokenName}=${shellValue(token)}\n`);
+    const r = upgrade({ RUNNING_ID: "abc", TMPDIR: path.join(dir, `private temp ${runner}`) }, { runner, defaultEnv: true, args: ["--env", envFile], permissiveUmask: true });
+    expect(r.status).toBe(0);
+    expect(r.tokenFiles).toHaveLength(1);
+    expect(r.tokenFiles[0].content).toBe(`${runtimeName}=${token}\n`);
+    expect(r.tokenFiles[0].mode).toBe("600");
+    expect(r.tokenFiles[0].directoryMode).toBe("700");
+    expect(r.argvCalls.find((args) => args[0] === "run")).toContain("--env-file");
+    expect(r.argvCalls.flat().some((arg) => arg.includes(token) || /^(EVAL_TOKEN|CLASH_TOKEN|AGENT_TOKEN|RUNNER_TOKEN)=/.test(arg))).toBe(false);
+    expect(r.calls.join("\n")).not.toContain(token);
+    expect(r.out).not.toContain(token);
+    expect(fs.existsSync(r.tokenFiles[0].path)).toBe(false);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("gives each component only its own token and cleans both files", () => {
+    const r = upgrade({ RUNNING_ID: "abc" }, { both: true });
+    expect(r.status).toBe(0);
+    expect(r.tokenFiles.map((file) => file.content).sort()).toEqual(["AGENT_TOKEN=evtest\n", "RUNNER_TOKEN=crtest\n"]);
+    expect(new Set(r.tokenFiles.map((file) => file.path)).size).toBe(2);
+    expect(r.argvCalls.flat().some((arg) => /^(EVAL_TOKEN|CLASH_TOKEN|AGENT_TOKEN|RUNNER_TOKEN)=/.test(arg))).toBe(false);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it.each([{ RUN_FAIL: "1" }, { RUN_SIGNAL: "TERM" }, { RUN_SIGNAL: "INT" }])("cleans credential files after Docker failure or interruption (%j)", (failure) => {
+    const r = upgrade({ RUNNING_ID: "abc", ...failure }, { both: true });
+    expect(r.status).not.toBe(0);
+    expect(r.tokenFiles).toHaveLength(1);
+    expect(fs.existsSync(r.tokenFiles[0].path)).toBe(false);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("cleans credential files when both replacements are skipped", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, { both: true });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.tokenFiles).toEqual([]);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("a temp-directory failure never stops an existing container", () => {
+    const r = upgrade({ RUNNING_ID: "abc", ENV_TEMP_FAIL: "1" }, { both: true, args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("cannot create private container env directory");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("a credential-file write failure never stops an existing container", () => {
+    const bashEnv = path.join(dir, "fail-token-write.sh");
+    fs.writeFileSync(bashEnv, 'printf() { case "${2:-}" in AGENT_TOKEN=*|RUNNER_TOKEN=*) return 1 ;; *) builtin printf "$@" ;; esac; }\n');
+    const r = upgrade({ RUNNING_ID: "abc", BASH_ENV: bashEnv }, { both: true, args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("cannot write private container env file");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it.each([false, true].flatMap((runner) => ["\n", "\r"].map((separator) => [runner, separator] as const)))("rejects line breaks in credentials before any Docker call (runner: %s, separator: %j)", (runner, separator) => {
+    const tokenName = runner ? "CLASH_TOKEN" : "EVAL_TOKEN";
+    const envFile = path.join(dir, `multiline-token-${runner}.env`);
+    fs.writeFileSync(envFile, `${tokenName}=${shellValue(`token${separator}INJECTED=value`)}\n`);
+    const r = upgrade({ RUNNING_ID: "abc" }, { runner, defaultEnv: true, args: ["--env", envFile, "--force"] });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain(`${tokenName} must not contain line breaks`);
+    expect(r.out).not.toContain("INJECTED");
+    expect(r.tempEntries).toEqual([]);
+  });
+});
+
 describe("Docker argument boundaries and runtime preflight", () => {
-  const shellValue = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
   it.each([false, true])("preserves whitespace, globs, quotes, newlines and option-like text as literal env values (runner: %s)", (runner) => {
-    const tokenName = runner ? "RUNNER_TOKEN" : "AGENT_TOKEN";
+    const tokenName = runner ? "CLASH_TOKEN" : "EVAL_TOKEN";
     const values = {
-      [tokenName]: "token with spaces\t* [xy] ' \" --privileged\nnext-line",
+      [tokenName]: "token with spaces\t* [xy] ' \" --privileged",
       VOX_SERVER: "https://vox.example.test/path with space?x=* &y=[abc] --privileged",
-      VOX_AGENT_NAME: "* [xy] ' \" --privileged --mount=type=bind,src=/,dst=/host",
+      VOX_AGENT_NAME: "* [xy] ' \" --privileged --mount=type=bind,src=/,dst=/host\nnext-line",
       LOCAL_DEBUG: "debug * --privileged", HEADLESS: "false --network host",
     };
     const envFile = path.join(dir, `literal-${runner}.env`);
@@ -411,8 +549,12 @@ describe("Docker argument boundaries and runtime preflight", () => {
     expect(r.status).toBe(0);
     const run = r.argvCalls.find((args) => args[0] === "run")!;
     const envValues = run.filter((_, index) => run[index - 1] === "-e");
-    for (const [key, value] of Object.entries(values)) expect(envValues).toContain(`${key}=${value}`);
-    expect(envValues).toHaveLength(Object.keys(values).length + 1);
+    for (const [key, value] of Object.entries(values)) {
+      if (key === tokenName) expect(r.tokenFiles[0].content).toBe(`${runner ? "RUNNER_TOKEN" : "AGENT_TOKEN"}=${value}\n`);
+      else expect(envValues).toContain(`${key}=${value}`);
+    }
+    expect(envValues).toHaveLength(Object.keys(values).length);
+    expect(run.join("\n")).not.toContain(values[tokenName]);
     expect(run).not.toContain("--privileged");
     expect(run).not.toContain("--network");
     expect(run.some((arg) => arg.startsWith("--mount="))).toBe(false);
@@ -443,11 +585,11 @@ describe("Docker argument boundaries and runtime preflight", () => {
     const runs = r.argvCalls.filter((args) => args[0] === "run");
     const agent = runs.find((args) => args.at(-1) === AGENT_REF)!;
     const runner = runs.find((args) => args.at(-1) === RUNNER_REF)!;
-    expect(agent).toContain("AGENT_TOKEN=evtest");
+    expect(r.tokenFiles.find((file) => file.path.endsWith("vox-eval-agentd.env"))?.content).toBe("AGENT_TOKEN=evtest\n");
     expect(agent).toContain("-v");
-    expect(runner).toContain("RUNNER_TOKEN=crtest");
+    expect(r.tokenFiles.find((file) => file.path.endsWith("vox-clash-runner.env"))?.content).toBe("RUNNER_TOKEN=crtest\n");
     expect(runner).not.toContain("-v");
-    expect(runner.some((arg) => /^(AGENT_TOKEN|VOX_DIALF_|VOX_LINK_TYPE)=/.test(arg))).toBe(false);
+    expect(runner.some((arg) => /^(EVAL_TOKEN|AGENT_TOKEN|VOX_DIALF_|VOX_LINK_TYPE)=/.test(arg))).toBe(false);
   });
 
   it.each(["no", "always", "unless-stopped", "on-failure", "on-failure:0", "on-failure:3", "on-failure:0003", "on-failure:9223372036854775807"])("validates and forwards restart policy %s", (policy) => {
@@ -471,7 +613,7 @@ describe("Docker argument boundaries and runtime preflight", () => {
 
   it("validates the policy loaded from the env file, not only the inherited environment", () => {
     const envFile = path.join(dir, "invalid-restart.env");
-    fs.writeFileSync(envFile, "AGENT_TOKEN=evtest\nRESTART_POLICY=invalid\n");
+    fs.writeFileSync(envFile, "EVAL_TOKEN=evtest\nRESTART_POLICY=invalid\n");
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, RESTART_POLICY: "always" }, { defaultEnv: true, args: ["--env", envFile] });
     expect(r.status).toBe(1);
     expect(r.calls).toEqual([]);
@@ -481,7 +623,7 @@ describe("Docker argument boundaries and runtime preflight", () => {
 describe("maintenance opt-out", () => {
   it.each([false, true])("VOX_INSTANCE_DISABLED=true in the env file prevents every Docker operation (force: %s)", (force) => {
     const envFile = path.join(dir, "disabled.env");
-    fs.writeFileSync(envFile, "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nVOX_INSTANCE_DISABLED=true\nRESTART_POLICY=invalid\n");
+    fs.writeFileSync(envFile, "EVAL_TOKEN=evtest\nCLASH_TOKEN=crtest\nVOX_INSTANCE_DISABLED=true\nRESTART_POLICY=invalid\n");
     const r = upgrade({ RUNNING_ID: "abc", DOCKER_STATES: "exited" }, { both: true, defaultEnv: true, args: ["--env", envFile, ...(force ? ["--force"] : [])] });
     expect(r.status).toBe(0);
     expect(r.calls).toEqual([]);
@@ -737,7 +879,7 @@ describe("Docker-assigned loopback health ports", () => {
 
   it("loads a custom internal port from the selected env file for both components", () => {
     const envFile = path.join(dir, "custom-health.env");
-    fs.writeFileSync(envFile, "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nHEALTH_PORT=8123\n");
+    fs.writeFileSync(envFile, "EVAL_TOKEN=evtest\nCLASH_TOKEN=crtest\nHEALTH_PORT=8123\n");
     const r = upgrade({ RUNNING_ID: "abc" }, { both: true, defaultEnv: true, args: ["--env", envFile] });
     expect(r.status).toBe(0);
     const runs = r.calls.filter((call) => call.startsWith("docker run"));
@@ -777,7 +919,7 @@ describe("install/upgrade command dispatch", () => {
     const explicit = upgrade(env, { command: true, defaultEnv: true });
     expect(implicit.status).toBe(0);
     expect(explicit.status).toBe(0);
-    expect(implicit.calls).toEqual(explicit.calls);
+    expect(implicit.comparableCalls).toEqual(explicit.comparableCalls);
   });
 
   it("no arguments install latest on a new host using .env in the current directory", () => {
@@ -787,7 +929,7 @@ describe("install/upgrade command dispatch", () => {
     expect(r.actions).toEqual(["run"]);
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
     const run = r.calls.find((call) => call.startsWith("docker run"));
-    expect(run).toContain("AGENT_TOKEN=evtest");
+    expect(r.tokenFiles[0].content).toBe("AGENT_TOKEN=evtest\n");
     expect(run).toContain("VOX_SERVER=http://localhost:5000");
     expect(run?.endsWith(` ${AGENT_REF}`)).toBe(true);
   });
@@ -795,7 +937,7 @@ describe("install/upgrade command dispatch", () => {
   it.each([false, true])("--env selects the specified file with spaces (implicit command: %s)", (implicit) => {
     const envFile = path.join(dir, "agent config.env");
     fs.copyFileSync(path.join(dir, "agent.env"), envFile);
-    fs.writeFileSync(path.join(dir, ".env"), "RUNNER_TOKEN=wrong-default\n");
+    fs.writeFileSync(path.join(dir, ".env"), "CLASH_TOKEN=wrong-default\n");
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, {
       defaultEnv: true, command: !implicit, args: ["--env", envFile],
     });
@@ -815,7 +957,7 @@ describe("install/upgrade command dispatch", () => {
   it("positional env-file invocations still match vox_agent for agents and runners", () => {
     for (const runner of [false, true]) {
       const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD, LATEST_IMAGE: IMAGE_NEW };
-      expect(upgrade(env, { runner }).calls).toEqual(upgrade(env, { runner, command: true }).calls);
+      expect(upgrade(env, { runner }).comparableCalls).toEqual(upgrade(env, { runner, command: true }).comparableCalls);
     }
   });
 });
@@ -899,8 +1041,8 @@ describe("selected Docker image versions and rollback", () => {
     expect(beforeEnv.status).toBe(0);
     expect(equals.status).toBe(0);
     expect(implicit.status).toBe(0);
-    expect(beforeEnv.calls).toEqual(equals.calls);
-    expect(implicit.calls).toEqual(equals.calls);
+    expect(beforeEnv.comparableCalls).toEqual(equals.comparableCalls);
+    expect(implicit.comparableCalls).toEqual(equals.comparableCalls);
   });
 
   it("an unavailable version leaves the existing container untouched", () => {

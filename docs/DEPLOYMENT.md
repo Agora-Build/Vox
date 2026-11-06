@@ -522,7 +522,7 @@ node dist/migrate.cjs
 
 Vox itself is one container, but a full deployment also runs:
 
-- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-manager.sh [vox_agent] [--env env-file]` (reads `AGENT_TOKEN` and `VOX_SERVER` from an env file; see the README). With no arguments, it uses `vox_agent`, `latest`, and `.env` in the current working directory. Use `scripts/vox-manager.sh self` to update only the local script; it does not read the env file, require Docker or change running containers. `vox` server management is reserved and fails explicitly as unsupported. Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours. `vox-manager.sh` also detects the host's network link (wifi/ethernet/cellular) and passes it to the container as `VOX_LINK_TYPE` — a container only sees its own veth, not the host's NIC, so this is how `link` is reported at all for a Dockerized agent. Set `VOX_LINK_TYPE` by hand only for an agent not upgraded through that script (e.g. a manual `docker run`); an unrecognized value is ignored, not an error. The value is baked into the container when `vox-manager.sh` creates it and is refreshed only when the script recreates the container — after a host changes its link (e.g. moves from Ethernet to Wi-Fi or a cellular modem), re-run `vox-manager.sh`, or set `VOX_LINK_TYPE` by hand. Without it, a containerized agent reports no `link` at all: inside the container the default route is a virtual veth with nothing behind it to detect.
+- **Eval agents** — run the evals, on hosts in each region. Install and upgrade with `scripts/vox-manager.sh [vox_agent] [--env env-file]` (reads `EVAL_TOKEN` and `VOX_SERVER` from an env file; see the README). With no arguments, it uses `vox_agent`, `latest`, and `.env` in the current working directory. Use `scripts/vox-manager.sh self` to update only the local script; it does not read the env file, require Docker or change running containers. `vox` server management is reserved and fails explicitly as unsupported. Agents also run **Tools → Analyze** (uploaded recordings): an agent takes those only once it reports the `analyze` capability, which the agent image does from the release that added Analyze. Upgrade the public agents with that release, or uploads stay queued and fail after 24 hours. `vox-manager.sh` also detects the host's network link (wifi/ethernet/cellular) and passes it to the container as `VOX_LINK_TYPE` — a container only sees its own veth, not the host's NIC, so this is how `link` is reported at all for a Dockerized agent. Set `VOX_LINK_TYPE` by hand only for an agent not upgraded through that script (e.g. a manual `docker run`); an unrecognized value is ignored, not an error. The value is baked into the container when `vox-manager.sh` creates it and is refreshed only when the script recreates the container — after a host changes its link (e.g. moves from Ethernet to Wi-Fi or a cellular modem), re-run `vox-manager.sh`, or set `VOX_LINK_TYPE` by hand. Without it, a containerized agent reports no `link` at all: inside the container the default route is a virtual veth with nothing behind it to detect.
 - **Auth-session broker** and **REST broker** — sidecars (Dockerfile targets `broker` and `rest-broker` in `vox_eval_agentd/Dockerfile`) that log in to target sites and make API calls on behalf of evals, so credentials never reach an eval agent. Each registers with Vox using `VOX_CORE_URL` and a `BROKER_REG_TOKEN` minted in **Console → Brokers**, and must be reachable only on the internal network. `BROKER_ADVERTISE_URL` is the address **Vox** uses to call the broker, so it must resolve from the Vox container: on Coolify that is the broker's network alias, not its application UUID. Vox checks it when the broker registers and every minute after; **Console → Brokers** shows the result in the **From Core** column, with the reason when it can't connect.
 
 ### Selecting an agent image / rollback
@@ -555,6 +555,24 @@ automatic failed-start rollback or a Core database downgrade; check old image
 compatibility with the current server and host services first.
 
 ### Upgrade health checks and ports
+
+Manager env-file inputs are `EVAL_TOKEN` (eval service) and `CLASH_TOKEN` (Clash).
+Rename the old `AGENT_TOKEN`/`RUNNER_TOKEN` keys in manager env files; they are not
+selection aliases. Missing/empty tokens leave the corresponding service untouched;
+both missing is a successful no-op without Docker calls. The manager maps the new
+inputs to existing images' internal runtime names, preserving rollback and legacy
+discovery without an agent upgrade. Missing/unloadable env files, no tokens or
+invalid configuration print a placeholder-only sample without saving it or exposing
+configured values. The env file remains Bash-sourced; use trusted `KEY=value`
+assignments, quoting values with whitespace.
+
+Each selected service receives its token through a `0600` temporary `--env-file`
+inside a `0700` directory, rather than through Docker process arguments. All token
+files are prepared before any container is stopped. They are removed after use or
+on normal/error exit and INT/TERM; SIGKILL or power loss cannot run cleanup, but
+the files remain owner-only. CR/LF tokens are rejected before Docker calls. Docker
+access, root or the same OS account can still expose container credentials; this
+hardening is not a secrets boundary against those principals.
 
 Before a maintenance stop, set `VOX_INSTANCE_DISABLED=true` in that instance's env
 file. This is an explicit opt-out from all container management, including

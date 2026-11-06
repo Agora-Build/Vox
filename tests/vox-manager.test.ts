@@ -141,16 +141,20 @@ describe("management command dispatch", () => {
     const result = run(["vox_agent", "--env", "/missing/agent.env"]);
     expect(result.status).toBe(1);
     expect(result.out).toContain("env file not found: /missing/agent.env");
+    expect(result.out).toContain("Sample .env");
+    expect(result.out).toContain("EVAL_TOKEN=your-eval-agent-token");
+    expect(result.out).toContain("CLASH_TOKEN=your-clash-runner-token");
     expect(result.calls).toBe("");
     expect(fs.existsSync(executed)).toBe(false);
   });
 
-  it("an env file without tokens produces a clear error before Docker", () => {
+  it("an env file without tokens is a successful no-op before Docker", () => {
     const envFile = path.join(dir, "empty.env");
     fs.writeFileSync(envFile, "");
     const result = run(["vox_agent", "--env", envFile]);
-    expect(result.status).toBe(1);
-    expect(result.out).toContain("No AGENT_TOKEN or RUNNER_TOKEN");
+    expect(result.status).toBe(0);
+    expect(result.out).toContain("No EVAL_TOKEN or CLASH_TOKEN");
+    expect(result.out).toContain("Sample .env");
     expect(result.calls).toBe("");
   });
 
@@ -158,10 +162,50 @@ describe("management command dispatch", () => {
     fs.writeFileSync(path.join(dir, ".env"), "");
     fs.writeFileSync(path.join(dir, "bin", ".env"), 'touch "$VM_EXECUTED"\nexit 99\n');
     const result = run([]);
-    expect(result.status).toBe(1);
-    expect(result.out).toContain("No AGENT_TOKEN or RUNNER_TOKEN");
+    expect(result.status).toBe(0);
+    expect(result.out).toContain("No EVAL_TOKEN or CLASH_TOKEN");
     expect(result.calls).toBe("");
     expect(fs.existsSync(executed)).toBe(false);
+  });
+
+  it("a missing default .env prints a sample without creating a file", () => {
+    fs.unlinkSync(path.join(dir, ".env"));
+    const result = run([]);
+    expect(result.status).toBe(1);
+    expect(result.out).toContain("Sample .env");
+    expect(result.out).toContain("EVAL_TOKEN=your-eval-agent-token");
+    expect(result.out).toContain("CLASH_TOKEN=your-clash-runner-token");
+    expect(fs.existsSync(path.join(dir, ".env"))).toBe(false);
+    expect(result.calls).toBe("");
+  });
+
+  it.each([
+    "EVAL_TOKEN='secret-not-for-output\n",
+    "EVAL_TOKEN = secret-not-for-output\nCLASH_TOKEN=crtest\n",
+    "EVAL_TOKEN=${MISSING_TOKEN:?secret-not-for-output}\n",
+    "EVAL_TOKEN=evtest\nprintf secret-not-for-output\nfalse\n",
+  ])("invalid env syntax or failed loading prints a safe sample before Docker (%j)", (contents) => {
+    const envFile = path.join(dir, "invalid.env");
+    fs.writeFileSync(envFile, contents);
+    const result = run(["--env", envFile]);
+    expect(result.status).toBe(1);
+    expect(result.out).toContain("Sample .env");
+    expect(result.out).toContain("EVAL_TOKEN=your-eval-agent-token");
+    expect(result.out).toContain("CLASH_TOKEN=your-clash-runner-token");
+    expect(result.out).not.toContain("secret-not-for-output");
+    expect(result.calls).toBe("");
+  });
+
+  it.each([
+    "VOX_INSTANCE_DISABLED=invalid", "RESTART_POLICY=invalid", "HEALTH_PORT=invalid",
+  ])("invalid configuration %s prints a sample without exposing the token", (setting) => {
+    const envFile = path.join(dir, "invalid-setting.env");
+    fs.writeFileSync(envFile, `EVAL_TOKEN=secret-not-for-output\n${setting}\n`);
+    const result = run(["--env", envFile]);
+    expect(result.status).toBe(1);
+    expect(result.out).toContain("Sample .env");
+    expect(result.out).not.toContain("secret-not-for-output");
+    expect(result.calls).toBe("");
   });
 });
 

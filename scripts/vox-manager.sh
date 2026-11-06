@@ -3,7 +3,7 @@
 #
 # Install, upgrade or roll back vox-eval-agentd and/or vox-clash-runner containers.
 #
-# AGENT_TOKEN selects vox-eval-agentd; RUNNER_TOKEN selects vox-clash-runner.
+# EVAL_TOKEN selects vox-eval-agentd; CLASH_TOKEN selects vox-clash-runner.
 #
 # Busy/unknown health requires confirmation after 5 minutes; --force bypasses it.
 # VOX_INSTANCE_DISABLED=true skips container management, even with --force.
@@ -33,8 +33,29 @@ usage() {
     echo "  self       Update this script from the official Vox main branch; no Docker or .env needed."
     echo "  vox        Vox server installation/upgrade is not supported yet."
     echo "  No arguments installs/upgrades vox_agent using latest images and .env in the current directory."
+    echo "  EVAL_TOKEN selects eval; CLASH_TOKEN selects Clash. Missing/empty tokens leave that service untouched."
     echo "  A positional env-file path is still accepted for compatibility."
     echo "  Maintenance: VOX_INSTANCE_DISABLED=true in the env file skips all container operations, even with --force."
+}
+
+print_env_sample() {
+    printf '%s\n' \
+        'Sample .env (placeholders only; no file is created):' \
+        '# Omit or leave a token empty to leave that service untouched.' \
+        'EVAL_TOKEN=your-eval-agent-token' \
+        'CLASH_TOKEN=your-clash-runner-token' \
+        'VOX_SERVER=https://vox.agora.build' \
+        'VOX_INSTANCE_DISABLED=false' \
+        'RESTART_POLICY=unless-stopped' \
+        'HEALTH_PORT=8099' \
+        '' \
+        'Use KEY=value assignments; quote values containing spaces. Keep .env private (chmod 600 .env).'
+}
+
+env_config_error() {
+    echo "Error: $1" >&2
+    print_env_sample >&2
+    exit 1
 }
 
 print_manager_update_commands() {
@@ -192,17 +213,23 @@ POLL_INTERVAL=10
 ENV_FILE="${manager_env_file:-.env}"
 
 if [ ! -f "$ENV_FILE" ]; then
-    echo "Error: env file not found: $ENV_FILE"
-    usage
-    exit 1
+    env_config_error "env file not found: $ENV_FILE"
 fi
 
 # Explicit relative paths keep Bash from searching PATH for an env file.
 if [[ "$ENV_FILE" != */* ]]; then ENV_FILE="./$ENV_FILE"; fi
 
+if ! bash -n -- "$ENV_FILE" 2>/dev/null; then
+    env_config_error "invalid env-file syntax; expected KEY=value assignments."
+fi
+# Preserve a diagnostic stream if sourcing fails while its output is suppressed.
+exec {manager_config_error_fd}>&2
+trap 'env_config_error "cannot load env file; expected KEY=value assignments." >&"$manager_config_error_fd" 2>&1' EXIT
 set -a
-source "$ENV_FILE"
+source "$ENV_FILE" >/dev/null 2>&1
 set +a
+trap - EXIT
+exec {manager_config_error_fd}>&-
 
 case "${VOX_INSTANCE_DISABLED:-false}" in
     true|1)
@@ -210,14 +237,28 @@ case "${VOX_INSTANCE_DISABLED:-false}" in
         exit 0
         ;;
     false|0) ;;
-    *) echo "Error: VOX_INSTANCE_DISABLED must be true, false, 1 or 0. No containers were changed." >&2; exit 1 ;;
+    *) env_config_error "VOX_INSTANCE_DISABLED must be true, false, 1 or 0. No containers were changed." ;;
 esac
+
+if [ -z "${EVAL_TOKEN:-}${CLASH_TOKEN:-}" ]; then
+    echo "No EVAL_TOKEN or CLASH_TOKEN configured; nothing to manage."
+    if [ -n "${AGENT_TOKEN:-}${RUNNER_TOKEN:-}" ]; then
+        echo "Manager input names changed: use EVAL_TOKEN instead of AGENT_TOKEN, and CLASH_TOKEN instead of RUNNER_TOKEN."
+    fi
+    print_env_sample
+    exit 0
+fi
+
+for token_name in EVAL_TOKEN CLASH_TOKEN; do
+    if [[ "${!token_name:-}" = *$'\n'* || "${!token_name:-}" = *$'\r'* ]]; then
+        env_config_error "$token_name must not contain line breaks. No containers were changed."
+    fi
+done
 
 # Validate before any Docker operation, including same-image policy updates.
 RESTART_POLICY="${RESTART_POLICY:-unless-stopped}"
 if [[ ! "$RESTART_POLICY" =~ ^(no|always|unless-stopped|on-failure(:[0-9]+)?)$ ]]; then
-    echo "Error: RESTART_POLICY must be no, always, unless-stopped, or on-failure[:N]. No containers were changed." >&2
-    exit 1
+    env_config_error "RESTART_POLICY must be no, always, unless-stopped, or on-failure[:N]. No containers were changed."
 fi
 if [[ "$RESTART_POLICY" = on-failure:* ]]; then
     restart_retries="${RESTART_POLICY#on-failure:}"
@@ -225,16 +266,14 @@ if [[ "$RESTART_POLICY" = on-failure:* ]]; then
     restart_retries="${restart_retries:-0}"
     if [ "${#restart_retries}" -gt 19 ] ||
         { [ "${#restart_retries}" -eq 19 ] && [[ "$restart_retries" > 9223372036854775807 ]]; }; then
-        echo "Error: RESTART_POLICY retry count exceeds Docker's integer limit. No containers were changed." >&2
-        exit 1
+        env_config_error "RESTART_POLICY retry count exceeds Docker's integer limit. No containers were changed."
     fi
     RESTART_POLICY="on-failure:$restart_retries"
 fi
 
 HEALTH_PORT="${HEALTH_PORT:-8099}"
 if [[ ! "$HEALTH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$HEALTH_PORT" -gt 65535 ]; then
-    echo "Error: HEALTH_PORT must be an integer from 1 to 65535." >&2
-    exit 1
+    env_config_error "HEALTH_PORT must be an integer from 1 to 65535."
 fi
 
 VOX_SERVER="${VOX_SERVER:-https://vox.agora.build}"
@@ -244,24 +283,14 @@ image_separator=:
 
 declare -A images=()
 
-if [ -n "${AGENT_TOKEN:-}" ]; then
+if [ -n "${EVAL_TOKEN:-}" ]; then
     images["vox-eval-agentd"]="${REGISTRY}/vox-eval-agentd${image_separator}${manager_version}"
-    echo "Found AGENT_TOKEN - will install/upgrade vox-eval-agentd"
+    echo "Found EVAL_TOKEN - will install/upgrade vox-eval-agentd"
 fi
 
-if [ -n "${RUNNER_TOKEN:-}" ]; then
+if [ -n "${CLASH_TOKEN:-}" ]; then
     images["vox-clash-runner"]="${REGISTRY}/vox-clash-runner${image_separator}${manager_version}"
-    echo "Found RUNNER_TOKEN - will install/upgrade vox-clash-runner"
-fi
-
-if [ ${#images[@]} -eq 0 ]; then
-    echo "Error: No AGENT_TOKEN or RUNNER_TOKEN found in $ENV_FILE"
-    echo ""
-    echo "Expected .env format:"
-    echo "  AGENT_TOKEN=ev74a4...    # for vox-eval-agentd"
-    echo "  RUNNER_TOKEN=cr8bbd...   # for vox-clash-runner"
-    echo "  VOX_SERVER=https://vox.agora.build"
-    exit 1
+    echo "Found CLASH_TOKEN - will install/upgrade vox-clash-runner"
 fi
 
 echo "-----------------------------------"
@@ -544,9 +573,12 @@ official_image_ref() {
 # metadata. Never use the newly selected version to identify an old container.
 discover_container() {
     local component="$1" repo="${REGISTRY}/$1" id metadata recorded image_id state alias aliases container_env
-    local named="" repository_match bare_id token_name
+    local named="" repository_match bare_id token_name container_token_name
     local -a fields=() live=() inactive=()
-    case "$component" in vox-eval-agentd) token_name=AGENT_TOKEN ;; *) token_name=RUNNER_TOKEN ;; esac
+    case "$component" in
+        vox-eval-agentd) token_name=EVAL_TOKEN; container_token_name=AGENT_TOKEN ;;
+        *) token_name=CLASH_TOKEN; container_token_name=RUNNER_TOKEN ;;
+    esac
     while IFS= read -r id; do
         [ -n "$id" ] || continue
         if ! metadata=$(docker inspect --format '{{.Name}}{{println}}{{.Config.Image}}{{println}}{{.Image}}{{println}}{{.State.Status}}' "$id"); then
@@ -590,7 +622,7 @@ discover_container() {
             echo "Error: cannot check legacy container $id credentials. No containers were changed." >&2
             return 1
         fi
-        if [[ $'\n'"$container_env"$'\n' != *$'\n'"$token_name=${!token_name}"$'\n'* ]]; then
+        if [[ $'\n'"$container_env"$'\n' != *$'\n'"$container_token_name=${!token_name}"$'\n'* ]]; then
             continue
         fi
         if [ -z "$repository_match" ]; then
@@ -668,6 +700,33 @@ for name in "${!images[@]}"; do
     fi
     target_refs[$name]="$pinned_image"
     echo "Verified $image ($pinned_image -> $selected_image_id)"
+done
+
+# Prepare credentials before stopping anything; never put token values in argv.
+manager_env_dir=""
+cleanup_container_env() {
+    if [ -n "$manager_env_dir" ]; then
+        rm -f -- "$manager_env_dir/vox-eval-agentd.env" "$manager_env_dir/vox-clash-runner.env"
+        rmdir -- "$manager_env_dir"
+    fi
+}
+trap cleanup_container_env EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if ! manager_env_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/vox-manager-env.XXXXXX"); then
+    echo "Error: cannot create private container env directory. No containers were changed." >&2
+    exit 1
+fi
+declare -A token_env_files=()
+for name in "${!images[@]}"; do
+    token_env_files[$name]="$manager_env_dir/$name.env"
+    # Existing images retain their runtime env names, including rollback versions.
+    if [ "$name" = vox-eval-agentd ]; then token_name=EVAL_TOKEN; container_token_name=AGENT_TOKEN
+    else token_name=CLASH_TOKEN; container_token_name=RUNNER_TOKEN; fi
+    if ! (umask 077; printf '%s\n' "$container_token_name=${!token_name}" > "${token_env_files[$name]}"); then
+        echo "Error: cannot write private container env file. No containers were changed." >&2
+        exit 1
+    fi
 done
 
 for name in "${!images[@]}"; do
@@ -802,8 +861,6 @@ for name in "${!images[@]}"; do
     fi
 
     env_args=(-e "HEALTH_PORT=$HEALTH_PORT" -e "VOX_SERVER=$VOX_SERVER")
-    if [ "$name" = vox-eval-agentd ]; then env_args+=(-e "AGENT_TOKEN=$AGENT_TOKEN")
-    else env_args+=(-e "RUNNER_TOKEN=$RUNNER_TOKEN"); fi
 
     [ -n "${LOCAL_DEBUG:-}" ] && env_args+=(-e "LOCAL_DEBUG=$LOCAL_DEBUG")
     [ -n "${HEADLESS:-}" ] && env_args+=(-e "HEADLESS=$HEADLESS")
@@ -895,7 +952,9 @@ for name in "${!images[@]}"; do
     # Pin the verified image and let Docker assign a loopback-only health port.
     new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" --pull=never \
         --label "org.agora.vox.image=$image" --label "org.agora.vox.version=$manager_version" \
-        -p "127.0.0.1::${HEALTH_PORT}" "${device_args[@]}" "${mount_args[@]}" "${env_args[@]}" "$pinned_image")
+        -p "127.0.0.1::${HEALTH_PORT}" "${device_args[@]}" "${mount_args[@]}" \
+        --env-file "${token_env_files[$name]}" "${env_args[@]}" "$pinned_image")
+    rm -f -- "${token_env_files[$name]}"
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id ($image -> $selected_image_id)"
