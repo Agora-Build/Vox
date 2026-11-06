@@ -71,6 +71,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       }
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
+      await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
+      await expect(page.getByTestId("strict-network-info")).toContainText("Health checks currently cover network monitoring and detected network changes only. CPU and memory checks are not yet available.");
+      await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       await toggle.click();
       await expect(toggle).toBeChecked();
@@ -227,6 +230,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByTestId("metrics-tag-filter-chip-access")).toHaveCount(0);
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
+      await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
+      await expect(page.getByTestId("strict-network-info")).toContainText("Health checks currently cover network monitoring and detected network changes only. CPU and memory checks are not yet available.");
+      await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
       expect(await page.locator("body").evaluate((element) => element.scrollWidth <= window.innerWidth)).toBe(true);

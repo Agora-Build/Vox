@@ -3,8 +3,8 @@ import { test, expect, APIRequestContext } from "@playwright/test";
 /**
  * Stripe Integration E2E Tests
  *
- * Full integration tests for Stripe payment processing.
- * Uses Stripe test mode with real API keys.
+ * Billing configuration and UI contracts with optional Stripe test-mode keys.
+ * Reading public configuration does not validate a key with Stripe.
  */
 
 // Stripe test card numbers (for reference in manual testing)
@@ -23,31 +23,35 @@ const DECLINED_CARD = {
 };
 
 test.describe("Stripe Integration (Public)", () => {
-  test("should show Stripe is enabled", async ({ request }) => {
+  test("reports whether Stripe is configured in the test environment", async ({ request }) => {
     const response = await request.get("/api/payments/stripe-config");
     expect(response.ok()).toBeTruthy();
 
     const body = await response.json();
-    expect(body.enabled).toBe(true);
-    expect(body.publishableKey).toBeDefined();
-    expect(body.publishableKey).toMatch(/^pk_test_/);
+    expect(body.enabled).toBe(Boolean(process.env.STRIPE_SECRET_KEY));
   });
 
-  test("should return publishable key for frontend", async ({ request }) => {
+  test("returns the configured publishable key, or null when absent", async ({ request }) => {
     const response = await request.get("/api/payments/stripe-config");
+    expect(response.ok()).toBeTruthy();
     const body = await response.json();
 
-    expect(body.publishableKey).toBeDefined();
-    expect(body.publishableKey.length).toBeGreaterThan(20);
+    expect(body.publishableKey).toBe(process.env.STRIPE_PUBLISHABLE_KEY || null);
+    if (body.publishableKey !== null) {
+      expect(body.publishableKey).toMatch(/^pk_test_/);
+      expect(body.publishableKey.length).toBeGreaterThan(20);
+    }
   });
 
-  test("should verify Stripe secret key is valid", async ({ request }) => {
-    // The stripe-config endpoint working means the key is valid
+  test("never exposes the Stripe secret key in public configuration", async ({ request }) => {
     const response = await request.get("/api/payments/stripe-config");
     expect(response.ok()).toBeTruthy();
 
     const body = await response.json();
-    expect(body.enabled).toBe(true);
+    expect(Object.keys(body).sort()).toEqual(["enabled", "publishableKey"]);
+    if (process.env.STRIPE_SECRET_KEY) {
+      expect(JSON.stringify(body).includes(process.env.STRIPE_SECRET_KEY)).toBe(false);
+    }
   });
 });
 
@@ -227,7 +231,7 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
     }
   });
 
-  test("should create setup intent for adding payment method", async () => {
+  test("creates a setup intent or explicitly reports that billing is disabled", async () => {
     // Get user's organization
     const meResponse = await authenticatedRequest.get("/api/auth/status");
     const me = await meResponse.json();
@@ -238,6 +242,11 @@ test.describe("Stripe Payment Flow (Authenticated)", () => {
         `/api/organizations/${me.user.organizationId}/payments/setup-intent`
       );
 
+      if (!process.env.STRIPE_SECRET_KEY) {
+        expect(response.status()).toBe(503);
+        expect((await response.json()).error).toBe("Stripe not configured");
+        return;
+      }
       if (response.ok()) {
         const intent = await response.json();
         expect(intent.clientSecret).toBeDefined();

@@ -33,7 +33,11 @@ case "$1" in
       *"RestartPolicy"*) echo "unless-stopped" ;;
       *) echo "" ;;
     esac ;;
-  exec) case "$*" in *stat*) [ -n "\${CONT_INO:-}" ] && echo "$CONT_INO" || exit 1 ;; *) exit 0 ;; esac ;;
+  exec) case "$*" in
+    *stat*) [ -n "\${CONT_INO:-}" ] && echo "$CONT_INO" || exit 1 ;;
+    *"grep -q VirtualAudio /proc/asound/cards"*) [ "\${CONTAINER_AUDIO:-present}" = present ] ;;
+    *) exit 0 ;;
+  esac ;;
   logs) [ -n "\${PROBE_LINE:-}" ] && echo "$PROBE_LINE"; echo "[Daemon] Heartbeat sent" ;;
   run) echo "newcontainer000111" ;;
   *) ;;
@@ -54,6 +58,18 @@ const STUB_IP = `#!/bin/bash
 echo "ip $*" >> "$VU_LOG"
 if [ "$1" = "route" ] && [ -n "\${IP_ROUTE_OUT:-}" ]; then echo "$IP_ROUTE_OUT"; exit 0; fi
 if [ "$1" = "-o" ] && [ -n "\${IP_ADDR_OUT:-}" ]; then echo "$IP_ADDR_OUT"; exit 0; fi
+exit 1
+`;
+const STUB_GREP = `#!/bin/bash
+if [ "$#" = 3 ] && [ "$1" = -q ] && [ "$2" = VirtualAudio ] && [ "$3" = /proc/asound/cards ]; then
+  [ "\${HOST_AUDIO:-present}" = present ]; exit $?
+fi
+exec /usr/bin/grep "$@"
+`;
+const STUB_SYSTEMCTL = `#!/bin/bash
+if [ "$*" = 'is-enabled docker' ]; then
+  [ "\${DOCKER_BOOT_ENABLED:-true}" = true ]; exit $?
+fi
 exit 1
 `;
 
@@ -82,6 +98,8 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, "bin", "docker"), STUB_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "grep"), STUB_GREP, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "systemctl"), STUB_SYSTEMCTL, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "AGENT_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "runner.env"), "RUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
   sock = path.join(dir, "dialfd.sock");
@@ -115,6 +133,39 @@ describe("hosts WITHOUT DialF: the same container actions as before", () => {
       expect(after.out).not.toMatch(/WARNING|Restart|recreat|Continue|\(y\/n\)/); // nothing alarming, no prompt
     });
   }
+});
+
+describe("host prerequisite warnings", () => {
+  it.each(["true", "false"])("reports Docker boot configuration independently of upgrades (enabled=%s)", (enabled) => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: "sha-new", DOCKER_BOOT_ENABLED: enabled });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out.includes("WARNING: the Docker service is NOT enabled at boot")).toBe(enabled === "false");
+  });
+
+  it("warns when the host lacks VirtualAudio without hiding a successful upgrade", () => {
+    const r = upgrade({ RUNNING_ID: "abc", HOST_AUDIO: "missing" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.out).toContain("WARNING: no VirtualAudio ALSA card on this host");
+    expect(r.out).not.toContain("Audio check: VirtualAudio visible inside the container");
+  });
+
+  it("distinguishes a missing container card from a missing host card", () => {
+    const r = upgrade({ RUNNING_ID: "abc", CONTAINER_AUDIO: "missing" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.out).toContain("WARNING: VirtualAudio is NOT visible INSIDE the container");
+    expect(r.out).not.toContain("WARNING: no VirtualAudio ALSA card on this host");
+  });
+
+  it("keeps phone-only guidance when DialF exists but host VirtualAudio does not", () => {
+    const r = upgrade({ RUNNING_ID: "abc", DIALF_SOCKET: sock, HOST_AUDIO: "missing" });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("NOTE: no VirtualAudio ALSA card");
+    expect(r.out).toContain("Phone vs Agent jobs are unaffected");
+    expect(r.out).not.toContain("WARNING: no VirtualAudio ALSA card on this host");
+  });
 });
 
 describe("hosts WITH DialF", () => {

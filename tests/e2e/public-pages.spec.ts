@@ -1,4 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 /**
  * Public Pages E2E Tests
@@ -86,11 +89,21 @@ test.describe("Run Your Own Page", () => {
 
 test.describe("API Documentation", () => {
   test("should serve Swagger UI", async ({ page }) => {
+    // Render the real library without depending on the CDN's availability.
+    for (const [asset, contentType] of [
+      ["swagger-ui.css", "text/css"],
+      ["swagger-ui-bundle.js", "application/javascript"],
+    ]) {
+      await page.route(`https://unpkg.com/swagger-ui-dist@5.9.0/${asset}`, (route) => route.fulfill({
+        path: require.resolve(`swagger-ui-dist/${asset}`), contentType,
+      }));
+    }
     await page.goto("/api/docs");
     await page.waitForLoadState("domcontentloaded");
 
     // Should have swagger-ui div
     await expect(page.locator("#swagger-ui")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("#swagger-ui .info .title")).toContainText("Vox");
   });
 
   test("should serve OpenAPI spec as JSON", async ({ request }) => {
