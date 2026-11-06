@@ -7,7 +7,8 @@
 # If RUNNER_TOKEN is set, upgrades vox-clash-runner. Both can be set.
 #
 # Before stopping a container, checks the /health endpoint to ensure it's idle.
-# If busy, polls every 10s for up to 5 minutes before prompting to force stop.
+# If busy or health is unknown, polls every 10s for up to 5 minutes before
+# prompting to force stop. New health ports are Docker-assigned on loopback.
 #
 # Containers are started with `--restart unless-stopped` so they relaunch
 # automatically after a host reboot (override with RESTART_POLICY=...). A
@@ -181,7 +182,6 @@ if [[ ! "$manager_version" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ &&
     usage >&2; exit 2
 fi
 
-HEALTH_PORT="${HEALTH_PORT:-8099}"
 WAIT_TIMEOUT=300  # 5 minutes
 POLL_INTERVAL=10
 
@@ -204,6 +204,12 @@ if [[ "$ENV_FILE" != */* ]]; then ENV_FILE="./$ENV_FILE"; fi
 set -a
 source "$ENV_FILE"
 set +a
+
+HEALTH_PORT="${HEALTH_PORT:-8099}"
+if [[ ! "$HEALTH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$HEALTH_PORT" -gt 65535 ]; then
+    echo "Error: HEALTH_PORT must be an integer from 1 to 65535." >&2
+    exit 1
+fi
 
 VOX_SERVER="${VOX_SERVER:-https://vox.agora.build}"
 REGISTRY="ghcr.io/agora-build"
@@ -237,52 +243,77 @@ fi
 
 echo "-----------------------------------"
 
-# Wait for container to become idle via /health endpoint
-wait_for_idle() {
-    local container_id="$1"
-
-    # Try to get the mapped health port
-    local health_url=""
-    local mapped_port=$(docker port "$container_id" "$HEALTH_PORT" 2>/dev/null | head -1 | sed 's/.*://')
-    if [ -n "$mapped_port" ]; then
-        health_url="http://localhost:${mapped_port}/health"
+# Old containers may have a different internal health port from the new config.
+container_health_url() {
+    local container_id="$1" container_port mapped_port container_ip
+    container_port=$({ docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" 2>/dev/null || true; } | sed -n 's/^HEALTH_PORT=//p' | head -1)
+    container_port="${container_port:-8099}"
+    [[ "$container_port" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$container_port" -le 65535 ] || return 1
+    mapped_port=$(docker port "$container_id" "$container_port/tcp" 2>/dev/null | head -1 | sed 's/.*://') || true
+    if [[ "$mapped_port" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$mapped_port" -le 65535 ]; then
+        echo "http://127.0.0.1:${mapped_port}/health"
     else
-        # Try direct container IP (works on same host)
-        local container_ip=$(docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id" 2>/dev/null)
-        if [ -n "$container_ip" ]; then
-            health_url="http://${container_ip}:${HEALTH_PORT}/health"
+        container_ip=$(docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id" 2>/dev/null) || true
+        [ -n "$container_ip" ] || return 1
+        echo "http://${container_ip}:${container_port}/health"
+    fi
+}
+
+# Validate the complete flat JSON health object without a new host dependency.
+# Nested/duplicate fields or a failed HTTP request are unknown, never idle.
+health_status() {
+    local response body key value status=""
+    response=$(curl --fail --silent --show-error --noproxy '*' --max-time 3 --write-out '\n%{http_code}' "$1" 2>/dev/null) || return 1
+    [ "${response##*$'\n'}" = 200 ] || return 1
+    body="${response%$'\n'*}"
+    local space=$'[ \t\r\n]'
+    local string='"([^"\\[:cntrl:]]|\\(["\\/bfnrt]|u[[:xdigit:]]{4}))*"'
+    local number='-?(0|[1-9][0-9]*)([.][0-9]+)?([eE][+-]?[0-9]+)?'
+    local field="^${space}*\"([A-Za-z_][A-Za-z0-9_]*)\"${space}*:${space}*($string|$number|true|false|null)"
+    local opening="^${space}*\\{" closing="^${space}*\\}${space}*$" comma="^${space}*,"
+    local -A seen=()
+    [[ "$body" =~ $opening ]] || return 1
+    body="${body:${#BASH_REMATCH[0]}}"
+    while [[ "$body" =~ $field ]]; do
+        key="${BASH_REMATCH[1]}" value="${BASH_REMATCH[2]}"
+        body="${body:${#BASH_REMATCH[0]}}"
+        [ -z "${seen[$key]:-}" ] || return 1
+        seen[$key]=1
+        if [ "$key" = status ]; then
+            status="${value#\"}"
+            status="${status%\"}"
         fi
-    fi
+        if [[ "$body" =~ $closing ]]; then
+            case "$status" in idle|occupied|uploading) echo "$status"; return 0 ;; esac
+            return 1
+        fi
+        [[ "$body" =~ $comma ]] || return 1
+        body="${body:${#BASH_REMATCH[0]}}"
+    done
+    return 1
+}
 
-    if [ -z "$health_url" ]; then
-        echo "  No health endpoint available — stopping immediately."
-        return 0
-    fi
-
-    local status=""
-    status=$(curl -s --max-time 3 "$health_url" 2>/dev/null | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4) || true
-
-    if [ "$status" = "idle" ] || [ -z "$status" ]; then
-        [ -n "$status" ] && echo "  Status: idle — safe to stop."
-        return 0
-    fi
-
-    echo "  Status: $status — waiting for idle..."
-    local waited=0
-    while [ "$waited" -lt "$WAIT_TIMEOUT" ]; do
-        sleep "$POLL_INTERVAL"
-        waited=$((waited + POLL_INTERVAL))
-        status=$(curl -s --max-time 3 "$health_url" 2>/dev/null | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4) || true
-
-        if [ "$status" = "idle" ] || [ -z "$status" ]; then
+wait_for_idle() {
+    local container_id="$1" status="unknown" waited=0 choice
+    local health_url=""
+    while :; do
+        [ -n "$health_url" ] || health_url=$(container_health_url "$container_id") || true
+        status="unknown"
+        if [ -n "$health_url" ]; then
+            status=$(health_status "$health_url") || status="unknown"
+        fi
+        if [ "$status" = "idle" ]; then
             echo "  Status: idle after ${waited}s — safe to stop."
             return 0
         fi
-        echo "  Still $status... (${waited}s / ${WAIT_TIMEOUT}s)"
+        echo "  Status: $status — waiting for explicit idle... (${waited}s / ${WAIT_TIMEOUT}s)"
+        [ "$waited" -lt "$WAIT_TIMEOUT" ] || break
+        sleep "$POLL_INTERVAL"
+        waited=$((waited + POLL_INTERVAL))
     done
 
-    echo "  Timeout: container still $status after ${WAIT_TIMEOUT}s."
-    read -p "  Force stop? (y/n): " choice
+    echo "  Timeout: container is $status after ${WAIT_TIMEOUT}s; stopping may interrupt active work."
+    read -r -p "  Force stop? (y/n): " choice || choice=n
     case "$choice" in
         y|Y ) return 0 ;;
         * ) return 1 ;;
@@ -670,7 +701,7 @@ for name in "${!images[@]}"; do
     fi
 
     # Build env args
-    env_args=""
+    env_args="-e HEALTH_PORT=$HEALTH_PORT "
     for var in ${env_configs[$name]}; do
         env_args+="-e $var "
     done
@@ -800,10 +831,11 @@ for name in "${!images[@]}"; do
         fi
     fi
 
-    # Expose health port for future upgrades; --restart so it survives reboots;
+    # Docker assigns a free loopback-only host port for each component.
+    # Expose health for future upgrades; --restart so it survives reboots;
     # --name gives it a stable identity. Use the verified ID so a tag cannot
     # move to a different image while we wait for the old container to be idle.
-    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "${HEALTH_PORT}:${HEALTH_PORT}" $device_args $mount_args $env_args "$selected_image_id")
+    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" -p "127.0.0.1::${HEALTH_PORT}" $device_args $mount_args $env_args "$selected_image_id")
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id ($image -> $selected_image_id)"

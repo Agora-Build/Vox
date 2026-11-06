@@ -746,6 +746,11 @@ More than two minutes without delivery makes monitoring incomplete even if
 local sampling continued; incomplete is sticky after reconnection. This does
 not change the separate five-minute stale-agent job-recovery rule or 90-minute
 execution deadline.
+Installer safety is independent of these timers: a failed local `/health`
+request cannot establish that the process is idle, even if Core may already
+have recovered its job. The manager requires a successful, valid explicit idle
+response before an automatic stop/restart; unknown or busy health is retried for
+five minutes and then requires explicit force-stop confirmation (No/EOF skips).
 Complete coverage needs a continuous monitor and every sequence from start
 through end; summaries alone cannot manufacture it. Acknowledged events that
 have left the agent queue still count toward coverage in Core.

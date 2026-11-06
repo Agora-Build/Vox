@@ -39,15 +39,47 @@ case "$1" in
   inspect)
     case "$*" in
       *"{{.Image}}"*) [ -n "\${IMAGE_INSPECT_FAIL:-}" ] && exit 1; echo "\${RUNNING_IMAGE:-${IMAGE_OLD}}" ;;
-      *"Config.Env"*) [ -n "\${INSPECT_FAIL:-}" ] && exit 1; [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"; echo "AGENT_TOKEN=x" ;;
+      *"Config.Env"*) [ -n "\${INSPECT_FAIL:-}" ] && exit 1; [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"; [ -n "\${PREV_HEALTH_PORT:-}" ] && echo "HEALTH_PORT=$PREV_HEALTH_PORT"; echo "AGENT_TOKEN=x" ;;
       *"RestartPolicy"*) echo "unless-stopped" ;;
+      *"NetworkSettings"*) echo "\${CONTAINER_IP:-}" ;;
       *) echo "" ;;
     esac ;;
   exec) case "$*" in *stat*) [ -n "\${CONT_INO:-}" ] && echo "$CONT_INO" || exit 1 ;; *) exit 0 ;; esac ;;
   logs) [ -n "\${PROBE_LINE:-}" ] && echo "$PROBE_LINE"; echo "[Daemon] Heartbeat sent" ;;
-  run) echo "newcontainer000111" ;;
+  port) [ -z "\${NO_HEALTH_MAPPING:-}" ] && echo "\${HEALTH_MAPPING:-127.0.0.1:49152}" ;;
+  run)
+    binding=""
+    for ((i=1; i<=$#; i++)); do
+      if [ "\${!i}" = -p ]; then next=$((i+1)); binding="\${!next}"; break; fi
+    done
+    if [[ "$binding" == 127.0.0.1::* ]]; then
+      allocated=$((49152 + $(grep -c '^docker run' "$VU_LOG")))
+      echo "published 127.0.0.1:$allocated -> \${binding##*:}" >> "$VU_LOG"
+    else
+      host_port="\${binding%%:*}"
+      if [ "$host_port" = "\${OCCUPIED_HOST_PORT:-}" ] || grep -q "^published $host_port$" "$VU_LOG"; then
+        echo "port is already allocated" >&2; exit 125
+      fi
+      echo "published $host_port" >> "$VU_LOG"
+    fi
+    echo "newcontainer000111" ;;
   *) ;;
 esac
+`;
+const STUB_CURL = `#!/bin/bash
+echo "curl $*" >> "$VU_LOG"
+attempt=$(grep -c '^curl ' "$VU_LOG")
+steps="\${HEALTH_STEPS:-idle}"
+step=$(printf '%s\\n' "$steps" | sed -n "\${attempt}p")
+[ -n "$step" ] || step=$(printf '%s\\n' "$steps" | tail -1)
+case "$step" in
+  timeout) exit 28 ;;
+  http-error) [[ " $* " == *" --fail "* ]] && exit 22; printf '{"status":"idle"}\\n503'; exit 0 ;;
+  redirect) printf '{"status":"idle"}\\n302'; exit 0 ;;
+  body) printf '%s' "$HEALTH_BODY" ;;
+  *) printf '{"status":"%s","uptime":123,"currentJobId":null}\\n' "$step" ;;
+esac
+printf '\\n200'
 `;
 const STUB_PS = `#!/bin/bash
 if [ "$*" = "-o uid= -C dialfd" ]; then [ -n "\${PS_DIALF_UID:-}" ] && echo "  $PS_DIALF_UID"; exit 0; fi
@@ -85,6 +117,7 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
     },
     timeout: 30_000,
   });
+  expect(r.error).toBeUndefined();
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
   const actions = calls.filter((c) => /^docker (stop|rm|run|restart)\b/.test(c)).map((c) => c.split(" ")[1]);
   return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, actions };
@@ -96,6 +129,8 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, "bin", "docker"), STUB_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ps"), STUB_PS, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "ip"), STUB_IP, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "curl"), STUB_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "sleep"), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "agent.env"), "AGENT_TOKEN=evtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "runner.env"), "RUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
   fs.writeFileSync(path.join(dir, "both.env"), "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nVOX_SERVER=http://localhost:5000\n");
@@ -124,6 +159,133 @@ describe("hosts WITHOUT DialF: canonical and legacy commands keep the same conta
       expect(after.out).not.toMatch(/WARNING|Restart|recreat|Continue|\(y\/n\)/); // nothing alarming, no prompt
     });
   }
+});
+
+describe("health checks fail closed before interrupting work", () => {
+  it.each([false, true])("requires an explicit idle response (runner: %s)", (runner) => {
+    const r = upgrade({ RUNNING_ID: "abc" }, { runner });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.out).toContain("Status: idle after 0s");
+  });
+
+  it.each(["occupied", "uploading", "timeout", "http-error"])("retries %s and stops only after explicit idle", (status) => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: `${status}\nidle` });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.out).toContain("Status: idle after 10s");
+    expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(2);
+  });
+
+  it.each(["timeout", "http-error", "redirect", "occupied", "uploading", "unrecognized"])("%s never silently stops an agent, including on EOF", (status) => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: status });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("stopping may interrupt active work");
+    expect(r.out).toContain("Skipping vox-eval-agentd");
+    expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(31);
+  });
+
+  it.each([
+    "", "not JSON", '{"status":"idle"', '{"status":"idle",}',
+    '{"status":"idle"} trailing', '{"status":"idle","status":"occupied"}',
+    '{"status":"idle","nested":{"status":"occupied"}}',
+    '{"nested":{"status":"idle"}}', '{"status":"idle","uptime":01}',
+    '{"status":"idle","uptime":NaN}', '{"status":"idle","buildTag":"bad\\x"}',
+    '{"status":"idle","\\u0073tatus":"occupied"}',
+  ])("malformed or unsupported health payload %j is not idle", (body) => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "body", HEALTH_BODY: body });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("container is unknown after 300s");
+  });
+
+  it.each([
+    '{ "status" : "idle", "uptime": 42, "buildTag":"dev", "currentJobId":null }',
+    String.raw`{
+ "currentMatchId":null, "buildTag":"tag\"quoted", "status":"idle", "uptime":1.5e3
+}`,
+  ])("accepts valid flat endpoint JSON with whitespace and metadata", (body) => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "body", HEALTH_BODY: body });
+    expect(r.status).toBe(0);
+    expect(r.actions).toContain("stop");
+    expect(r.out).toContain("Status: idle after 0s");
+  });
+
+  it("a busy response followed by health failure never becomes idle", () => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "occupied\ntimeout" }, { answers: "n\n" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("container is unknown after 300s");
+    expect(r.out).not.toContain("safe to stop");
+  });
+
+  it("missing health endpoint remains unknown and leaves the container running", () => {
+    const r = upgrade({ RUNNING_ID: "abc", NO_HEALTH_MAPPING: "1" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.calls.some((call) => call.startsWith("curl "))).toBe(false);
+    expect(r.out).toContain("container is unknown after 300s");
+  });
+
+  it("falls back to the container IP for older unpublished health endpoints", () => {
+    const r = upgrade({ RUNNING_ID: "abc", NO_HEALTH_MAPPING: "1", CONTAINER_IP: "172.18.0.2" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toContain("stop");
+    expect(r.calls.find((call) => call.startsWith("curl "))).toContain("http://172.18.0.2:8099/health");
+  });
+
+  it("only explicit confirmation permits force-stopping an unknown container", () => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "timeout" }, { answers: "y\n" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual(["stop", "rm", "rm", "run"]);
+    expect(r.out).toContain("container is unknown after 300s");
+  });
+});
+
+describe("Docker-assigned loopback health ports", () => {
+  it("agent and runner coexist even when the old fixed host port is occupied", () => {
+    const r = upgrade({ RUNNING_ID: "abc", OCCUPIED_HOST_PORT: "8099" }, { both: true });
+    expect(r.status).toBe(0);
+    const runs = r.calls.filter((call) => call.startsWith("docker run"));
+    expect(runs).toHaveLength(2);
+    expect(runs.every((call) => call.includes("-p 127.0.0.1::8099 "))).toBe(true);
+    expect(runs.every((call) => call.includes("-e HEALTH_PORT=8099 "))).toBe(true);
+    const ports = r.calls.filter((call) => call.startsWith("published "));
+    expect(ports).toEqual(["published 127.0.0.1:49153 -> 8099", "published 127.0.0.1:49154 -> 8099"]);
+  });
+
+  it("discovers an existing dynamic port while preserving the container's internal port", () => {
+    const r = upgrade({ RUNNING_ID: "abc", PREV_HEALTH_PORT: "8100", HEALTH_PORT: "8101", HEALTH_MAPPING: "127.0.0.1:54321" });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain("docker port abc 8100/tcp");
+    expect(r.calls.find((call) => call.startsWith("curl "))).toContain("http://127.0.0.1:54321/health");
+    const run = r.calls.find((call) => call.startsWith("docker run"));
+    expect(run).toContain("-p 127.0.0.1::8101 ");
+    expect(run).toContain("-e HEALTH_PORT=8101 ");
+  });
+
+  it("loads a custom internal port from the selected env file for both components", () => {
+    const envFile = path.join(dir, "custom-health.env");
+    fs.writeFileSync(envFile, "AGENT_TOKEN=evtest\nRUNNER_TOKEN=crtest\nHEALTH_PORT=8123\n");
+    const r = upgrade({ RUNNING_ID: "abc" }, { defaultEnv: true, args: ["--env", envFile] });
+    expect(r.status).toBe(0);
+    const runs = r.calls.filter((call) => call.startsWith("docker run"));
+    expect(runs).toHaveLength(2);
+    expect(runs.every((call) => call.includes("-p 127.0.0.1::8123 "))).toBe(true);
+    expect(runs.every((call) => call.includes("-e HEALTH_PORT=8123 "))).toBe(true);
+    // Existing containers without HEALTH_PORT still listen on their default.
+    expect(r.calls.filter((call) => call.startsWith("docker port abc "))).toEqual([
+      "docker port abc 8099/tcp", "docker port abc 8099/tcp",
+    ]);
+  });
+
+  it.each(["0", "65536", "abc", "8099:8099", "-1"])("invalid internal health port %s fails before touching Docker", (port) => {
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_PORT: port });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain("HEALTH_PORT must be an integer");
+  });
 });
 
 describe("install/upgrade command dispatch", () => {

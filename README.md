@@ -290,6 +290,20 @@ in the env file are installed/upgraded. Existing idle checks, same-image handlin
 DialF detection/mounts, audio devices and network monitoring mounts are preserved.
 New containers still require confirmation before starting.
 
+Before stopping or restarting a running container, the manager requires a valid
+`/health` response with `status: idle`. Busy, uploading, unreachable, HTTP-error
+and invalid responses are retried for five minutes; after that, only an explicit
+`y` permits a force stop. Declining or reaching end-of-input leaves it running.
+This local safety check is separate from Core's heartbeat recovery: a missing
+health response does not prove that an evaluation has stopped.
+
+New agent and runner containers each publish health on a Docker-assigned,
+loopback-only host port, so they can run together without competing for port
+8099. Find the assigned address with `docker port vox-eval-agentd 8099/tcp` (or
+`vox-clash-runner`). `HEALTH_PORT` optionally changes the internal container port;
+use that port in the lookup instead. Later upgrades discover the existing mapping,
+including older fixed-port installations, automatically.
+
 Running `./vox-manager.sh` without arguments defaults to `vox_agent`, image
 version `latest`, and `.env` in the **current working directory**, not the script's
 directory. Use `--env /path/to/.env` to select a different file; `--env` and

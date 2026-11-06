@@ -467,6 +467,24 @@ still apply. No old images are pruned. This is an explicit image rollback, not a
 automatic failed-start rollback or a Core database downgrade; check old image
 compatibility with the current server and host services first.
 
+### Upgrade health checks and ports
+
+Only a successful, valid local `/health` response with `status: idle` authorizes
+an automatic stop or restart. Occupied/uploading containers and unknown health
+(including missing endpoints, HTTP errors and malformed JSON) are retried for
+five minutes, then require explicit force-stop confirmation. No/EOF leaves the
+container running. Local health failure is not evidence that Core's separate
+five-minute stale-heartbeat recovery has stopped the agent's local process.
+Network telemetry's two-minute incomplete-monitoring rule is unchanged.
+
+New containers use `-p 127.0.0.1::<internal-health-port>`, allowing agent and runner
+to coexist without a fixed host-port conflict or exposing health publicly. The
+internal port defaults to 8099; `HEALTH_PORT` changes it and is forwarded into the
+container. Inspect the selected host address with
+`docker port vox-eval-agentd 8099/tcp` (or `vox-clash-runner`, adjusting the
+internal port if configured). Upgrades read each existing container's own port
+and Docker mapping, so changing the new configuration does not break idle checks.
+
 ## Other Platforms
 
 The Dockerfile works with any Docker-based platform. The key differences are how you configure environment variables and networking.
