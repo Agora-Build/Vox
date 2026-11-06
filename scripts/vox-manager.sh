@@ -206,9 +206,11 @@ if [[ ! "$manager_version" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ &&
     echo "Error: --version must be a Docker image tag or sha256 manifest digest (not a full image URL)." >&2
     usage >&2; exit 2
 fi
+readonly manager_version manager_version_seen manager_env_file manager_force
 
 WAIT_TIMEOUT=300  # 5 minutes
 POLL_INTERVAL=10
+readonly WAIT_TIMEOUT POLL_INTERVAL
 
 ENV_FILE="${manager_env_file:-.env}"
 
@@ -218,13 +220,14 @@ fi
 
 # Explicit relative paths keep Bash from searching PATH for an env file.
 if [[ "$ENV_FILE" != */* ]]; then ENV_FILE="./$ENV_FILE"; fi
+readonly ENV_FILE
 
 if ! bash -n -- "$ENV_FILE" 2>/dev/null; then
     env_config_error "invalid env-file syntax; expected KEY=value assignments."
 fi
 # Preserve a diagnostic stream if sourcing fails while its output is suppressed.
 exec {manager_config_error_fd}>&2
-trap 'env_config_error "cannot load env file; expected KEY=value assignments." >&"$manager_config_error_fd" 2>&1' EXIT
+trap 'env_config_error "cannot load env file; use KEY=value assignments without overriding reserved CLI settings." >&"$manager_config_error_fd" 2>&1' EXIT
 set -a
 source "$ENV_FILE" >/dev/null 2>&1
 set +a
@@ -704,9 +707,76 @@ done
 
 # Prepare credentials before stopping anything; never put token values in argv.
 manager_env_dir=""
+previous_container_id=""
+previous_container_name=""
+previous_container_renamed=""
+candidate_id_file=""
+manager_failed=0
+
+candidate_container_id() {
+    local id
+    [ -n "$candidate_id_file" ] && [ -f "$candidate_id_file" ] || return 1
+    id=$(< "$candidate_id_file")
+    [[ "$id" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf '%s\n' "$id"
+}
+
+recover_failed_start() {
+    local candidate_id
+    # A failed run may leave a container. Only remove the ID Docker wrote for us,
+    # never a stable name that another process might have claimed.
+    if candidate_id=$(candidate_container_id); then
+        if ! docker rm -f "$candidate_id" > /dev/null; then
+            echo "WARNING: could not remove failed replacement $candidate_id; inspect it before recovery." >&2
+        fi
+    elif [ -n "$candidate_id_file" ] && [ -s "$candidate_id_file" ]; then
+        echo "WARNING: invalid replacement ID file; no container was removed by name." >&2
+    fi
+    candidate_id_file=""
+    if [ -n "$previous_container_id" ]; then
+        if [ -n "$previous_container_renamed" ] &&
+            ! docker rename "$previous_container_id" "$previous_container_name"; then
+            echo "WARNING: could not restore the old container's name; recover it by ID." >&2
+        fi
+        echo "Old container preserved: $previous_container_id (image $running_image_id)." >&2
+        echo "To start the old image with its original configuration:" >&2
+        echo "  docker start $previous_container_id" >&2
+    fi
+    previous_container_id=""
+    previous_container_renamed=""
+}
+
+retain_previous_container() {
+    local original_name
+    if ! original_name=$(docker inspect --format '{{.Name}}' "$running_id") ||
+        [[ ! "$original_name" =~ ^/[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+        echo "Error: cannot determine the old container's name; leaving $name unchanged." >&2
+        return 1
+    fi
+    previous_container_id="$running_id"
+    previous_container_name="${original_name#/}"
+    echo "Stopping ${running_id:0:12}..."
+    if ! docker stop "$running_id" > /dev/null; then
+        echo "Error: could not stop $name; skipping replacement." >&2
+        recover_failed_start
+        return 1
+    fi
+    if [ "$previous_container_name" = "$name" ]; then
+        if ! docker rename "$running_id" "$name-previous-${manager_env_dir##*/}"; then
+            echo "Error: could not free the service name; skipping replacement." >&2
+            recover_failed_start
+            return 1
+        fi
+        previous_container_renamed=1
+    fi
+    echo "Keeping old container $running_id until the replacement starts."
+}
+
 cleanup_container_env() {
+    recover_failed_start
     if [ -n "$manager_env_dir" ]; then
         rm -f -- "$manager_env_dir/vox-eval-agentd.env" "$manager_env_dir/vox-clash-runner.env"
+        rm -f -- "$manager_env_dir/vox-eval-agentd.cid" "$manager_env_dir/vox-clash-runner.cid"
         rmdir -- "$manager_env_dir"
     fi
 }
@@ -798,9 +868,6 @@ for name in "${!images[@]}"; do
                 echo "-----------------------------------"
                 continue
             fi
-            echo "Stopping ${running_id:0:12}..."
-            docker stop "$running_id" > /dev/null
-            docker rm "$running_id" > /dev/null
         elif [ "$running_image_id" == "$selected_image_id" ] && [ -n "$dialf_stale_in_container" ] && [ -z "$recovery_needed" ]; then
             # Restarting refreshes the bind mount without recreating the container.
             echo "Already on the selected image, but its DialF socket is stale: dialfd recreated"
@@ -838,9 +905,6 @@ for name in "${!images[@]}"; do
                 continue
             fi
 
-            echo "Stopping ${running_id:0:12}..."
-            docker stop "$running_id" > /dev/null
-            docker rm "$running_id" > /dev/null
         fi
     else
         echo "No existing container found."
@@ -949,12 +1013,43 @@ for name in "${!images[@]}"; do
         fi
     fi
 
-    # Pin the verified image and let Docker assign a loopback-only health port.
-    new_container_id=$(docker run -d --name "$name" --restart "$RESTART_POLICY" --pull=never \
+    if [ -n "$running_id" ] && ! retain_previous_container; then
+        manager_failed=1
+        continue
+    fi
+
+    # Pin the image, allocate a loopback health port, and track partial starts by ID.
+    candidate_id_file="$manager_env_dir/$name.cid"
+    start_succeeded=""
+    if docker run -d --name "$name" --restart "$RESTART_POLICY" --pull=never \
         --label "org.agora.vox.image=$image" --label "org.agora.vox.version=$manager_version" \
         -p "127.0.0.1::${HEALTH_PORT}" "${device_args[@]}" "${mount_args[@]}" \
-        --env-file "${token_env_files[$name]}" "${env_args[@]}" "$pinned_image")
+        --cidfile "$candidate_id_file" --env-file "${token_env_files[$name]}" "${env_args[@]}" "$pinned_image" > /dev/null; then
+        if new_container_id=$(candidate_container_id) &&
+            new_state=$(docker inspect --format '{{.State.Status}}' "$new_container_id") &&
+            [ "$new_state" = running ]; then
+            start_succeeded=1
+        fi
+    fi
     rm -f -- "${token_env_files[$name]}"
+    if [ -z "$start_succeeded" ]; then
+        echo "Error: $name did not start successfully." >&2
+        recover_failed_start
+        manager_failed=1
+        echo "-----------------------------------"
+        continue
+    fi
+
+    candidate_id_file=""
+    retained_id="$previous_container_id"
+    previous_container_id=""
+    previous_container_renamed=""
+    if [ -n "$retained_id" ]; then
+        if ! docker rm "$retained_id" > /dev/null; then
+            echo "WARNING: replacement is running, but old container $retained_id could not be removed." >&2
+            manager_failed=1
+        fi
+    fi
     short_id="${new_container_id:0:12}"
     new_containers[$name]=$short_id
     echo "Started $name: $short_id ($image -> $selected_image_id)"
@@ -995,4 +1090,8 @@ for name in "${!new_containers[@]}"; do
 done
 
 echo ""
+if [ "$manager_failed" -ne 0 ]; then
+    echo "Finished with errors. Review the recovery instructions above." >&2
+    exit 1
+fi
 echo "Done."

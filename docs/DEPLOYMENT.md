@@ -550,11 +550,29 @@ the version alongside Docker's named immutable image. To inspect the selection:
 (use `vox-clash-runner` for the runner). A missing tag/digest or failed reference
 verification leaves running containers unchanged. Existing idle
 checks, DialF/audio/network mounts, restart policy and persistent cache handling
-still apply. No old images are pruned. This is an explicit image rollback, not an
-automatic failed-start rollback or a Core database downgrade; check old image
-compatibility with the current server and host services first.
+still apply. No old images are pruned. This is an explicit image rollback, not a
+Core database downgrade; check old image compatibility with the current server
+and host services first.
+
+Replacement stops and retains the old container by ID, temporarily renaming it
+only when needed to free the stable service name. Removal is deferred until
+`docker run` succeeds and the new container's Docker state is `running` (not an
+application-health/readiness guarantee). A failed start removes only the candidate
+ID from this run's private Docker `--cidfile`, never an unverified container by
+name. The old name is restored where possible, and the manager prints
+`docker start <old-container-id>` for manual recovery with the old image and
+configuration. It does not automatically restart the old container. The other
+configured service is still processed, and any replacement failure makes the
+overall command exit nonzero. EXIT/INT/TERM preserve pending old containers and
+clean private files; SIGKILL or power loss cannot run cleanup. If Docker reports
+cleanup or name-restoration errors, inspect those before running recovery.
 
 ### Upgrade health checks and ports
+
+CLI state is readonly before loading the env file: configuration cannot toggle
+`--force`, replace the validated `--version` or env-file selection, or shorten the
+health-wait constants. Assignments to reserved manager CLI variables are rejected
+before Docker is called; normal documented configuration keys remain supported.
 
 Manager env-file inputs are `EVAL_TOKEN` (eval service) and `CLASH_TOKEN` (Clash).
 Rename the old `AGENT_TOKEN`/`RUNNER_TOKEN` keys in manager env files; they are not

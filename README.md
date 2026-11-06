@@ -352,6 +352,19 @@ active evaluations.** It does not bypass image/version verification or argument
 validation. This local safety check is separate from Core's heartbeat recovery:
 a missing health response does not prove that an evaluation has stopped.
 
+Command-line choices always take precedence: the env file cannot enable or disable
+`--force`, change the validated `--version`, or replace the selected env path.
+Assignments to reserved CLI variables are rejected before any Docker operation.
+
+During replacement, the old container is stopped but retained by ID (temporarily
+renamed if needed). It is removed only after `docker run` succeeds and Docker
+reports the new container as running; this is not an application-readiness check.
+If startup fails, the manager removes only its own partial replacement, restores
+the old name where possible, and prints `docker start <old-container-id>` to
+manually start the old image with its original configuration. It continues with
+other configured services and exits nonzero. Interruptions also preserve the old
+container; SIGKILL or power loss cannot run cleanup.
+
 New agent and runner containers each publish health on a Docker-assigned,
 loopback-only host port, so they can run together without competing for port
 8099. Find the assigned address with `docker port vox-eval-agentd 8099/tcp` (or
@@ -394,9 +407,10 @@ Docker retains the official names `ghcr.io/agora-build/vox-eval-agentd` and
 requested full image reference and tag/digest; the final container table includes
 the selected version. A missing or mismatched official digest stops the operation
 before any container is changed.
-Old images and the persistent model cache are not deleted. This is explicit image
-selection, not automatic recovery from a failed container start; older builds must
-still be compatible with the running Vox server and host setup.
+Old images and the persistent model cache are not deleted. Image rollback is
+explicit, and failed replacements retain the old container for manual recovery
+without automatically restarting it. Older builds must still be compatible with
+the running Vox server and host setup.
 
 Before a container upgrade or `self` update, the manager prints
 `./vox-manager.sh self` and the full manual download command, including saving `vox-manager.sh` in

@@ -15,6 +15,7 @@ const MANIFEST_NEW = `sha256:${"c".repeat(64)}`;
 const MANIFEST_OLD = `sha256:${"d".repeat(64)}`;
 const AGENT_REF = `ghcr.io/agora-build/vox-eval-agentd@${MANIFEST_NEW}`;
 const RUNNER_REF = `ghcr.io/agora-build/vox-clash-runner@${MANIFEST_NEW}`;
+const CONTAINER_NEW = `${"0".repeat(63)}1`;
 let dir = "";
 let sock = "";
 let sockServer: net.Server;
@@ -68,6 +69,16 @@ case "$1" in
     case "$*" in
       *"{{.Name}}"*)
         [ -n "\${DISCOVERY_INSPECT_FAIL:-}" ] && exit 1
+        if [ "$3" = '{{.Name}}' ]; then
+          [ -n "\${ORIGINAL_NAME_FAIL:-}" ] && exit 1
+          if [ -n "\${VU_CONTAINERS:-}" ]; then head -1 "$VU_CONTAINERS/$inspected_id.meta"
+          else
+            component="$VU_COMPONENT"
+            [[ "$inspected_id" == runner-* ]] && component=vox-clash-runner
+            echo "/$component"
+          fi
+          exit 0
+        fi
         if [ -n "\${VU_CONTAINERS:-}" ]; then cat "$VU_CONTAINERS/$inspected_id.meta"
         else
           component="$VU_COMPONENT"
@@ -76,6 +87,11 @@ case "$1" in
           printf '/%s\\nghcr.io/agora-build/%s:previous-build\\n%s\\n%s\\n' "$component" "$component" "\${RUNNING_IMAGE:-${IMAGE_OLD}}" "$state"
         fi ;;
       *"State.Status"*)
+        if [ -f "$VU_ENV_FILES/$inspected_id.created" ]; then
+          [ -n "\${NEW_STATE_INSPECT_FAIL:-}" ] && exit 1
+          echo "\${NEW_STATE:-running}"
+          exit 0
+        fi
         [ -n "\${STATE_INSPECT_FAIL:-}" ] && exit 1
         attempt=$(grep -c '^docker inspect --format {{.State.Status}} ' "$VU_LOG")
         states="\${DOCKER_STATES:-running}"
@@ -98,6 +114,11 @@ case "$1" in
   exec) case "$*" in *stat*) [ -n "\${CONT_INO:-}" ] && echo "$CONT_INO" || exit 1 ;; *) exit 0 ;; esac ;;
   logs) [ -n "\${PROBE_LINE:-}" ] && echo "$PROBE_LINE"; echo "[Daemon] Heartbeat sent" ;;
   port) [ -z "\${NO_HEALTH_MAPPING:-}" ] && echo "\${HEALTH_MAPPING:-127.0.0.1:49152}" ;;
+  stop) [ -z "\${STOP_FAIL:-}" ] ;;
+  rename)
+    attempt=$(grep -c '^docker rename' "$VU_LOG")
+    [ "$attempt" != "\${RENAME_FAIL_AT:-}" ] ;;
+  rm) [ -z "\${OLD_RM_FAIL:-}" ] || [ "$2" = -f ] ;;
   run)
     attempt=$(grep -c '^docker run' "$VU_LOG")
     for ((i=1; i<=$#; i++)); do
@@ -109,8 +130,17 @@ case "$1" in
         stat -c '%a' -- "\${token_file%/*}" > "$VU_ENV_FILES/$attempt.dir-mode"
       fi
     done
+    { [ -n "\${RUN_FAIL:-}" ] || [ "$attempt" = "\${RUN_FAIL_AT:-}" ]; } && exit 125
+    candidate_id=$(printf '%064x' "$attempt")
+    for ((i=1; i<=$#; i++)); do
+      if [ "\${!i}" = --cidfile ]; then
+        next=$((i+1)); cidfile="\${!next}"
+        if [ -z "\${CID_FILE_MISSING:-}" ]; then printf '%s' "\${CID_FILE_CONTENT-$candidate_id}" > "$cidfile"; fi
+      fi
+    done
+    touch "$VU_ENV_FILES/$candidate_id.created"
     [ -n "\${RUN_SIGNAL:-}" ] && { kill -s "$RUN_SIGNAL" "$PPID"; exit 143; }
-    [ -n "\${RUN_FAIL:-}" ] && exit 125
+    [ -n "\${RUN_PARTIAL_FAIL:-}" ] && exit 125
     binding=""
     for ((i=1; i<=$#; i++)); do
       if [ "\${!i}" = -p ]; then next=$((i+1)); binding="\${!next}"; break; fi
@@ -125,7 +155,7 @@ case "$1" in
       fi
       echo "published $host_port" >> "$VU_LOG"
     fi
-    echo "newcontainer000111" ;;
+    echo "$candidate_id" ;;
   *) ;;
 esac
 `;
@@ -210,7 +240,9 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
       mode: fs.readFileSync(`${base}.mode`, "utf8").trim(), directoryMode: fs.readFileSync(`${base}.dir-mode`, "utf8").trim(),
     };
   });
-  const comparableCalls = calls.map((call) => tokenFiles.reduce((value, file) => value.replaceAll(file.path, `<private-env/${path.basename(file.path)}>`), call));
+  const comparableCalls = calls.map((call) => tokenFiles.reduce((value, file) => value
+    .replaceAll(path.dirname(file.path), "<private-dir>")
+    .replaceAll(path.basename(path.dirname(file.path)), "<private-dir>"), call));
   return { out: `${r.stdout}${r.stderr}`, status: r.status, calls, comparableCalls, actions, argvCalls, tokenFiles, tempEntries: fs.readdirSync(tempRoot) };
 }
 
@@ -244,9 +276,9 @@ describe("hosts WITHOUT DialF: positional and explicit commands keep the same co
       const after = upgrade(env, { runner, command: true });
       expect(before.status).toBe(0);
       expect(after.status).toBe(0);
-      expect(after.actions).toEqual(env.RUNNING_IMAGE === env.LATEST_IMAGE ? [] : ["stop", "rm", "run"]);
+      expect(after.actions).toEqual(env.RUNNING_IMAGE === env.LATEST_IMAGE ? [] : ["stop", "run", "rm"]);
       expect(after.actions).toEqual(before.actions);
-      const runOf = (r: typeof after) => r.argvCalls.find((args) => args[0] === "run")?.map((arg, index, args) => args[index - 1] === "--env-file" ? "<private-env-file>" : arg);
+      const runOf = (r: typeof after) => r.argvCalls.find((args) => args[0] === "run")?.map((arg, index, args) => ["--env-file", "--cidfile"].includes(args[index - 1]) ? "<private-file>" : arg);
       expect(runOf(after)).toEqual(runOf(before));
       expect(after.tokenFiles.map((file) => file.content)).toEqual(before.tokenFiles.map((file) => file.content));
       expect(after.out).not.toMatch(/WARNING|Restart required|recreat|Continue|\(y\/n\)/);
@@ -488,8 +520,8 @@ describe("private Docker credential files", () => {
   it.each([{ RUN_FAIL: "1" }, { RUN_SIGNAL: "TERM" }, { RUN_SIGNAL: "INT" }])("cleans credential files after Docker failure or interruption (%j)", (failure) => {
     const r = upgrade({ RUNNING_ID: "abc", ...failure }, { both: true });
     expect(r.status).not.toBe(0);
-    expect(r.tokenFiles).toHaveLength(1);
-    expect(fs.existsSync(r.tokenFiles[0].path)).toBe(false);
+    expect(r.tokenFiles).toHaveLength("RUN_FAIL" in failure ? 2 : 1);
+    expect(r.tokenFiles.every((file) => !fs.existsSync(file.path))).toBe(true);
     expect(r.tempEntries).toEqual([]);
   });
 
@@ -633,7 +665,7 @@ describe("maintenance opt-out", () => {
   it.each(["false", "0"])("VOX_INSTANCE_DISABLED=%s leaves recovery enabled", (disabled) => {
     const r = upgrade({ RUNNING_ID: "abc", DOCKER_STATES: "exited", VOX_INSTANCE_DISABLED: disabled });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
   });
 
   it.each(["yes", "TRUE", "disabled"])("invalid maintenance value %s fails closed without Docker calls", (disabled) => {
@@ -644,18 +676,186 @@ describe("maintenance opt-out", () => {
   });
 });
 
+describe("container replacement preserves manual recovery", () => {
+  it.each([false, true])("removes the old container only after the replacement is running (runner: %s)", (runner) => {
+    const component = runner ? "vox-clash-runner" : "vox-eval-agentd";
+    const r = upgrade({ RUNNING_ID: "abc" }, { runner });
+    expect(r.status).toBe(0);
+    const rename = r.argvCalls.findIndex((args) => args[0] === "rename");
+    const run = r.argvCalls.findIndex((args) => args[0] === "run");
+    const verify = r.argvCalls.findIndex((args) => args[0] === "inspect" && args.at(-1) === CONTAINER_NEW);
+    const remove = r.argvCalls.findIndex((args) => args[0] === "rm");
+    expect(r.argvCalls[rename]).toEqual(["rename", "abc", expect.stringMatching(new RegExp(`^${component}-previous-vox-manager-env\\.`))]);
+    expect(rename).toBeLessThan(run);
+    expect(run).toBeLessThan(verify);
+    expect(verify).toBeLessThan(remove);
+    expect(r.argvCalls[remove]).toEqual(["rm", "abc"]);
+    expect(r.out).not.toContain("docker start abc");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it.each([false, true])("a failed run preserves and renames back the old container (runner: %s)", (runner) => {
+    const component = runner ? "vox-clash-runner" : "vox-eval-agentd";
+    const r = upgrade({ RUNNING_ID: "abc", RUN_FAIL: "1" }, { runner });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual(["stop", "run"]);
+    expect(r.argvCalls.filter((args) => args[0] === "rename").at(-1)).toEqual(["rename", "abc", component]);
+    expect(r.argvCalls.some((args) => args[0] === "start")).toBe(false);
+    expect(r.out).toContain(`Old container preserved: abc (image ${IMAGE_OLD})`);
+    expect(r.out).toContain("docker start abc");
+    expect(r.out).toContain("Finished with errors");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it.each([false, true])("a partially created replacement is removed only by its own ID (runner: %s)", (runner) => {
+    const r = upgrade({ RUNNING_ID: "abc", RUN_PARTIAL_FAIL: "1" }, { runner });
+    expect(r.status).toBe(1);
+    expect(r.argvCalls.filter((args) => args[0] === "rm")).toEqual([["rm", "-f", CONTAINER_NEW]]);
+    expect(r.out).toContain("docker start abc");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it.each(["created", "exited", "restarting", "dead", "paused"])("does not delete the old container if the new state is %s", (newState) => {
+    const r = upgrade({ RUNNING_ID: "abc", NEW_STATE: newState });
+    expect(r.status).toBe(1);
+    expect(r.argvCalls.filter((args) => args[0] === "rm")).toEqual([["rm", "-f", CONTAINER_NEW]]);
+    expect(r.out).toContain("docker start abc");
+  });
+
+  it("a failed new-state inspection preserves the old container", () => {
+    const r = upgrade({ RUNNING_ID: "abc", NEW_STATE_INSPECT_FAIL: "1" });
+    expect(r.status).toBe(1);
+    expect(r.argvCalls.filter((args) => args[0] === "rm")).toEqual([["rm", "-f", CONTAINER_NEW]]);
+    expect(r.out).toContain("docker start abc");
+  });
+
+  it.each([
+    { CID_FILE_MISSING: "1" }, { CID_FILE_CONTENT: "vox-eval-agentd" },
+    { CID_FILE_CONTENT: "--force" }, { CID_FILE_CONTENT: "a".repeat(65) },
+  ])("an absent/invalid cidfile never permits name-based deletion (%j)", (failure) => {
+    const r = upgrade({ RUNNING_ID: "abc", ...failure });
+    expect(r.status).toBe(1);
+    expect(r.argvCalls.some((args) => args[0] === "rm")).toBe(false);
+    expect(r.out).toContain("docker start abc");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("continues with the second service after the first fails, and exits nonzero", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUN_FAIL_AT: "1" }, { both: true });
+    expect(r.status).toBe(1);
+    const runs = r.argvCalls.filter((args) => args[0] === "run");
+    expect(runs).toHaveLength(2);
+    const failedComponent = runs[0][runs[0].indexOf("--name") + 1];
+    const failedId = failedComponent === "vox-eval-agentd" ? "abc" : "runner-abc";
+    expect(r.argvCalls.filter((args) => args[0] === "rm")).toEqual([["rm", failedId === "abc" ? "runner-abc" : "abc"]]);
+    expect(r.out).toContain(`docker start ${failedId}`);
+    expect(r.out).toContain(`Started ${failedComponent === "vox-eval-agentd" ? "vox-clash-runner" : "vox-eval-agentd"}`);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("a failed fresh install also continues with the second service", () => {
+    const r = upgrade({ RUN_FAIL_AT: "1" }, { both: true, args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual(["run", "run"]);
+    expect(r.out).not.toContain("Old container preserved");
+    expect(r.out).not.toContain("docker start ");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("preserves a legacy container's original name on failure", () => {
+    const r = upgrade({ RUN_FAIL: "1" }, { containers: [{
+      id: "legacy-id", name: "my_original_agent", ref: "ghcr.io/agora-build/vox-eval-agentd:old",
+      env: ["AGENT_TOKEN=evtest"],
+    }] });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual(["stop", "run"]);
+    expect(r.argvCalls.some((args) => args[0] === "rename")).toBe(false);
+    expect(r.out).toContain("docker start legacy-id");
+  });
+
+  it.each([
+    { RUNNING_IMAGE: IMAGE_NEW, DIALF_SOCKET: "socket" },
+    { RUNNING_IMAGE: IMAGE_NEW, DOCKER_STATES: "exited" },
+  ])("same-image recreation retains the old container when startup fails (%j)", (options) => {
+    const r = upgrade({ RUNNING_ID: "abc", RUN_FAIL: "1", ...options, ...(options.DIALF_SOCKET ? { DIALF_SOCKET: sock } : {}) });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual(["stop", "run"]);
+    expect(r.out).toContain("docker start abc");
+  });
+
+  it.each(["TERM", "INT"])("interruption by %s preserves the old container and cleans the candidate", (signal) => {
+    const r = upgrade({ RUNNING_ID: "abc", RUN_SIGNAL: signal });
+    expect(r.status).toBe(signal === "TERM" ? 143 : 130);
+    expect(r.argvCalls.filter((args) => args[0] === "rm")).toEqual([["rm", "-f", CONTAINER_NEW]]);
+    expect(r.argvCalls.filter((args) => args[0] === "rename").at(-1)).toEqual(["rename", "abc", "vox-eval-agentd"]);
+    expect(r.out).toContain("docker start abc");
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it.each([
+    [{ ORIGINAL_NAME_FAIL: "1" }, []],
+    [{ STOP_FAIL: "1" }, ["stop"]],
+    [{ RENAME_FAIL_AT: "1" }, ["stop"]],
+  ] as const)("stop/name failures never launch or delete a container (%j)", (failure, actions) => {
+    const r = upgrade({ RUNNING_ID: "abc", ...failure });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual(actions);
+    expect(r.tempEntries).toEqual([]);
+  });
+
+  it("failure to restore a name still prints ID-based recovery", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUN_FAIL: "1", RENAME_FAIL_AT: "2" });
+    expect(r.status).toBe(1);
+    expect(r.argvCalls.some((args) => args[0] === "rm")).toBe(false);
+    expect(r.out).toContain("could not restore the old container's name");
+    expect(r.out).toContain("docker start abc");
+  });
+
+  it("failure to remove the old container does not stop the working replacement", () => {
+    const r = upgrade({ RUNNING_ID: "abc", OLD_RM_FAIL: "1" });
+    expect(r.status).toBe(1);
+    expect(r.argvCalls.filter((args) => args[0] === "rm")).toEqual([["rm", "abc"]]);
+    expect(r.out).toContain("replacement is running, but old container abc could not be removed");
+    expect(r.out).toContain("Started vox-eval-agentd");
+    expect(r.out).not.toContain("docker start abc");
+  });
+});
+
+describe("command-line state cannot be overridden by env files", () => {
+  it.each([
+    ["manager_force=1", []],
+    ["manager_force=", ["--force"]],
+    ["manager_version=unvalidated/secret-not-for-output", []],
+    ["manager_version=other", ["--version", "release-build"]],
+    ["manager_version_seen=", []],
+    ["manager_env_file=another.env", []],
+    ["ENV_FILE=another.env", []],
+    ["WAIT_TIMEOUT=0", []],
+    ["POLL_INTERVAL=0", []],
+  ] as const)("rejects reserved assignment %s before Docker (args: %j)", (assignment, args) => {
+    const envFile = path.join(dir, "reserved-setting.env");
+    fs.writeFileSync(envFile, `EVAL_TOKEN=secret-not-for-output\n${assignment}\n`);
+    const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "occupied" }, { defaultEnv: true, args: ["--env", envFile, ...args] });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain("without overriding reserved CLI settings");
+    expect(r.out).toContain("Sample .env");
+    expect(r.out).not.toContain("secret-not-for-output");
+  });
+});
+
 describe("health checks fail closed before interrupting work", () => {
   it.each([false, true])("requires an explicit idle response (runner: %s)", (runner) => {
     const r = upgrade({ RUNNING_ID: "abc" }, { runner });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.out).toContain("Status: idle after 0s");
   });
 
   it.each(["occupied", "uploading", "timeout", "http-error"])("retries %s and stops only after explicit idle", (status) => {
     const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: `${status}\nidle` });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.out).toContain("Status: idle after 10s");
     expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(2);
   });
@@ -721,7 +921,7 @@ describe("health checks fail closed before interrupting work", () => {
   it("only explicit confirmation permits force-stopping an unknown container", () => {
     const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: "timeout" }, { answers: "y\n" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.out).toContain("container is unknown after 300s");
   });
 });
@@ -730,7 +930,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it.each(["timeout", "occupied", "uploading"])("--force skips %s health waits and prompts", (health) => {
     const r = upgrade({ RUNNING_ID: "abc", HEALTH_STEPS: health }, { command: true, args: ["--force"] });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.calls.some((call) => /^(curl |sleep 10$)/.test(call))).toBe(false);
     expect(r.out).toContain("--force bypasses idle checks");
     expect(r.out).toContain("active evaluations may be interrupted");
@@ -755,7 +955,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it("--force explicitly accepts loss of a previous DialF mount", () => {
     const r = upgrade({ RUNNING_ID: "abc", PREV_SOCK: "/missing/dialfd.sock", HEALTH_STEPS: "timeout" }, { args: ["--force"] });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.out).toContain("--force confirms replacement without DialF support");
   });
 
@@ -776,7 +976,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
       PREV_SOCK: "/missing/dialfd.sock",
     }, { args: force ? ["--force"] : [] });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(force ? ["stop", "rm", "run"] : []);
+    expect(r.actions).toEqual(force ? ["stop", "run", "rm"] : []);
     expect(r.out).toContain("a new container WON'T take phone jobs");
     if (force) expect(r.out).toContain("--force confirms replacement without DialF support");
     else expect(r.out).toContain("Leaving the running vox-eval-agentd as it is");
@@ -787,7 +987,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   ] as const))("Docker state %s bypasses unknown health after a 10-second recheck (runner: %s)", (state, runner) => {
     const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: state, HEALTH_STEPS: "timeout" }, { runner });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.calls).toContain("docker ps -aq --no-trunc");
     expect(r.calls.some((call) => call.startsWith("curl "))).toBe(false);
     expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(1);
@@ -799,7 +999,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it.each(["created", "exited", "dead", "restarting"])("recovers a %s container even when the selected image has not changed", (state) => {
     const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: state, RUNNING_IMAGE: IMAGE_NEW });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.out).toContain(`Docker state is ${state}; recreating container`);
     expect(r.out).not.toContain("Skipping replacement");
   });
@@ -807,7 +1007,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it("rechecks Docker state during the health wait and confirms a crash after 10 seconds", () => {
     const r = upgrade({ RUNNING_ID: "abc", DOCKER_STATES: "running\nrunning\nexited", HEALTH_STEPS: "timeout" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(1);
     expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(2);
     expect(r.out).toContain("Docker state: exited");
@@ -817,7 +1017,7 @@ describe("unattended upgrades and Docker-native recovery", () => {
   it.each(["created", "exited", "dead", "restarting"])("a %s container that becomes running after 10 seconds must pass health checks", (state) => {
     const r = upgrade({ EXISTING_ID: "abc", DOCKER_STATES: `${state}\n${state}\nrunning`, HEALTH_STEPS: "occupied\nidle" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.calls.filter((call) => call === "sleep 10")).toHaveLength(2);
     expect(r.calls.filter((call) => call.startsWith("curl "))).toHaveLength(2);
     expect(r.out).toContain("Docker state after recheck: running — checking health");
@@ -1007,7 +1207,7 @@ describe("selected Docker image versions and rollback", () => {
     const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_OLD, DIALF_SOCKET: sock };
     const r = upgrade(env, { command: true, version: "previous-build" });
     expect(r.status).toBe(0);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     const run = r.calls.find((call) => call.startsWith("docker run"));
     expect(run).toContain("--restart unless-stopped");
     expect(run).toContain("vox-aeval-cache:/root/.cache");
@@ -1113,7 +1313,7 @@ describe("hosts WITH DialF", () => {
   it("same image, but the running container lacks the DialF mount: recreated with it", () => {
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_NEW, DIALF_SOCKET: sock });
     expect(r.out).toMatch(/wasn't started with it — recreating it/);
-    expect(r.actions).toEqual(["stop", "rm", "run"]);
+    expect(r.actions).toEqual(["stop", "run", "rm"]);
     expect(r.calls.find((c) => c.startsWith("docker run"))).toContain(`VOX_DIALF_SOCKET=${sock}`);
   });
 
