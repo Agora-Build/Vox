@@ -22,18 +22,18 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [vox_agent] [--version TAG|sha256:DIGEST] [--env path/to/.env] [--force]"
+    echo "Usage: $0 [vox_agent] [--env path/to/.env] [--force]"
     echo "       $0 self"
     echo "       $0 vox"
     echo ""
     echo "  vox_agent  Install, upgrade or roll back agent/runner containers (default command)."
-    echo "  --version  Docker image tag or sha256 manifest digest for all configured containers (default: latest)."
     echo "  --env      Env file to load (default: .env in the current working directory)."
     echo "  --force    Skip health waits and confirm install/replacement; may interrupt evals or remove DialF support."
     echo "  self       Update this script from the official Vox main branch; no Docker or .env needed."
     echo "  vox        Vox server installation/upgrade is not supported yet."
-    echo "  No arguments installs/upgrades vox_agent using latest images and .env in the current directory."
+    echo "  No arguments installs/upgrades vox_agent using .env in the current directory."
     echo "  EVAL_TOKEN selects eval; CLASH_TOKEN selects Clash. Missing/empty tokens leave that service untouched."
+    echo "  EVAL_VERSION / CLASH_VERSION select each service's image tag or sha256 manifest digest (default: latest)."
     echo "  A positional env-file path is still accepted for compatibility."
     echo "  Maintenance: VOX_INSTANCE_DISABLED=true in the env file skips all container operations, even with --force."
 }
@@ -43,7 +43,9 @@ print_env_sample() {
         'Sample .env (placeholders only; no file is created):' \
         '# Omit or leave a token empty to leave that service untouched.' \
         'EVAL_TOKEN=your-eval-agent-token' \
+        'EVAL_VERSION=latest' \
         'CLASH_TOKEN=your-clash-runner-token' \
+        'CLASH_VERSION=latest' \
         'VOX_SERVER=https://vox.agora.build' \
         'VOX_INSTANCE_DISABLED=false' \
         'RESTART_POLICY=unless-stopped' \
@@ -128,7 +130,7 @@ case "${1:-}" in
     vox_agent)
         shift
         ;;
-    ""|--version|--version=*|--env|--env=*|--force) ;;
+    ""|-*) ;;
     *)
         # Preserve the original positional env-file invocation, not unknown commands.
         if [ ! -f "$1" ] && [[ "$1" != */* && "$1" != .env* ]]; then
@@ -139,8 +141,6 @@ case "${1:-}" in
         ;;
 esac
 
-manager_version="latest"
-manager_version_seen=""
 manager_env_file=""
 manager_force=""
 while [ "$#" -gt 0 ]; do
@@ -154,20 +154,8 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --version|--version=*)
-            if [ -n "$manager_version_seen" ]; then
-                echo "Error: --version may only be specified once." >&2
-                usage >&2; exit 2
-            fi
-            manager_version_seen=1
-            if [ "$1" = --version ]; then
-                if [ "$#" -lt 2 ]; then usage >&2; exit 2; fi
-                manager_version="$2"
-                shift 2
-            else
-                manager_version="${1#--version=}"
-                shift
-            fi
-            ;;
+            echo "Error: --version is not supported; set EVAL_VERSION and CLASH_VERSION in the env file." >&2
+            usage >&2; exit 2 ;;
         --env|--env=*)
             if [ -n "$manager_env_file" ]; then
                 echo "Error: env file may only be specified once (use --env or a positional path)." >&2
@@ -201,12 +189,7 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
-if [[ ! "$manager_version" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ &&
-      ! "$manager_version" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-    echo "Error: --version must be a Docker image tag or sha256 manifest digest (not a full image URL)." >&2
-    usage >&2; exit 2
-fi
-readonly manager_version manager_version_seen manager_env_file manager_force
+readonly manager_env_file manager_force
 
 WAIT_TIMEOUT=300  # 5 minutes
 POLL_INTERVAL=10
@@ -281,20 +264,23 @@ fi
 
 VOX_SERVER="${VOX_SERVER:-https://vox.agora.build}"
 REGISTRY="ghcr.io/agora-build"
-image_separator=:
-[[ "$manager_version" = sha256:* ]] && image_separator=@
-
 declare -A images=()
-
-if [ -n "${EVAL_TOKEN:-}" ]; then
-    images["vox-eval-agentd"]="${REGISTRY}/vox-eval-agentd${image_separator}${manager_version}"
-    echo "Found EVAL_TOKEN - will install/upgrade vox-eval-agentd"
-fi
-
-if [ -n "${CLASH_TOKEN:-}" ]; then
-    images["vox-clash-runner"]="${REGISTRY}/vox-clash-runner${image_separator}${manager_version}"
-    echo "Found CLASH_TOKEN - will install/upgrade vox-clash-runner"
-fi
+declare -A image_versions=()
+for name in vox-eval-agentd vox-clash-runner; do
+    if [ "$name" = vox-eval-agentd ]; then token_name=EVAL_TOKEN; version_name=EVAL_VERSION
+    else token_name=CLASH_TOKEN; version_name=CLASH_VERSION; fi
+    [ -n "${!token_name:-}" ] || continue
+    selected_version="${!version_name:-latest}"
+    if [[ ! "$selected_version" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ &&
+          ! "$selected_version" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+        env_config_error "$version_name must be a Docker image tag or sha256 manifest digest, not a full image URL. No containers were changed."
+    fi
+    image_versions[$name]="$selected_version"
+    image_separator=:
+    [[ "$selected_version" = sha256:* ]] && image_separator=@
+    images[$name]="${REGISTRY}/${name}${image_separator}${selected_version}"
+    echo "Found $token_name - will install/upgrade $name"
+done
 
 echo "-----------------------------------"
 
@@ -664,6 +650,7 @@ done
 # version must not leave a multi-container installation partially replaced.
 for name in "${!images[@]}"; do
     image="${images[$name]}"
+    selected_version="${image_versions[$name]}"
     echo "Checking $name ($image)..."
 
     echo "Pulling selected image: $image..."
@@ -680,7 +667,7 @@ for name in "${!images[@]}"; do
 
     # Keep the official repository name without trusting a movable tag at launch.
     pinned_image=""
-    if [[ "$manager_version" = sha256:* ]]; then
+    if [[ "$selected_version" = sha256:* ]]; then
         pinned_image="$image"
     else
         if ! repo_digests=$(docker image inspect "$selected_image_id" --format='{{range .RepoDigests}}{{println .}}{{end}}'); then
@@ -801,6 +788,7 @@ done
 
 for name in "${!images[@]}"; do
     image="${images[$name]}"
+    selected_version="${image_versions[$name]}"
     selected_image_id="${target_images[$name]}"
     pinned_image="${target_refs[$name]}"
     running_id="${running_containers[$name]}"
@@ -1022,7 +1010,7 @@ for name in "${!images[@]}"; do
     candidate_id_file="$manager_env_dir/$name.cid"
     start_succeeded=""
     if docker run -d --name "$name" --restart "$RESTART_POLICY" --pull=never \
-        --label "org.agora.vox.image=$image" --label "org.agora.vox.version=$manager_version" \
+        --label "org.agora.vox.image=$image" --label "org.agora.vox.version=$selected_version" \
         -p "127.0.0.1::${HEALTH_PORT}" "${device_args[@]}" "${mount_args[@]}" \
         --cidfile "$candidate_id_file" --env-file "${token_env_files[$name]}" "${env_args[@]}" "$pinned_image" > /dev/null; then
         if new_container_id=$(candidate_container_id) &&

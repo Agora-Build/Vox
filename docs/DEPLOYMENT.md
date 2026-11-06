@@ -527,19 +527,26 @@ Vox itself is one container, but a full deployment also runs:
 
 ### Selecting an agent image / rollback
 
-Run `scripts/vox-manager.sh vox_agent --version <published-tag> [--env env-file]` to
-install or roll back to a specific agent/runner image. Omit `--version` (or pass
-`latest`) for the current build. Published tags are Docker build/short commit-SHA
-tags, not aeval binary versions. An immutable registry manifest digest is also
-accepted as `--version sha256:<64-hex-digest>`.
+Set `EVAL_VERSION` and `CLASH_VERSION` in the selected env file, then run
+`scripts/vox-manager.sh [vox_agent] [--env env-file]`. Each setting independently
+selects that service's Docker image tag or immutable registry manifest digest
+(`sha256:<64-hex-digest>`). Missing/empty versions default to `latest`. Published
+tags are Docker build/short commit-SHA tags, not aeval binary versions. CLI
+`--version` is no longer supported; an old invocation fails before loading the
+env file or calling Docker and explains the new settings.
 
-Omit `--env` to load `.env` from the current working directory. The env-file and
-version options can appear in either order. Positional env-file paths still work
-for compatibility, but cannot be combined with `--env`.
+For example, use `EVAL_VERSION=c64ff76` and `CLASH_VERSION=latest` to pin the eval
+agent without pinning Clash. Set an older tag/digest for a rollback; set `latest`
+to follow the current build again. Different service-specific digests can coexist
+in one env file. Only a tag or digest is accepted, never a full image URL or a
+different repository. A missing token leaves that service untouched, including
+ignoring its version. All enabled versions are validated before Docker operations.
 
-The selection applies to all tokens in that env file; use separate env files for
-different component versions or an image-specific digest. All images are pulled
-and resolved before any container is stopped. Containers launch by the verified
+Omit `--env` to load `.env` from the current working directory. Positional env-file
+paths still work for compatibility, but cannot be combined with `--env`.
+
+All enabled images are pulled and resolved before any container is stopped.
+Containers launch by the verified
 official repository digest (`ghcr.io/agora-build/vox-eval-agentd@sha256:...` or
 `ghcr.io/agora-build/vox-clash-runner@sha256:...`), with `--pull=never`. The
 reference must resolve to the selected local image ID before stopping anything.
@@ -570,7 +577,7 @@ cleanup or name-restoration errors, inspect those before running recovery.
 ### Upgrade health checks and ports
 
 CLI state is readonly before loading the env file: configuration cannot toggle
-`--force`, replace the validated `--version` or env-file selection, or shorten the
+`--force`, replace the env-file selection, or shorten the
 health-wait constants. Assignments to reserved manager CLI variables are rejected
 before Docker is called; normal documented configuration keys remain supported.
 

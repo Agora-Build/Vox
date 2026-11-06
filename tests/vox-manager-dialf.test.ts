@@ -191,7 +191,7 @@ exec /usr/bin/mktemp "$@"
 `;
 
 type ContainerFixture = { id: string; name: string; ref: string; imageId?: string; state?: string; env?: string[]; aliases?: string[] };
-function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; version?: string; args?: string[]; containers?: ContainerFixture[]; permissiveUmask?: boolean } = {}) {
+function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: boolean; answers?: string; command?: boolean; defaultEnv?: boolean; versions?: { eval?: string; clash?: string }; args?: string[]; containers?: ContainerFixture[]; permissiveUmask?: boolean } = {}) {
   const log = path.join(dir, `calls-${Math.random()}.log`);
   fs.writeFileSync(log, "");
   const argvLog = `${log}.argv`;
@@ -212,9 +212,14 @@ function upgrade(env: Record<string, string>, opts: { runner?: boolean; both?: b
       if (container.aliases) fs.writeFileSync(path.join(containersDir, `${imageId}.aliases`), container.aliases.join("\n"));
     }
   }
-  const envFile = path.join(dir, opts.both ? "both.env" : opts.runner ? "runner.env" : "agent.env");
+  let envFile = path.join(dir, opts.both ? "both.env" : opts.runner ? "runner.env" : "agent.env");
+  if (opts.versions) {
+    const versionSettings = Object.entries(opts.versions).map(([service, version]) => `${service === "eval" ? "EVAL_VERSION" : "CLASH_VERSION"}=${shellValue(version)}`).join("\n");
+    const configuredEnvFile = `${log}.env`;
+    fs.writeFileSync(configuredEnvFile, `${fs.readFileSync(envFile, "utf8")}\n${versionSettings}\n`);
+    envFile = configuredEnvFile;
+  }
   const args = opts.defaultEnv ? (opts.command ? ["vox_agent"] : []) : opts.command ? ["vox_agent", envFile] : [envFile];
-  if (opts.version !== undefined) args.push("--version", opts.version);
   if (opts.args) args.push(...opts.args);
   const bashArgs = opts.permissiveUmask ? ["-c", 'umask 000; exec bash "$@"', "_", SCRIPT, ...args] : [SCRIPT, ...args];
   const r = spawnSync("bash", bashArgs, {
@@ -297,7 +302,7 @@ describe("official image names and deployment provenance", () => {
     const isDigest = version.startsWith("sha256:");
     const selected = `${repo}${isDigest ? "@" : ":"}${version}`;
     const pinned = `${repo}@${isDigest ? version : MANIFEST_NEW}`;
-    const r = upgrade({ RUNNING_ID: "abc" }, { runner, version });
+    const r = upgrade({ RUNNING_ID: "abc" }, { runner, versions: { eval: version, clash: version } });
     expect(r.status).toBe(0);
     const run = r.calls.find((call) => call.startsWith("docker run"));
     expect(run?.endsWith(` ${pinned}`)).toBe(true);
@@ -366,7 +371,7 @@ describe("version-independent legacy discovery", () => {
   it.each([false, true].flatMap((runner) => ["tag", "digest", "id"].map((kind) => [runner, kind] as const)))("finds a legacy container independently of the rollback version (runner: %s, reference: %s)", (runner, kind) => {
     const repo = `ghcr.io/agora-build/${runner ? "vox-clash-runner" : "vox-eval-agentd"}`;
     const ref = kind === "id" ? IMAGE_OLD : kind === "digest" ? `${repo}@${MANIFEST_OLD}` : `${repo}:latest`;
-    const r = upgrade({}, { runner, version: "rollback-build", containers: [legacy("older", runner, { ref, aliases: [`${repo}@${MANIFEST_OLD}`] })] });
+    const r = upgrade({}, { runner, versions: { eval: "rollback-build", clash: "rollback-build" }, containers: [legacy("older", runner, { ref, aliases: [`${repo}@${MANIFEST_OLD}`] })] });
     expect(r.status).toBe(0);
     expect(r.argvCalls).toContainEqual(["stop", "older"]);
     expect(r.argvCalls).toContainEqual(["rm", "older"]);
@@ -825,9 +830,6 @@ describe("command-line state cannot be overridden by env files", () => {
   it.each([
     ["manager_force=1", []],
     ["manager_force=", ["--force"]],
-    ["manager_version=unvalidated/secret-not-for-output", []],
-    ["manager_version=other", ["--version", "release-build"]],
-    ["manager_version_seen=", []],
     ["manager_env_file=another.env", []],
     ["ENV_FILE=another.env", []],
     ["WAIT_TIMEOUT=0", []],
@@ -937,8 +939,10 @@ describe("unattended upgrades and Docker-native recovery", () => {
     expect(r.out).not.toContain("Timeout:");
   });
 
-  it("--force works as the first option with --version and --env, including a fresh unattended install", () => {
-    const r = upgrade({}, { defaultEnv: true, args: ["--force", "--version", "7c3b1a2", "--env", path.join(dir, "agent.env")] });
+  it("--force works as the first option with --env and an env-pinned version on a fresh install", () => {
+    const envFile = path.join(dir, "forced-version.env");
+    fs.writeFileSync(envFile, "EVAL_TOKEN=evtest\nEVAL_VERSION=7c3b1a2\n");
+    const r = upgrade({}, { defaultEnv: true, args: ["--force", "--env", envFile] });
     expect(r.status).toBe(0);
     expect(r.actions).toEqual(["run"]);
     expect(r.out).toContain("--force confirms starting a new container");
@@ -1163,13 +1167,10 @@ describe("install/upgrade command dispatch", () => {
 });
 
 describe("selected Docker image versions and rollback", () => {
-  it.each([
-    ["--version", "c64ff76", "--env"],
-    ["--env", "--version", "c64ff76"],
-    ["--env=", "--version=c64ff76"],
-  ])("accepts explicit --env and --version in either order: %j", (...options) => {
-    const envFile = path.join(dir, "agent.env");
-    const args = options.flatMap((option) => option === "--env" ? [option, envFile] : option === "--env=" ? [`--env=${envFile}`] : [option]);
+  it.each(["explicit", "equals", "positional"])("loads the version from the %s env-file argument", (form) => {
+    const envFile = path.join(dir, "pinned-version.env");
+    fs.writeFileSync(envFile, "EVAL_TOKEN=evtest\nEVAL_VERSION=c64ff76\n");
+    const args = form === "explicit" ? ["--env", envFile] : form === "equals" ? [`--env=${envFile}`] : [envFile];
     const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, { defaultEnv: true, command: true, args });
     expect(r.status).toBe(0);
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:c64ff76");
@@ -1185,7 +1186,7 @@ describe("selected Docker image versions and rollback", () => {
   });
 
   it.each([false, true])("selects a published image tag (runner: %s)", (runner) => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD }, { command: true, runner, version: "7c3b1a2" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_OLD }, { command: true, runner, versions: { eval: "7c3b1a2", clash: "7c3b1a2" } });
     const image = `ghcr.io/agora-build/${runner ? "vox-clash-runner" : "vox-eval-agentd"}:7c3b1a2`;
     expect(r.status).toBe(0);
     expect(r.calls).toContain(`docker pull ${image}`);
@@ -1196,7 +1197,7 @@ describe("selected Docker image versions and rollback", () => {
   });
 
   it("installs a specific version on a new host after confirmation", () => {
-    const r = upgrade({}, { command: true, version: "7c3b1a2", answers: "y\n" });
+    const r = upgrade({}, { command: true, versions: { eval: "7c3b1a2", clash: "7c3b1a2" }, answers: "y\n" });
     expect(r.status).toBe(0);
     expect(r.actions).toEqual(["run"]);
     expect(r.out).toContain("Starting new container");
@@ -1205,7 +1206,7 @@ describe("selected Docker image versions and rollback", () => {
 
   it("rolls back to an older image, preserving existing Docker configuration", () => {
     const env = { RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, LATEST_IMAGE: IMAGE_OLD, DIALF_SOCKET: sock };
-    const r = upgrade(env, { command: true, version: "previous-build" });
+    const r = upgrade(env, { command: true, versions: { eval: "previous-build", clash: "previous-build" } });
     expect(r.status).toBe(0);
     expect(r.actions).toEqual(["stop", "run", "rm"]);
     const run = r.calls.find((call) => call.startsWith("docker run"));
@@ -1219,34 +1220,105 @@ describe("selected Docker image versions and rollback", () => {
 
   it("accepts an immutable manifest digest using Docker's @ syntax", () => {
     const digest = `sha256:${"c".repeat(64)}`;
-    const r = upgrade({ RUNNING_ID: "abc" }, { command: true, version: digest });
+    const r = upgrade({ RUNNING_ID: "abc" }, { command: true, versions: { eval: digest, clash: digest } });
     expect(r.status).toBe(0);
     expect(r.calls).toContain(`docker pull ghcr.io/agora-build/vox-eval-agentd@${digest}`);
     expect(r.calls.find((call) => call.startsWith("docker run"))?.endsWith(` ghcr.io/agora-build/vox-eval-agentd@${digest}`)).toBe(true);
   });
 
   it("does not replace a container already running the selected version", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, { command: true, version: "7c3b1a2" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW }, { command: true, versions: { eval: "7c3b1a2", clash: "7c3b1a2" } });
     expect(r.status).toBe(0);
     expect(r.actions).toEqual([]);
     expect(r.out).toContain("Already running the selected image (ghcr.io/agora-build/vox-eval-agentd:7c3b1a2)");
   });
 
-  it("allows --version before the env file and the --version=tag form", () => {
+  it("loads per-service versions from the current directory's .env with no arguments", () => {
     const env = { RUNNING_ID: "abc" };
-    fs.copyFileSync(path.join(dir, "agent.env"), path.join(dir, ".env"));
-    const beforeEnv = upgrade(env, { defaultEnv: true, command: true, args: ["--version", "7c3b1a2", path.join(dir, "agent.env")] });
-    const equals = upgrade(env, { command: true, args: ["--version=7c3b1a2"] });
-    const implicit = upgrade(env, { defaultEnv: true, args: ["--version", "7c3b1a2"] });
-    expect(beforeEnv.status).toBe(0);
-    expect(equals.status).toBe(0);
+    fs.writeFileSync(path.join(dir, ".env"), "EVAL_TOKEN=evtest\nCLASH_TOKEN=crtest\nEVAL_VERSION=eval-build\nCLASH_VERSION=clash-build\n");
+    const implicit = upgrade(env, { defaultEnv: true, both: true });
     expect(implicit.status).toBe(0);
-    expect(beforeEnv.comparableCalls).toEqual(equals.comparableCalls);
-    expect(implicit.comparableCalls).toEqual(equals.comparableCalls);
+    expect(implicit.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:eval-build");
+    expect(implicit.calls).toContain("docker pull ghcr.io/agora-build/vox-clash-runner:clash-build");
+  });
+
+  it.each([
+    ["eval-build", "clash-build"],
+    [MANIFEST_NEW, MANIFEST_OLD],
+    [MANIFEST_NEW, "clash-build"],
+    ["eval-build", MANIFEST_OLD],
+  ])("keeps each service's selection, pinned reference and version label separate (eval: %s, clash: %s)", (evalVersion, clashVersion) => {
+    const evalRepo = "ghcr.io/agora-build/vox-eval-agentd";
+    const clashRepo = "ghcr.io/agora-build/vox-clash-runner";
+    const r = upgrade({
+      RUNNING_ID: "abc", RUNNER_TARGET_IMAGE: `sha256:${"e".repeat(64)}`,
+      REPO_DIGESTS: `${evalRepo}@${MANIFEST_NEW}\n${clashRepo}@${MANIFEST_OLD}`,
+    }, { both: true, versions: { eval: evalVersion, clash: clashVersion } });
+    expect(r.status).toBe(0);
+    const runs = r.argvCalls.filter((args) => args[0] === "run");
+    expect(runs).toHaveLength(2);
+    for (const [component, repo, version, digest] of [
+      ["vox-eval-agentd", evalRepo, evalVersion, MANIFEST_NEW],
+      ["vox-clash-runner", clashRepo, clashVersion, MANIFEST_OLD],
+    ]) {
+      const selectedRef = `${repo}${version.startsWith("sha256:") ? "@" : ":"}${version}`;
+      expect(r.calls).toContain(`docker pull ${selectedRef}`);
+      const run = runs.find((args) => args[args.indexOf("--name") + 1] === component);
+      expect(run?.at(-1)).toBe(`${repo}@${digest}`);
+      expect(run).toContain(`org.agora.vox.image=${selectedRef}`);
+      expect(run).toContain(`org.agora.vox.version=${version}`);
+    }
+    const firstStop = r.argvCalls.findIndex((args) => args[0] === "stop");
+    expect(r.argvCalls.every((args, index) => args[0] !== "image" || index < firstStop)).toBe(true);
+  });
+
+  it.each([false, true])("an omitted service version independently defaults to latest (runner: %s)", (runner) => {
+    const r = upgrade({ RUNNING_ID: "abc" }, { both: true, versions: runner ? { eval: "eval-build" } : { clash: "clash-build" } });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain(`docker pull ghcr.io/agora-build/vox-eval-agentd:${runner ? "eval-build" : "latest"}`);
+    expect(r.calls).toContain(`docker pull ghcr.io/agora-build/vox-clash-runner:${runner ? "latest" : "clash-build"}`);
+  });
+
+  it("empty versions default to latest for both services", () => {
+    const r = upgrade({ RUNNING_ID: "abc" }, { both: true, versions: { eval: "", clash: "" } });
+    expect(r.status).toBe(0);
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
+    expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-clash-runner:latest");
+  });
+
+  it.each([false, true].flatMap((runner) => [
+    "-latest", "repo/image:tag", "sha256:short", `sha256:${"A".repeat(64)}`,
+    "a".repeat(129), "x y", "$(touch injected)", "secret-not-for-output\nlatest",
+  ].map((version) => [runner, version] as const)))("rejects invalid configured versions before Docker (runner: %s, version: %j)", (runner, version) => {
+    const r = upgrade({ RUNNING_ID: "abc" }, { both: true, versions: runner ? { clash: version } : { eval: version } });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain(`${runner ? "CLASH_VERSION" : "EVAL_VERSION"} must be a Docker image tag or sha256 manifest digest`);
+    expect(r.out).toContain("EVAL_VERSION=latest");
+    expect(r.out).toContain("CLASH_VERSION=latest");
+    expect(r.out).not.toContain("secret-not-for-output");
+    expect(fs.existsSync(path.join(dir, "injected"))).toBe(false);
+  });
+
+  it.each([false, true])("ignores versions for a service without a token (runner: %s)", (runner) => {
+    const r = upgrade({ RUNNING_ID: "abc" }, { runner, versions: runner ? { eval: "invalid/version" } : { clash: "invalid/version" } });
+    expect(r.status).toBe(0);
+    expect(r.calls.filter((call) => call.startsWith("docker pull"))).toHaveLength(1);
+  });
+
+  it("a failed second digest pull leaves both old containers untouched", () => {
+    const r = upgrade({ RUNNING_ID: "abc", PULL_FAIL_AT: "2" }, { both: true, versions: { eval: MANIFEST_NEW, clash: MANIFEST_OLD } });
+    expect(r.status).toBe(1);
+    expect(r.actions).toEqual([]);
+    expect(r.calls.filter((call) => call.startsWith("docker pull")).sort()).toEqual([
+      `docker pull ghcr.io/agora-build/vox-clash-runner@${MANIFEST_OLD}`,
+      `docker pull ghcr.io/agora-build/vox-eval-agentd@${MANIFEST_NEW}`,
+    ]);
+    expect(r.out).toContain("No containers were changed");
   });
 
   it("an unavailable version leaves the existing container untouched", () => {
-    const r = upgrade({ RUNNING_ID: "abc", PULL_FAIL_IMAGE: "vox-eval-agentd" }, { command: true, version: "missing-build" });
+    const r = upgrade({ RUNNING_ID: "abc", PULL_FAIL_IMAGE: "vox-eval-agentd" }, { command: true, versions: { eval: "missing-build", clash: "missing-build" } });
     expect(r.status).toBe(1);
     expect(r.actions).toEqual([]);
     expect(r.out).toContain("No containers were changed");
@@ -1254,7 +1326,7 @@ describe("selected Docker image versions and rollback", () => {
   });
 
   it("a failed image inspection leaves the existing container untouched", () => {
-    const r = upgrade({ RUNNING_ID: "abc", TARGET_INSPECT_FAIL: "1" }, { command: true, version: "7c3b1a2" });
+    const r = upgrade({ RUNNING_ID: "abc", TARGET_INSPECT_FAIL: "1" }, { command: true, versions: { eval: "7c3b1a2", clash: "7c3b1a2" } });
     expect(r.status).toBe(1);
     expect(r.actions).toEqual([]);
     expect(r.out).toContain("could not resolve");
@@ -1268,7 +1340,7 @@ describe("selected Docker image versions and rollback", () => {
   });
 
   it("validates both selected images before any replacement", () => {
-    const r = upgrade({ RUNNING_ID: "abc" }, { command: true, both: true, version: "7c3b1a2" });
+    const r = upgrade({ RUNNING_ID: "abc" }, { command: true, both: true, versions: { eval: "7c3b1a2", clash: "7c3b1a2" } });
     expect(r.status).toBe(0);
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:7c3b1a2");
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-clash-runner:7c3b1a2");
@@ -1279,7 +1351,7 @@ describe("selected Docker image versions and rollback", () => {
   });
 
   it("keeps agent and runner image IDs separate when both use the same tag", () => {
-    const r = upgrade({ RUNNING_ID: "abc", RUNNER_TARGET_IMAGE: IMAGE_OLD }, { command: true, both: true, version: "7c3b1a2" });
+    const r = upgrade({ RUNNING_ID: "abc", RUNNER_TARGET_IMAGE: IMAGE_OLD }, { command: true, both: true, versions: { eval: "7c3b1a2", clash: "7c3b1a2" } });
     expect(r.status).toBe(0);
     const runs = r.calls.filter((call) => call.startsWith("docker run"));
     expect(runs).toHaveLength(1);
@@ -1289,7 +1361,7 @@ describe("selected Docker image versions and rollback", () => {
   });
 
   it("a missing second image cannot leave a multi-container rollback half-applied", () => {
-    const r = upgrade({ RUNNING_ID: "abc", PULL_FAIL_AT: "2" }, { command: true, both: true, version: "missing-build" });
+    const r = upgrade({ RUNNING_ID: "abc", PULL_FAIL_AT: "2" }, { command: true, both: true, versions: { eval: "missing-build", clash: "missing-build" } });
     expect(r.status).toBe(1);
     expect(r.calls.filter((call) => call.startsWith("docker pull"))).toHaveLength(2);
     expect(r.actions).toEqual([]);

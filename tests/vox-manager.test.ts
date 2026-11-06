@@ -84,7 +84,9 @@ describe("management command dispatch", () => {
     const result = run([command]);
     expect(result.status).toBe(0);
     expect(result.out).toContain("vox_agent");
-    expect(result.out).toContain("--version");
+    expect(result.out).not.toContain("--version");
+    expect(result.out).toContain("EVAL_VERSION");
+    expect(result.out).toContain("CLASH_VERSION");
     expect(result.out).toContain("--env");
     expect(result.out).toContain("--force");
     expect(result.out).toContain("may interrupt evals");
@@ -121,7 +123,8 @@ describe("management command dispatch", () => {
     ["--version", "repo/image:tag"], ["--version", "sha256:short"],
     ["--version", "a".repeat(129)], ["--version", "x y"], ["--version", "$(touch injected)"],
     ["--version", "old", "--version", "new"], ["--unknown"], ["self", "--version", "old"],
-  ])("invalid version arguments %j are rejected before reading .env or calling Docker", (...args) => {
+    ["--version", "latest"], ["--version=c64ff76"], ["--version", `sha256:${"a".repeat(64)}`],
+  ])("removed CLI version and unknown arguments %j are rejected before reading .env or calling Docker", (...args) => {
     const result = run(args[0] === "self" ? args : ["vox_agent", ...args]);
     expect(result.status).toBe(2);
     expect(result.out).toContain("Usage:");

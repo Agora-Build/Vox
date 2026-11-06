@@ -265,7 +265,7 @@ Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`); each migration runs ex
 | `./scripts/full-tests-run.sh` | The full gate: unit + audio + E2E |
 | `./scripts/dev-local-run.sh start` | Start the local environment |
 | `./scripts/dev-local-run.sh clean-test-data --yes` | Remove leftover test data from the local database |
-| `./scripts/vox-manager.sh [vox_agent] [--version TAG\|sha256:DIGEST] [--env path/to/.env]` | Install, upgrade or roll back eval agent and/or clash runner containers |
+| `./scripts/vox-manager.sh [vox_agent] [--env path/to/.env]` | Install, upgrade or roll back eval agent and/or clash runner containers |
 | `./scripts/vox-manager.sh self` | Update the management script itself, without touching containers |
 
 ### Installing / Upgrading / Rolling Back Eval Agents / Clash Runners
@@ -283,14 +283,15 @@ Create an env file with the token(s) for the containers you want to manage:
 ```bash
 cat > .env << 'EOF'
 EVAL_TOKEN=your-eval-agent-token
+EVAL_VERSION=latest
 CLASH_TOKEN=your-clash-runner-token
+CLASH_VERSION=latest
 VOX_SERVER=https://vox.agora.build
 EOF
 
-./vox-manager.sh                                # install/upgrade latest using .env in the current directory
+./vox-manager.sh                                # install/upgrade using .env in the current directory
 ./vox-manager.sh vox_agent                      # same default behavior
 ./vox-manager.sh vox_agent --env /path/to/.env   # or a specific file
-./vox-manager.sh vox_agent --version c64ff76 --env /path/to/.env # select a published Docker tag
 ./vox-manager.sh vox_agent --env /path/to/.env --force # unattended; may interrupt active evaluations
 ./vox-manager.sh self                           # update this script only; no .env or Docker required
 ./vox-manager.sh vox                            # reserved: Vox server management is not supported yet
@@ -353,7 +354,7 @@ validation. This local safety check is separate from Core's heartbeat recovery:
 a missing health response does not prove that an evaluation has stopped.
 
 Command-line choices always take precedence: the env file cannot enable or disable
-`--force`, change the validated `--version`, or replace the selected env path.
+`--force` or replace the selected env path.
 Assignments to reserved CLI variables are rejected before any Docker operation.
 
 During replacement, the old container is stopped but retained by ID (temporarily
@@ -380,23 +381,26 @@ existing containers untouched. Docker env, mount, and device arguments use array
 so quoted env-file values containing whitespace, globs or option-like text remain
 literal values (for example, `VOX_AGENT_NAME='My phone agent'`).
 
-Running `./vox-manager.sh` without arguments defaults to `vox_agent`, image
-version `latest`, and `.env` in the **current working directory**, not the script's
-directory. Use `--env /path/to/.env` to select a different file; `--env` and
-`--version` can appear in either order. Paths containing spaces must be quoted.
+Running `./vox-manager.sh` without arguments defaults to `vox_agent` and `.env` in
+the **current working directory**, not the script's directory. Use
+`--env /path/to/.env` to select a different file. Paths containing spaces must be
+quoted.
 
-Without `--version`, the script uses `latest`. To install or roll back to a known
-build, pass its published Docker tag (the image pipeline publishes short commit-SHA
-tags, not the aeval binary's version). Use the same command with an older tag to
-roll back, or `--version latest` to return to the current build. For an immutable
-registry reference, pass `--version sha256:<64-hex-manifest-digest>`; this is the
-image's registry manifest digest, not a local Docker image/config ID. Only a tag
-or digest is accepted, not a different registry or full image URL.
+Set `EVAL_VERSION` and `CLASH_VERSION` in the env file to select each service's
+image independently. Missing/empty versions default to `latest`. To install or
+roll back to a known build, set the corresponding version to its published Docker
+tag (the image pipeline publishes short commit-SHA tags, not the aeval binary's
+version). Set it back to `latest` to follow the current build. For an immutable
+registry reference, use `sha256:<64-hex-manifest-digest>`; this is the image's
+registry manifest digest, not a local Docker image/config ID. Only a tag or digest
+is accepted, not a different registry or full image URL. CLI `--version` is no
+longer supported.
 
-The version applies to every container enabled by the env file. If agent and
-runner need different versions (or you use an image-specific digest), use separate
-env files containing only that component's token. Both images must have the
-requested tag when both tokens are configured. The script pulls and verifies
+For example, `EVAL_VERSION=c64ff76` and `CLASH_VERSION=latest` pin only the eval
+service. Both services can also use their own distinct manifest digests in the
+same env file. A service without its token is ignored, including its version.
+All enabled services' version settings are validated before Docker is called.
+The script pulls and verifies
 **all** selected images before stopping any container; an unavailable version
 leaves running containers untouched. It resolves each verified image to an
 official repository digest and launches that immutable reference with
