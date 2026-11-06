@@ -6,12 +6,12 @@
 // without booting the HTTP server.
 
 import { storage, mergeEvalConfig, buildJobSnapshot, unsupportedFrameworkError } from "./storage";
-import { canScheduleEvalFlow, sessionPoolViolation } from "./permissions";
+import { canScheduleEvalFlow } from "./permissions";
 import { parseNextCronRun } from "./cron";
 import { getMarketplace } from "./marketplace";
 import { probeAndRecordBroker } from "./broker-registry";
 import { getOrganizations, type Membership } from "./organizations";
-import { stampOwnerSession, detectSessionNeed, secretGate } from "./auth-session";
+import { stampOwnerSession, detectSessionNeed, secretGate, ownedCredentialPoolViolation } from "./auth-session";
 import { log } from "./log";
 
 // Global hard cap on how long a single eval job may stay "running" before the
@@ -293,23 +293,18 @@ export async function processScheduledJobs() {
         }
         const jobConfig = mergeEvalConfig(evalFlow.config, evalSet?.config, { evalSetSecrets: gate.evalSetSecrets });
         // The evalFlow's secrets are mutable after schedule creation: a
-        // public/team schedule whose evalFlow LATER gained a login-class
-        // secret would emit an unclaimable session job every tick (the claim
-        // predicate refuses them, and pooled rows ride the 24h backstop).
-        // Check with the PURE detector BEFORE stampOwnerSession — the stamp
-        // helper mutates config and pre-warms a broker mint (ensureSession),
-        // and a schedule we are about to disable must not burn a login
-        // attempt first.
+        // credential-bearing flow must still match its Private/Team pool.
+        // Mainline is trusted for both Runtime and Brokered credentials.
+        // Check before stampOwnerSession so disallowed schedules neither mint
+        // sessions nor emit jobs that delivery would refuse.
         const schedSessionReq = await detectSessionNeed(evalFlow);
-        if (schedSessionReq.kind === "need") {
-          const violation = sessionPoolViolation(schedule.targetTier, evalFlow, {
-            organizationId: creatorMembership?.organizationId ?? null,
-          });
-          if (violation) {
-            log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
-            await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
-            continue;
-          }
+        const violation = await ownedCredentialPoolViolation(evalFlow, evalSet, schedule.targetTier, {
+          id: schedule.createdBy!, organizationId: creatorMembership?.organizationId ?? null,
+        });
+        if (violation) {
+          log(`Schedule "${schedule.name}" would dispatch into a disallowed pool (${violation}) — disabling`, "scheduler");
+          await storage.updateEvalSchedule(schedule.id, { isEnabled: false });
+          continue;
         }
         const stamp = await stampOwnerSession(evalFlow, jobConfig as Record<string, unknown>, schedSessionReq);
         if (stamp.kind === "misconfigured") {

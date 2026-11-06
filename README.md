@@ -31,6 +31,16 @@ Every eval flow has an **Evaluation Mode**: *web* (the agent is reached in a bro
 ### Setup and Teardown Steps
 How to reach an agent is described as steps rather than hard-coded integrations: log in, open the page, dial the number, hang up. The same Setup/Teardown step model is used in both modes and follows the [Libretto](https://github.com/Agora-Build/libretto) action-script protocol.
 
+### Credentials and Public Trials
+Your own Private or Shared agent can use your personal Runtime and Brokered
+credentials. Other operators' Shared agents require Brokered credentials; Team
+agents use organization credentials only. Raw Brokered credentials stay on Core
+and trusted brokers. Public-flow owners can opt into browser-only Mainline
+trials, with configurable per-user limits (5 per 24 hours and 80 per 30 days by
+default) and a separate aggregate owner budget. See the maintained
+[credential policy](designs/agent-credentials-design.md) and
+[rollout guide](docs/DEPLOYMENT.md#credential-policy-rollout-schema-67).
+
 ### Multi-Region Coverage
 Test from North America, Asia Pacific, Europe, and South America to see how each provider performs where your users are.
 

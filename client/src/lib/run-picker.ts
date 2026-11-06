@@ -5,6 +5,7 @@
  */
 
 export interface RunTargetAgent {
+  ownCredentialAgent?: boolean;
   tokenId: number;
   name: string;
   siteId: string | null;

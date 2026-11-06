@@ -21,6 +21,8 @@ import { load as loadYaml } from "js-yaml";
 import type { EvalFlow as EvalFlowType, Provider, Project } from "@shared/schema";
 import type { Tag } from "@shared/tags";
 import { TagInput } from "@/components/tag-input";
+import { FlowTrialLimits, validFlowTrialLimit } from "@/components/flow-trial-limits";
+import { TRIAL_LIMIT_24_HOURS, TRIAL_LIMIT_30_DAYS } from "@shared/credential-trials";
 import { LineLookupPanel, LINE_LOOKUP_DISCLOSURE, LINE_LOOKUP_PENDING_TEXT, trackLineLookupPending } from "@/components/line-lookup";
 
 // missingSecrets (#130): set by the server only on flows the caller can fix;
@@ -82,6 +84,8 @@ interface AuthStatus {
     username: string;
     plan: string;
     isAdmin: boolean;
+    organizationId?: number | null;
+    orgRole?: string | null;
   } | null;
 }
 
@@ -92,6 +96,8 @@ export default function ConsoleEvalFlows() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState("public");
+  const [trialDaily, setTrialDaily] = useState(String(TRIAL_LIMIT_24_HOURS));
+  const [trialMonthly, setTrialMonthly] = useState(String(TRIAL_LIMIT_30_DAYS));
   const [providerId, setProviderId] = useState("");
   // Evaluation Mode (design §11): "web" = Web vs Agent, "phone" = Phone vs Agent.
   const [transport, setTransport] = useState("web");
@@ -108,6 +114,8 @@ export default function ConsoleEvalFlows() {
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editVisibility, setEditVisibility] = useState("");
+  const [editTrialDaily, setEditTrialDaily] = useState(String(TRIAL_LIMIT_24_HOURS));
+  const [editTrialMonthly, setEditTrialMonthly] = useState(String(TRIAL_LIMIT_30_DAYS));
   const [editProjectId, setEditProjectId] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editTransport, setEditTransport] = useState("web");
@@ -118,6 +126,9 @@ export default function ConsoleEvalFlows() {
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
   });
+  const canEditTrialLimits = editEvalFlow?.organizationId == null
+    ? editEvalFlow?.ownerId === authStatus?.user?.id
+    : editEvalFlow.organizationId === authStatus?.user?.organizationId && ["owner", "admin"].includes(authStatus?.user?.orgRole ?? "");
 
   // All eval flows I can see (own + org + others' public) — drives the Public tab.
   const { data: evalFlows, isLoading } = useQuery<EvalFlowRow[]>({
@@ -148,6 +159,7 @@ export default function ConsoleEvalFlows() {
         name,
         description,
         visibility,
+        ...(visibility === "public" ? { trialLimit24Hours: Number(trialDaily), trialLimit30Days: Number(trialMonthly) } : {}),
         transport,
         providerId: overrideProviderId ?? providerId,
         config,
@@ -161,6 +173,8 @@ export default function ConsoleEvalFlows() {
       setName("");
       setDescription("");
       setVisibility("public");
+      setTrialDaily(String(TRIAL_LIMIT_24_HOURS));
+      setTrialMonthly(String(TRIAL_LIMIT_30_DAYS));
       setProviderId("");
       setTransport("web");
       setStepsPrefix("");
@@ -182,6 +196,10 @@ export default function ConsoleEvalFlows() {
       if (editName !== editEvalFlow.name) body.name = editName;
       if (editDescription !== (editEvalFlow.description || "")) body.description = editDescription;
       if (editVisibility !== editEvalFlow.visibility) body.visibility = editVisibility;
+      if (editVisibility === "public" && canEditTrialLimits) {
+        if (Number(editTrialDaily) !== editEvalFlow.trialLimit24Hours) body.trialLimit24Hours = Number(editTrialDaily);
+        if (Number(editTrialMonthly) !== editEvalFlow.trialLimit30Days) body.trialLimit30Days = Number(editTrialMonthly);
+      }
       if (editProjectId && !editEvalFlow.projectId) body.projectId = parseInt(editProjectId);
       const pid = overrideProviderId ?? editProviderId;
       if (pid && pid !== editEvalFlow.providerId) body.providerId = pid;
@@ -271,6 +289,8 @@ export default function ConsoleEvalFlows() {
     setEditName(evalFlow.name);
     setEditDescription(evalFlow.description || "");
     setEditVisibility(evalFlow.visibility);
+    setEditTrialDaily(String(evalFlow.trialLimit24Hours ?? TRIAL_LIMIT_24_HOURS));
+    setEditTrialMonthly(String(evalFlow.trialLimit30Days ?? TRIAL_LIMIT_30_DAYS));
     setEditProjectId(evalFlow.projectId?.toString() || "");
     setEditStepsPrefix(cfg.stepsPrefix || "");
     setEditStepsSuffix(cfg.stepsSuffix || "");
@@ -559,6 +579,7 @@ export default function ConsoleEvalFlows() {
                   </SelectContent>
                 </Select>
               </div>
+              {visibility === "public" && <FlowTrialLimits prefix="create" daily={trialDaily} monthly={trialMonthly} onDaily={setTrialDaily} onMonthly={setTrialMonthly} />}
               <div className="space-y-2">
                 <Label>Tags</Label>
                 <TagInput
@@ -609,7 +630,7 @@ export default function ConsoleEvalFlows() {
             <DialogFooter>
               <Button
                 onClick={handleCreateClick}
-                disabled={createMutation.isPending || !name || !providerId}
+                disabled={createMutation.isPending || !name || !providerId || (visibility === "public" && (!validFlowTrialLimit(trialDaily) || !validFlowTrialLimit(trialMonthly)))}
                 data-testid="button-submit-eval-flow"
               >
                 Create Eval Flow
@@ -679,6 +700,7 @@ export default function ConsoleEvalFlows() {
                 </SelectContent>
               </Select>
             </div>
+            {editVisibility === "public" && <FlowTrialLimits prefix="edit" daily={editTrialDaily} monthly={editTrialMonthly} onDaily={setEditTrialDaily} onMonthly={setEditTrialMonthly} disabled={!canEditTrialLimits} />}
             <div className="space-y-2">
               <Label>Evaluation Mode</Label>
               <Select value={editTransport} onValueChange={setEditTransport}>
@@ -777,7 +799,7 @@ export default function ConsoleEvalFlows() {
             </Button>
             <Button
               onClick={handleEditClick}
-              disabled={editMutation.isPending || !editName || !editProviderId}
+              disabled={editMutation.isPending || !editName || !editProviderId || (editVisibility === "public" && canEditTrialLimits && (!validFlowTrialLimit(editTrialDaily) || !validFlowTrialLimit(editTrialMonthly)))}
             >
               Save Changes
             </Button>

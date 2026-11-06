@@ -73,6 +73,7 @@ export interface WaitJob {
   transport: "web" | "phone" | null;
   kind: "eval" | "analyze";
   sessionInjected: boolean;
+  snapshot?: Parameters<typeof isClaimable>[0]["snapshot"];
   config: unknown;
 }
 

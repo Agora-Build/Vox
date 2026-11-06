@@ -16,7 +16,7 @@
 // integer since the Release A FK drop, so the cross-database id reference is
 // exactly what production does.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { storage, encryptValue, db } from "../server/storage";
+import { storage, encryptValue, db, buildJobSnapshot } from "../server/storage";
 import { orgRuntimeSecretsForJob } from "../server/routes";
 import { setOrganizations, resetOrganizations } from "../server/organizations";
 import { setupOrganizationsDb, type OrgsHarness } from "./helpers/organizations-db";
@@ -36,13 +36,15 @@ async function anyProviderId(): Promise<string> {
   return p.id;
 }
 
-const mkJob = (evalFlowId: number, createdBy: number) =>
-  storage.createEvalJob({
+const mkJob = async (evalFlowId: number, createdBy: number) => {
+  const flow = (await storage.getEvalFlow(evalFlowId))!;
+  return storage.createEvalJob({
     evalFlowId, triggerType: 2, evalSetId: null, createdBy,
     siteId: "na-us-ashburn-01", config: {},
-    snapshot: { provider: null, evalFlow: null, evalSet: null, creatorPlan: null } as any,
+    snapshot: buildJobSnapshot(flow, null, null, null),
     status: "pending", priority: 0, retryCount: 0, maxRetries: 3,
   } as any);
+};
 
 d("org-credential fence (R3)", () => {
   let h: OrgsHarness;

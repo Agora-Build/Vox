@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
+import { randomUUID } from "node:crypto";
 import { BASE_NA } from "./helpers/regions";
 import { setOrganizations, resetOrganizations, type OrganizationsProvider, type Membership } from "../server/organizations";
 import { evalSetMayUseSecrets, resolvableSecretSources, secretGate, untrustedEvalSetConfigError, secretsJobFills, configTooComplex, runDialogEvalSetProblem } from "../server/auth-session";
@@ -311,6 +312,7 @@ async function newUser(admin: Session, tag: string): Promise<Session> {
     ownerKey = (await (await call(owner, "POST", "/api/user/api-keys", { name: "trust" })).json()).key;
     const secret = await call(owner, "POST", "/api/secrets", { name: SECRET, value: "s3cret-value" });
     if (!secret.ok) throw new Error(`secret: ${secret.status} ${await secret.text()}`);
+    expect((await call(owner, "PUT", "/api/credential-trials/personal", { enabled: true, maxRuns30Days: 100 })).ok).toBe(true);
     const providerId = (await (await fetch(`${BASE_URL}/api/providers`)).json())[0].id;
     const project = await (await call(owner, "POST", "/api/projects", { name: `trust-${Date.now()}` })).json();
     flowId = (await (await call(owner, "POST", "/api/eval-flows", {
@@ -326,7 +328,7 @@ async function newUser(admin: Session, tag: string): Promise<Session> {
   }, 60_000);
 
   const consoleRun = (s: Session, evalSetId: number) =>
-    call(s, "POST", `/api/eval-flows/${flowId}/run`, { evalSetId, region: BASE_NA, targetTier: "public" });
+    call(s, "POST", `/api/eval-flows/${flowId}/run`, { evalSetId, region: BASE_NA, targetTier: "public", requestId: randomUUID() });
   const apiRun = (key: string, evalSetId: number) =>
     fetch(`${BASE_URL}/api/v1/eval-flows/${flowId}/run`, {
       method: "POST",
@@ -351,8 +353,7 @@ async function newUser(admin: Session, tag: string): Promise<Session> {
     expect((await res.json()).job.config.evalSetSecrets).toBe(true);
   });
 
-  it("anyone may run the owner's public eval flow with the owner's public eval set — trusted, whoever runs it", async () => {
-    // Trust is about who owns the eval set and the eval flow, not who clicks Run.
+  it("an owner-opted-in web trial may use the owner's public eval set", async () => {
     const res = await consoleRun(stranger, ownSetId);
     expect(res.status).toBe(200);
     expect((await res.json()).job.config.evalSetSecrets).toBe(true);

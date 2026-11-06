@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -18,6 +18,7 @@ import { useLocation, useSearch } from "wouter";
 import { formatSmartTimestamp, brokerTypeLabel } from "@/lib/utils";
 import { isAuthFieldName, secretValueError, MIN_SECRET_VALUE_LENGTH } from "@shared/secrets";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { CredentialTrialSettings } from "@/components/credential-trial-settings";
 
 interface SecretEntry {
   id: number;
@@ -104,7 +105,7 @@ export default function ConsoleSecrets() {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [brokerType, setBrokerType] = useState<string | null>("runtime");
-  const [isTestAccount, setIsTestAccount] = useState(false);
+  const [deleting, setDeleting] = useState<{ name: string; scope: "personal" | "organization" } | null>(null);
 
   const { data: response, isLoading } = useQuery<SecretsResponse>({
     queryKey: ["/api/secrets"],
@@ -143,7 +144,6 @@ export default function ConsoleSecrets() {
         name: name.trim(),
         value,
         brokerType: brokerType === "runtime" ? null : brokerType,
-        isTestAccount: brokerType === "auth-session" ? isTestAccount : undefined,
       });
       return res.json();
     },
@@ -151,7 +151,6 @@ export default function ConsoleSecrets() {
       setName("");
       setValue("");
       setBrokerType("runtime");
-      setIsTestAccount(false);
       setCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
       invalidateEvalFlowSecretState();
@@ -171,6 +170,7 @@ export default function ConsoleSecrets() {
       queryClient.invalidateQueries({ queryKey: ["/api/secrets"] });
       invalidateEvalFlowSecretState();
       toast({ title: "Secret deleted" });
+      setDeleting(null);
     },
     onError: (error: Error) => {
       toast({ title: "Failed to delete secret", description: error.message, variant: "destructive" });
@@ -182,7 +182,6 @@ export default function ConsoleSecrets() {
   const [orgName, setOrgName] = useState("");
   const [orgValue, setOrgValue] = useState("");
   const [orgBrokerType, setOrgBrokerType] = useState<string | null>("runtime");
-  const [orgIsTestAccount, setOrgIsTestAccount] = useState(false);
 
   const { data: orgSecrets, isLoading: orgLoading } = useQuery<OrgSecretEntry[]>({
     queryKey: ["/api/org-secrets"],
@@ -195,14 +194,12 @@ export default function ConsoleSecrets() {
         name: orgName.trim(),
         value: orgValue,
         brokerType: orgBrokerType === "runtime" ? null : orgBrokerType,
-        isTestAccount: orgBrokerType === "auth-session" ? orgIsTestAccount : undefined,
       });
     },
     onSuccess: () => {
       setOrgName("");
       setOrgValue("");
       setOrgBrokerType("runtime");
-      setOrgIsTestAccount(false);
       setOrgCreateOpen(false);
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
       invalidateEvalFlowSecretState();
@@ -221,6 +218,7 @@ export default function ConsoleSecrets() {
       queryClient.invalidateQueries({ queryKey: ["/api/org-secrets"] });
       invalidateEvalFlowSecretState();
       toast({ title: "Org secret deleted" });
+      setDeleting(null);
     },
     onError: (error: Error) => {
       toast({ title: "Failed to delete org secret", description: error.message, variant: "destructive" });
@@ -332,24 +330,12 @@ export default function ConsoleSecrets() {
                         </Select>
                         <p className="text-xs text-muted-foreground">
                           {brokerType === "auth-session"
-                            ? "Materialized by a broker; the agent never sees the stored value."
+                            ? "Use a dedicated evaluation account with minimal permissions and a spending limit. Login credentials stay on the broker, but the agent receives an authenticated session that may provide account access."
                             : brokerType === "restful"
-                            ? "Used by the trusted REST broker for API call triggers; the agent never sees the stored value."
-                            : "Sent directly to the agent at runtime. Only use with agents you trust."}
+                            ? "Use a limited-scope API credential. The trusted REST broker executes requests without sending the stored credential to the agent. Configure permissions and spending limits where available."
+                            : "The agent receives this secret's raw value. Your own Private or Shared agent may use your personal Runtime secrets. Other people's Shared agents require Brokered secrets. Organization secrets require an authorized Team or trusted Mainline agent."}
                         </p>
                       </div>
-                      {brokerType === "auth-session" && (
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            id="secret-test-account"
-                            checked={isTestAccount}
-                            onCheckedChange={(checked) => setIsTestAccount(checked === true)}
-                          />
-                          <Label htmlFor="secret-test-account" className="font-normal">
-                            Dedicated test account
-                          </Label>
-                        </div>
-                      )}
                     </div>
                     <DialogFooter>
                       <Button
@@ -389,7 +375,6 @@ export default function ConsoleSecrets() {
                             {secret.brokerType != null && (
                               <>
                                 <Badge variant="outline">{secret.brokerType}</Badge>
-                                {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                               </>
                             )}
                             <ValueFingerprint length={secret.valueLength} fingerprint={secret.valueFingerprint} />
@@ -404,7 +389,7 @@ export default function ConsoleSecrets() {
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => deleteMutation.mutate(secret.name)}
+                            onClick={() => setDeleting({ name: secret.name, scope: "personal" })}
                             disabled={deleteMutation.isPending}
                           >
                             <Trash2 className="h-4 w-4 mr-1" />
@@ -422,6 +407,7 @@ export default function ConsoleSecrets() {
               )}
             </CardContent>
           </Card>
+          <CredentialTrialSettings scope="personal" />
         </TabsContent>
 
         {/* Org Secrets Tab */}
@@ -431,7 +417,7 @@ export default function ConsoleSecrets() {
               <CardHeader>
                 <div className="flex items-center justify-between gap-4">
                   <CardDescription>
-                    Shared across all org evalFlows. Org secrets override personal secrets with the same name.
+                    Organization evalFlows use only organization secrets, never personal secrets.
                   </CardDescription>
                   {isOrgAdmin && (
                     <Dialog open={orgCreateOpen} onOpenChange={setOrgCreateOpen}>
@@ -493,24 +479,12 @@ export default function ConsoleSecrets() {
                             </Select>
                             <p className="text-xs text-muted-foreground">
                               {orgBrokerType === "auth-session"
-                                ? "Materialized by a broker; the agent never sees the stored value."
+                                ? "Use a dedicated evaluation account with minimal permissions and a spending limit. Login credentials stay on the broker, but the agent receives an authenticated session that may provide account access."
                                 : orgBrokerType === "restful"
-                                ? "Used by the trusted REST broker for API call triggers; the agent never sees the stored value."
-                                : "Sent directly to the agent at runtime. Only use with agents you trust."}
+                                ? "Use a limited-scope API credential. The trusted REST broker executes requests without sending the stored credential to the agent. Configure permissions and spending limits where available."
+                                : "The agent receives this secret's raw value. Your own Private or Shared agent may use your personal Runtime secrets. Other people's Shared agents require Brokered secrets."}
                             </p>
                           </div>
-                          {orgBrokerType === "auth-session" && (
-                            <div className="flex items-center gap-2">
-                              <Checkbox
-                                id="org-secret-test-account"
-                                checked={orgIsTestAccount}
-                                onCheckedChange={(checked) => setOrgIsTestAccount(checked === true)}
-                              />
-                              <Label htmlFor="org-secret-test-account" className="font-normal">
-                                Dedicated test account
-                              </Label>
-                            </div>
-                          )}
                         </div>
                         <DialogFooter>
                           <Button
@@ -551,7 +525,6 @@ export default function ConsoleSecrets() {
                               {secret.brokerType != null && (
                                 <>
                                   <Badge variant="outline">{secret.brokerType}</Badge>
-                                  {secret.isTestAccount && <Badge variant="secondary">test account</Badge>}
                                 </>
                               )}
                             </div>
@@ -566,7 +539,7 @@ export default function ConsoleSecrets() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                onClick={() => orgDeleteMutation.mutate(secret.name)}
+                                onClick={() => setDeleting({ name: secret.name, scope: "organization" })}
                                 disabled={orgDeleteMutation.isPending}
                               >
                                 <Trash2 className="h-4 w-4 mr-1" />
@@ -587,9 +560,37 @@ export default function ConsoleSecrets() {
                 )}
               </CardContent>
             </Card>
+            {isOrgAdmin && <CredentialTrialSettings scope="organization" />}
           </TabsContent>
         )}
       </Tabs>
+      <AlertDialog open={deleting !== null} onOpenChange={(open) => {
+        if (!open && !deleteMutation.isPending && !orgDeleteMutation.isPending) setDeleting(null);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete secret {deleting?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the secret from {deleting?.scope === "organization" ? "your organization's secrets" : "your personal secrets"}.
+              Flows and schedules that use it may fail. This action cannot be undone here.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending || orgDeleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending || orgDeleteMutation.isPending || (deleting?.scope === "organization" && !isOrgAdmin)}
+              onClick={(event) => {
+                event.preventDefault();
+                if (!deleting || deleteMutation.isPending || orgDeleteMutation.isPending) return;
+                if (deleting.scope === "organization") {
+                  if (isOrgAdmin) orgDeleteMutation.mutate(deleting.name);
+                } else deleteMutation.mutate(deleting.name);
+              }}>
+              {deleteMutation.isPending || orgDeleteMutation.isPending ? "Deleting..." : "Delete secret"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Card>
         <CardHeader>
@@ -604,7 +605,7 @@ export default function ConsoleSecrets() {
     password: \${secrets.YOUR_PASSWORD}`}</pre>
           <p className="text-xs text-muted-foreground mt-2">
             The eval agent resolves <code>{"${secrets.*}"}</code> placeholders before running the eval jobs.
-            For org evalFlows, org secrets override personal secrets with the same name.
+            Organization evalFlows use only organization secrets, with no personal-secret fallback.
           </p>
         </CardContent>
       </Card>

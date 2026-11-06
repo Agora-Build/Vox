@@ -9,9 +9,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
-import { Checkbox } from "@/components/ui/checkbox";
+import { RunCredentialNotice, type RunCredentialPolicy } from "@/components/run-credential-notice";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { submissionId, type EvalRunSubmission } from "@/lib/run-submission";
 import { ArrowLeft, Play, Settings, History, Clock, CheckCircle, XCircle, Loader2, RefreshCw, KeyRound } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import type { EvalFlow, Provider, EvalJob, EvalSet } from "@shared/schema";
@@ -39,7 +40,7 @@ interface AuthStatus {
   } | null;
 }
 
-interface RunTargetsResponse {
+interface RunTargetsResponse extends RunCredentialPolicy {
   agents: RunTargetAgents;
   referencedSecrets: Array<{ name: string; brokerType: string | null; present: boolean; resolvable?: boolean }>;
   /** Why the run would refuse the chosen eval set (it may not use this flow's secrets), or null. */
@@ -59,7 +60,8 @@ export default function ConsoleEvalFlowDetail() {
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [runEvalSetId, setRunEvalSetId] = useState("");
   const [pickerValue, setPickerValue] = useState("");
-  const [ackRuntime, setAckRuntime] = useState(false);
+  const [sessionConsent, setSessionConsent] = useState(false);
+  const [requestId, setRequestId] = useState(submissionId);
 
   const { data: authStatus } = useQuery<AuthStatus>({
     queryKey: ["/api/auth/status"],
@@ -106,6 +108,7 @@ export default function ConsoleEvalFlowDetail() {
     queryFn: async () => (await apiRequest("GET",
       `/api/eval-flows/${evalFlowId}/run-targets?evalSetId=${runEvalSetId}`)).json(),
     enabled: runDialogOpen && !!runEvalSetId,
+    staleTime: 15000,
   });
 
   const tierAvailable = (tier: string) => (runTargets?.tiers ?? []).find((t) => t.tier === tier)?.available ?? false;
@@ -141,6 +144,11 @@ export default function ConsoleEvalFlowDetail() {
   const unverifiedAgents = buildUnverifiedAgents(nonPublicAgents);
 
   const selection = decodePickerValue(pickerValue);
+  useEffect(() => {
+    if (!pickerValue && runTargets?.preferredTokenId != null) {
+      setPickerValue(encodePickerValue({ kind: "site", tokenId: runTargets.preferredTokenId }));
+    }
+  }, [pickerValue, runTargets?.preferredTokenId]);
   const selectedGroup = selection?.kind === "region" ? regionGroups.find((g) => g.region === selection.region) : undefined;
 
   // If the tree is rebuilt (new run-targets data) and the current selection
@@ -183,8 +191,6 @@ export default function ConsoleEvalFlowDetail() {
   const noPoolAvailable = nonSharedTiers.length > 0 && nonSharedTiers.every((t) => !t.available);
 
   const selectedAgent = selection?.kind === "site" ? nonPublicAgents.find((a) => a.tokenId === selection.tokenId) ?? null : null;
-  const runtimeExposed = (runTargets?.referencedSecrets ?? [])
-    .filter((s) => s.brokerType == null && s.present).map((s) => s.name);
   // Referenced but not configured for the evalFlow owner → the run would fail
   // with an unresolved ${secrets.X} placeholder. The server rejects it too;
   // surfacing it here means the user never spends an agent run to find out.
@@ -192,29 +198,32 @@ export default function ConsoleEvalFlowDetail() {
     // `resolvable` mirrors the server gate exactly — a placeholder in a config
     // key the daemon never substitutes must NOT disable the Run button.
     .filter((s) => !s.present && s.resolvable !== false).map((s) => s.name);
-  const showRuntimeWarning = selectedAgent?.dispatchTier === "shared" && runtimeExposed.length > 0;
+  const sharedSelected = selectedAgent?.dispatchTier === "shared";
+  const ownCredentialAgent = selectedAgent?.ownCredentialAgent === true;
+  const credentialBlocked = (sharedSelected && !ownCredentialAgent && (!!runTargets?.runtimeSecretNames?.length || (runTargets?.requiresSessionConsent && !sessionConsent))) ||
+    (runTargets?.trial?.required && !runTargets.trial.available);
+  useEffect(() => { setSessionConsent(false); }, [pickerValue, runEvalSetId, runTargets?.requiresSessionConsent]);
+  useEffect(() => { setRequestId(submissionId()); }, [pickerValue, runEvalSetId]);
 
   const runEvalFlowMutation = useMutation({
-    mutationFn: async () => {
-      if (!selection) throw new Error("No run target selected");
-      const res = await apiRequest("POST", `/api/eval-flows/${evalFlowId}/run`, {
-        evalSetId: parseInt(runEvalSetId),
-        ...(selection.kind === "site"
-          ? { targetTokenId: selection.tokenId }
-          : { region: selection.region, targetTier: selection.targetTier }),
-        ...(showRuntimeWarning ? { runtimeSecretConsent: ackRuntime } : {}),
-      });
+    retry: (count, error) => !!runTargets?.trial?.required && count < 1 && (error instanceof TypeError || /^5\d\d:/.test(error.message)),
+    retryDelay: 500,
+    mutationFn: async ({ flowId, ...body }: EvalRunSubmission) => {
+      const res = await apiRequest("POST", `/api/eval-flows/${flowId}/run`, body);
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data, submission) => {
       setRunDialogOpen(false);
       setRunEvalSetId("");
       setPickerValue("");
-      setAckRuntime(false);
+      setSessionConsent(false);
+      setRequestId(submissionId());
+      queryClient.invalidateQueries({ queryKey: [`/api/eval-flows/${submission.flowId}/run-targets`] });
       refetchJobs();
       toast({ title: "Eval Flow started", description: `Job created: ${data.job?.id}` });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, submission) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/eval-flows/${submission.flowId}/run-targets`] });
       toast({ title: "Failed to run Eval Flow", description: error.message, variant: "destructive" });
     },
   });
@@ -267,7 +276,7 @@ export default function ConsoleEvalFlowDetail() {
             setRunDialogOpen(open);
             if (!open) {
               setPickerValue("");
-              setAckRuntime(false);
+              setSessionConsent(false);
             }
           }}
         >
@@ -391,26 +400,25 @@ export default function ConsoleEvalFlowDetail() {
                   </AlertDescription>
                 </Alert>
               )}
-              {showRuntimeWarning && (
-                <Alert variant="destructive">
-                  <AlertTitle>This Eval Flow uses runtime secrets</AlertTitle>
-                  <AlertDescription>
-                    The selected shared agent will receive the raw values of these secrets: {runtimeExposed.join(", ")}.
-                    <label className="mt-2 flex items-center gap-2">
-                      <Checkbox checked={ackRuntime} onCheckedChange={(v) => setAckRuntime(v === true)} />
-                      I understand
-                    </label>
-                  </AlertDescription>
-                </Alert>
-              )}
+              <RunCredentialNotice flowId={evalFlowId} shared={sharedSelected} ownAgent={ownCredentialAgent} policy={runTargets}
+                consent={sessionConsent} onConsent={setSessionConsent} />
             </div>
             <DialogFooter>
               <Button
-                onClick={() => runEvalFlowMutation.mutate()}
+                onClick={() => {
+                  if (!selection) return;
+                  runEvalFlowMutation.mutate({
+                    flowId: evalFlowId, evalSetId: parseInt(runEvalSetId), requestId,
+                    ...(selection.kind === "site"
+                      ? { targetTokenId: selection.tokenId }
+                      : { region: selection.region, targetTier: selection.targetTier }),
+                    ...(sharedSelected && runTargets?.requiresSessionConsent ? { credentialConsent: sessionConsent } : {}),
+                  });
+                }}
                 disabled={
                   runEvalFlowMutation.isPending || !runEvalSetId || !selection || runTargetsFetching ||
                   (selection?.kind === "region" && noPoolAvailable) ||
-                  missingSecrets.length > 0 || !!runTargets?.evalSetProblem || (showRuntimeWarning && !ackRuntime)
+                  missingSecrets.length > 0 || !!runTargets?.evalSetProblem || !!credentialBlocked || !runTargets
                 }
               >
                 Run Evaluation
