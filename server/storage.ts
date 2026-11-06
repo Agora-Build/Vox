@@ -1706,12 +1706,12 @@ export class DatabaseStorage {
   // Fast-fail pending jobs whose site has NO online eval agent. "Online" = an
   // agent for that site heartbeated within onlineWithinMinutes. A job is failed
   // only once it has waited timeoutMinutes AND no such agent exists — so a brief
-  // agent restart/redeploy (host reboot, vox-upgrade) doesn't trip it, but a
+  // agent restart/redeploy (host reboot, vox-manager) doesn't trip it, but a
   // genuinely unstaffed site gives the user an actionable result in minutes
   // instead of hanging "pending" forever. Each strike requeues (unclaimed_count++,
   // updated_at = NOW() → a fresh window), failing only once unclaimed_count has
   // reached max_retries — the same shape as releaseStaleJobs. A site with an
-  // agent that is only temporarily away (a slow image pull, a long vox-upgrade,
+  // agent that is only temporarily away (a slow image pull, a long vox-manager,
   // a user who queues a job and then boots their agent) gets max_retries more
   // windows instead of a permanent failure (#82); a genuinely unstaffed site
   // still fails, after (max_retries + 1) × timeout. The strikes are counted in

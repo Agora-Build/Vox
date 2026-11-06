@@ -21,7 +21,7 @@ import * as path from 'path';
 
 export function resolveDialfSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   // Explicit override first — REQUIRED when the daemon runs in Docker with
-  // dialfd on the host (vox-upgrade.sh bind-mounts the socket and sets this).
+  // dialfd on the host (vox-manager.sh bind-mounts the socket and sets this).
   if (env.VOX_DIALF_SOCKET) return env.VOX_DIALF_SOCKET;
   const cfg = path.join(os.homedir(), '.config', 'dialf', 'config.yaml');
   try {
@@ -198,7 +198,7 @@ export function dialfConnectFailure(err: unknown): string {
     case 'EPERM':
       return 'no permission to open the dialfd socket — it belongs to the user running dialfd; run the agent (or its container) with access to it';
     case 'ENOENT':
-      return "no dialfd socket at the configured path — dialfd isn't running, or (in Docker) the socket isn't mounted: start dialfd, then re-run vox-upgrade.sh";
+      return "no dialfd socket at the configured path — dialfd isn't running, or (in Docker) the socket isn't mounted: start dialfd, then re-run vox-manager.sh";
     case 'ECONNREFUSED':
       return "dialfd isn't listening on its socket — it stopped or restarted (in Docker: restart this container to pick up its new socket)";
     case 'ENOTSOCK':

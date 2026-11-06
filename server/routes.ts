@@ -4282,7 +4282,7 @@ export async function registerRoutes(
   // (restart leftover or duplicate on the same token) is thus superseded. Once
   // an agent holds a lease, every state-changing call MUST carry the matching
   // lease — a missing or mismatched lease is fenced. (Requires all daemons to be
-  // on the lease-aware build; deploy after `vox-upgrade.sh`.)
+  // on the lease-aware build; deploy after `vox-manager.sh`.)
   const isSupersededLease = (agent: { currentLeaseId?: string | null }, leaseId: unknown): boolean =>
     !!agent.currentLeaseId && leaseId !== agent.currentLeaseId;
 

@@ -74,7 +74,7 @@ supervise it with systemd/launchd and restart it on failure. It uses no Vox
 token, opens no listener, and writes only hashed topology/coarse status. It
 retains two minutes/128 host transitions plus monotonic change/gap counters.
 
-Set `VOX_NETWORK_STATUS_DIR=/var/lib/vox-network` when using `vox-upgrade.sh`.
+Set `VOX_NETWORK_STATUS_DIR=/var/lib/vox-network` when using `vox-manager.sh`.
 The script mounts that directory read-only at `/run/vox-network` and sets
 `VOX_NETWORK_STATUS_FILE=/run/vox-network/status.json`. For manual Docker
 deployments, add the equivalent read-only directory mount and environment

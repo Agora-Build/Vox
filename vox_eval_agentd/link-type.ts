@@ -15,7 +15,7 @@
  * or a /sys path) — an invalid one means "couldn't tell", i.e. undefined.
  *
  * Precedence (same as every other reported field): `VOX_LINK_TYPE` in the
- * environment — set by vox-upgrade.sh from the HOST's own detection, since
+ * environment — set by vox-manager.sh from the HOST's own detection, since
  * a container only sees its own veth, not the host's NIC — wins outright
  * and skips detection. An invalid value there is ignored, not an error:
  * falls through to normal detection, same as Core does with the field it

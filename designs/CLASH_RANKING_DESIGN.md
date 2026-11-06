@@ -139,7 +139,7 @@ The blend formula, normalization bands, and weights are published as the Clash r
 ## Rollout
 
 - Single PR: runner (`observer.ts` + any `config.ts` constants) + server (`clash-ranking.ts`, `routes.ts` `/complete`, `updateClashEloRatings`) + schema + migration + tests.
-- **Runner containers must be upgraded** (`vox-upgrade.sh`) for the new signal extraction to take effect; server auto-deploys from main. Until runners are upgraded they report null turn metrics → those matches fall back to draw (same as today), so there is no regression during the rollout window.
+- **Runner containers must be upgraded** (`vox-manager.sh`) for the new signal extraction to take effect; server auto-deploys from main. Until runners are upgraded they report null turn metrics → those matches fall back to draw (same as today), so there is no regression during the rollout window.
 - Branch + squash-merge on the user's mark; `npm run check` + `npm test` before push.
 
 ## Known gaps after v1

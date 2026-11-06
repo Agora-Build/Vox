@@ -250,7 +250,7 @@ function detectDarwinPublicIp(deps: PublicIpDeps): boolean | undefined {
 
 /**
  * `VOX_PUBLIC_IP_ON_IFACE=true|false` in the environment wins outright
- * (vox-upgrade.sh sets it from the HOST's own detection, since a container
+ * (vox-manager.sh sets it from the HOST's own detection, since a container
  * only sees its own veth). Otherwise: inside a container, `undefined`
  * (nothing meaningful to report); on the host, Linux/macOS detection;
  * anything else, or any detection failure, → `undefined`.

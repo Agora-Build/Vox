@@ -131,7 +131,7 @@ describe("detectLinkType — linux", () => {
     expect(result).toBeUndefined();
   });
 
-  it("in a container, VOX_LINK_TYPE (from vox-upgrade.sh's host detection) still wins over the veth", () => {
+  it("in a container, VOX_LINK_TYPE (from vox-manager.sh's host detection) still wins over the veth", () => {
     makeIface("eth0");
     const result = detectLinkType(
       deps({ env: { VOX_LINK_TYPE: "wifi" }, exec: execFake({ "ip route get 1.1.1.1": "1.1.1.1 via 172.17.0.1 dev eth0" }) })

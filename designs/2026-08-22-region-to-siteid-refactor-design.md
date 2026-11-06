@@ -179,7 +179,7 @@ Hard cut, coordinated deploy — no backward-compat alias.
 - The daemon's AWS `S3Config.region` (L190, 207) is **unchanged**.
 
 Deployment: ship Core and push new daemon images together via
-`scripts/vox-upgrade.sh`. An un-upgraded daemon breaks until its image is bumped;
+`scripts/vox-manager.sh`. An un-upgraded daemon breaks until its image is bumped;
 this is accepted (hard cut).
 
 ### Layer 4 — Client (`client/src/`)

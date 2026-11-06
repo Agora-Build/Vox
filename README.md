@@ -265,22 +265,179 @@ Keep migration SQL plain (`CREATE TABLE`, `ALTER TABLE`); each migration runs ex
 | `./scripts/full-tests-run.sh` | The full gate: unit + audio + E2E |
 | `./scripts/dev-local-run.sh start` | Start the local environment |
 | `./scripts/dev-local-run.sh clean-test-data --yes` | Remove leftover test data from the local database |
-| `./scripts/vox-upgrade.sh` | Upgrade eval agent and/or clash runner containers |
+| `./scripts/vox-manager.sh [vox_agent] [--env path/to/.env]` | Install, upgrade or roll back eval agent and/or clash runner containers |
+| `./scripts/vox-manager.sh self` | Update the management script itself, without touching containers |
 
-### Upgrading Eval Agents / Clash Runners
+### Installing / Upgrading / Rolling Back Eval Agents / Clash Runners
+
+Download the standalone management script (no checkout required):
+
+```bash
+curl -fsSL -o vox-manager.sh \
+  https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-manager.sh
+chmod +x vox-manager.sh
+```
+
+Create an env file with the token(s) for the containers you want to manage:
 
 ```bash
 cat > .env << 'EOF'
-AGENT_TOKEN=your-eval-agent-token
-RUNNER_TOKEN=your-clash-runner-token
+EVAL_TOKEN=your-eval-agent-token
+EVAL_VERSION=latest
+CLASH_TOKEN=your-clash-runner-token
+CLASH_VERSION=latest
 VOX_SERVER=https://vox.agora.build
 EOF
 
-./scripts/vox-upgrade.sh             # uses .env in the current directory
-./scripts/vox-upgrade.sh /path/.env  # or a specific file
+./vox-manager.sh                                # install/upgrade using .env in the current directory
+./vox-manager.sh vox_agent                      # same default behavior
+./vox-manager.sh vox_agent --env /path/to/.env   # or a specific file
+./vox-manager.sh vox_agent --env /path/to/.env --force # unattended; may interrupt active evaluations
+./vox-manager.sh self                           # update this script only; no .env or Docker required
+./vox-manager.sh vox                            # reserved: Vox server management is not supported yet
 ```
 
-Only containers with a token in the file are upgraded, and a container already on the latest image is left alone. On a phone host it also detects a running DialF daemon and mounts it into the eval agent.
+In a checkout, use `./scripts/vox-manager.sh` instead. Only containers with a token
+in the env file are installed/upgraded. Existing idle checks, same-image handling,
+DialF detection/mounts, audio devices and network monitoring mounts are preserved.
+New containers require confirmation before starting unless `--force` is set.
+
+`EVAL_TOKEN` selects only the eval service; `CLASH_TOKEN` selects only Clash.
+Missing/empty tokens leave that service untouched, and no tokens is a successful
+no-op without Docker calls. Rename older manager env-file keys `AGENT_TOKEN` to
+`EVAL_TOKEN` and `RUNNER_TOKEN` to `CLASH_TOKEN`; the old keys no longer select
+services. Existing container images still receive their original internal runtime
+keys, so pinned installs, rollbacks and legacy discovery remain compatible.
+Missing/unloadable env files, missing tokens or invalid settings print a sample
+using placeholders, never configured credentials. The sample is not saved.
+
+Tokens are passed through component-specific `0600` files inside a private `0700`
+temporary directory, not Docker command-line arguments. Files are prepared before
+any existing container is stopped and removed after launch or on exit/INT/TERM.
+Token line breaks are rejected before Docker calls. This prevents token exposure
+through ordinary command-line listings. The manager loads configuration without
+automatic export and removes the export attribute from `EVAL_TOKEN`, `CLASH_TOKEN`
+and legacy `AGENT_TOKEN` / `RUNNER_TOKEN` before host helpers run and after sourcing
+the env file. Docker, curl and validation children do not inherit those tokens,
+including when tokens were inherited from the invoking shell or explicitly
+exported in the file. This does not erase the manager's own initial inherited
+environment or sandbox trusted Bash code in the env file. Docker-authorized users,
+root and the same operating-system account can still inspect credentials. Other
+container environment values, mounts and device options remain quoted arrays.
+
+Discovery is independent of the selected version: the manager checks stable
+names, recorded official image references, and repository metadata for bare image
+IDs. Legacy containers must use the configured token; other credentials are left
+alone. A stable name alone is not enough: named containers must also have a
+verified official component repository reference or matching bare-ID repository
+metadata. Unknown or unrelated images abort without changing containers.
+A unique running/restarting/paused legacy container takes precedence over
+exited leftovers. Ambiguous live matches, conflicting named/live instances, or
+multiple inactive matches without a live one abort before any image pull or
+container change, even with `--force`. Exited leftovers are not deleted.
+
+For maintenance, set `VOX_INSTANCE_DISABLED=true` in the env file before manually
+stopping the instance. The manager then exits successfully without any Docker
+operation, even with `--force`; `self` remains available. This flag does not itself
+stop an already running container. Unset it or use `false` to resume normal
+management and recovery. `1`/`0` are also accepted; other values fail closed. If
+the env file configures both an agent and a runner, the flag applies to both.
+
+The manager finds both running and stopped containers. When Docker reports
+`created`, `exited`, `dead` or `restarting`, it waits 10 seconds and checks again.
+If still inactive/restarting, replacement proceeds without waiting for health;
+if running, it follows the normal health checks. Inactive containers are
+recreated even when they already use the selected image.
+
+Before stopping or restarting a running container, the manager normally requires
+a valid `/health` response with `status: idle`. Busy, uploading, unreachable,
+HTTP-error and invalid responses are retried for five minutes; after that, only
+an explicit `y` permits a force stop. Declining or reaching end-of-input leaves
+it running. For cron/CI, `--force` skips health waits and confirms installation
+and replacement, including loss of a previous DialF mount. **It can interrupt
+active evaluations.** It does not bypass image/version verification or argument
+validation. This local safety check is separate from Core's heartbeat recovery:
+a missing health response does not prove that an evaluation has stopped.
+
+Command-line choices always take precedence: the env file cannot enable or disable
+`--force` or replace the selected env path.
+Assignments to reserved CLI variables are rejected before any Docker operation.
+
+During replacement, the old container is stopped but retained by ID (temporarily
+renamed if needed). It is removed only after `docker run` succeeds and Docker
+reports the new container as running; this is not an application-readiness check.
+If startup fails, the manager removes only its own partial replacement, restores
+the old name where possible, and prints `docker start <old-container-id>` to
+manually start the old image with its original configuration. It continues with
+other configured services and exits nonzero. Interruptions also preserve the old
+container; SIGKILL or power loss cannot run cleanup.
+
+New agent and runner containers each publish health on a Docker-assigned,
+loopback-only host port, so they can run together without competing for port
+8099. Find the assigned address with `docker port vox-eval-agentd 8099/tcp` (or
+`vox-clash-runner`). `HEALTH_PORT` optionally changes the internal container port;
+use that port in the lookup instead. Later upgrades discover the existing mapping,
+including older fixed-port installations, automatically.
+
+`RESTART_POLICY` defaults to `unless-stopped`. Supported values are `no`, `always`,
+`unless-stopped`, and `on-failure[:N]`, with a nonnegative retry count up to Docker's
+64-bit integer limit. The policy loaded from the env file is validated before
+any Docker operation, including same-image updates. Invalid policies leave
+existing containers untouched. Docker env, mount, and device arguments use arrays
+so quoted env-file values containing whitespace, globs or option-like text remain
+literal values (for example, `VOX_AGENT_NAME='My phone agent'`).
+
+Running `./vox-manager.sh` without arguments defaults to `vox_agent` and `.env` in
+the **current working directory**, not the script's directory. Use
+`--env /path/to/.env` to select a different file. Paths containing spaces must be
+quoted.
+
+Set `EVAL_VERSION` and `CLASH_VERSION` in the env file to select each service's
+image independently. Missing/empty versions default to `latest`. To install or
+roll back to a known build, set the corresponding version to its published Docker
+tag (the image pipeline publishes short commit-SHA tags, not the aeval binary's
+version). Set it back to `latest` to follow the current build. For an immutable
+registry reference, use `sha256:<64-hex-manifest-digest>`; this is the image's
+registry manifest digest, not a local Docker image/config ID. Only a tag or digest
+is accepted, not a different registry or full image URL. CLI `--version` is no
+longer supported.
+
+For example, `EVAL_VERSION=c64ff76` and `CLASH_VERSION=latest` pin only the eval
+service. Both services can also use their own distinct manifest digests in the
+same env file. A service without its token is ignored, including its version.
+All enabled services' version settings are validated before Docker is called.
+The script pulls and verifies
+**all** selected images before stopping any container; an unavailable version
+leaves running containers untouched. It resolves each verified image to an
+official repository digest and launches that immutable reference with
+`--pull=never`, so a tag moving during an idle wait cannot change the build.
+Docker retains the official names `ghcr.io/agora-build/vox-eval-agentd` and
+`ghcr.io/agora-build/vox-clash-runner`, rather than a bare local image ID. The
+`org.agora.vox.image` and `org.agora.vox.version` container labels record the
+requested full image reference and tag/digest; the final container table includes
+the selected version. A missing or mismatched official digest stops the operation
+before any container is changed.
+Old images and the persistent model cache are not deleted. Image rollback is
+explicit, and failed replacements retain the old container for manual recovery
+without automatically restarting it. Older builds must still be compatible with
+the running Vox server and host setup.
+
+Before a container upgrade or `self` update, the manager prints
+`./vox-manager.sh self` and the full manual download command, including saving `vox-manager.sh` in
+the current directory and making it executable. These instructions are printed
+only; they do not add a prompt or run an extra download.
+
+`self` downloads the latest script from the official Vox `main` branch over HTTPS,
+checks its identity and Bash syntax, then atomically replaces the installed file
+while preserving its permissions. Failed/invalid downloads leave it unchanged;
+the downloaded script is not executed during self-update. The script file and its
+directory must be writable; invoke the real path rather than a symlink.
+
+`vox-manager.sh` is the only management script; there is no compatibility
+launcher. For an existing installation, download it once using the installation
+command above, then use `self` for future updates. The positional env-file form
+(`./vox-manager.sh /path/.env`) remains supported; use `--env` for new commands.
+Specify only one env file, not both forms together.
 
 ---
 
