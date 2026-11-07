@@ -27,6 +27,17 @@ d("Core network history, claim fencing and strict metrics", () => {
       { seq: seq + 1, event: "monitoring_end", timestamp: job.startedAt!.getTime() + 1000, offsetMs: 1000, tags: { link: "wifi" }, changed: [] },
     ] });
   const record = (r?: NetworkReport, final = false, ip = "80.150.1.1") => recordAgentNetworkEvents({ agentId, leaseId, ip, report: r, ...(final ? { finalJobId: job.id } : {}) });
+  const hostReport = (): NetworkReport => {
+    const r = report();
+    const snapshot = { ruleVersion: 1 as const, cpuPercent: 90, memoryPercent: 40 };
+    const events: NetworkReport["events"] = [r.events[0],
+      { ...r.events[0], seq: 2, event: "host_start", tags: { link: null }, changed: [], data: snapshot },
+      { ...r.events[0], seq: 3, event: "host_high", tags: { link: null }, changed: [], data: { ruleVersion: 1, metric: "cpu", valuePercent: 90, thresholdPercent: 80, durationMs: 30000, peakPercent: 95 } },
+      { ...r.events[0], seq: 4, event: "host_end", tags: { link: null }, changed: [], data: snapshot },
+      { ...r.events[1], seq: 5 },
+    ];
+    return { ...r, version: 2, lastSeq: 5, events, resources: { ruleVersion: 1, continuous: true, highUsage: true, rapidRise: false } };
+  };
   const current = () => storage.getEvalJob(job.id).then((j) => j!);
   const receive = (rawReport?: unknown, final = false) => receiveAgentNetworkEvents({ agentId, leaseId, rawReport, ...(final ? { finalJobId: job.id } : {}) });
   beforeAll(async () => {
@@ -51,6 +62,65 @@ d("Core network history, claim fencing and strict metrics", () => {
     const r = report(); const acks = await Promise.all([record(r), record(r), record(r)]);
     expect(acks.every((a) => a?.ackedEventSeqs.join() === "1,2")).toBe(true);
     expect((await getJobNetworkHistory(await current())).events).toHaveLength(3);
+  });
+  it("stores and deduplicates typed host events without altering the baseline or Strict network eligibility", async () => {
+    const r = hostReport(); await Promise.all([record(r), record(r)]); await record(r, true);
+    const updated = await current();
+    expect(updated).toMatchObject({ networkChanged: false, networkMonitoring: "complete", tags: job.tags });
+    const history = await getJobNetworkHistory(updated, 0, true);
+    expect(history.events).toHaveLength(6);
+    expect(history.resources).toEqual({ ruleVersion: 1, monitoring: "complete", highUsage: true, rapidRise: false });
+    expect(history.events.find((event) => event.event === "host_high")).toMatchObject({ tags: {}, data: { metric: "cpu", valuePercent: 90 } });
+    expect((await getJobNetworkHistory(updated)).events.map((event) => event.event)).toEqual(["initial", "monitoring_start", "monitoring_end"]);
+  });
+  it("keeps resource gaps separate from network gaps in both directions", async () => {
+    const r = hostReport(); r.resources!.continuous = false;
+    await record(r, true);
+    expect(await current()).toMatchObject({ networkChanged: false, networkMonitoring: "complete" });
+    expect((await getJobNetworkHistory(await current(), 0, true)).resources?.monitoring).toBe("incomplete");
+    job = await claim(); const networkGap = hostReport(); networkGap.continuous = false;
+    await record(networkGap, true);
+    expect((await current()).networkMonitoring).toBe("incomplete");
+    expect((await getJobNetworkHistory(await current(), 0, true)).resources?.monitoring).toBe("complete");
+  });
+  it("does not claim host coverage for older agents", async () => {
+    await record(report(), true);
+    expect((await getJobNetworkHistory(await current(), 0, true)).resources).toBeNull();
+  });
+  it("compares immutable resource payloads independent of JSON field order", async () => {
+    const r = hostReport(); await record(r);
+    const event = r.events[2];
+    if (!("data" in event)) throw new Error("Expected resource data");
+    event.data = Object.fromEntries(Object.entries(event.data).reverse()) as typeof event.data;
+    expect((await record(r))?.ackedEventSeqs).toEqual([1, 2, 3, 4, 5]);
+    event.data = { ...event.data, valuePercent: 91 } as typeof event.data;
+    const response = await receive(r);
+    expect(response.networkReportStatus).toMatchObject({ status: "partial", rejectedEvents: [{ seq: 3, reason: "event_conflict" }] });
+    expect((await getJobNetworkHistory(await current(), 0, true)).events.find((event) => event.event === "host_high")?.data).toMatchObject({ valuePercent: 90 });
+  });
+  it("retains a high-usage summary even if pending details were lost", async () => {
+    const r = hostReport(); r.events.splice(2, 1); r.evictedThroughSeq = 3;
+    await record(r, true);
+    const history = await getJobNetworkHistory(await current(), 0, true);
+    expect(history.resources).toMatchObject({ monitoring: "incomplete", highUsage: true });
+    expect(history.events.some((event) => event.event === "host_high")).toBe(false);
+  });
+  it("resource telemetry rejection cannot discard an authorized evaluation result", async () => {
+    const r = hostReport(); const raw = JSON.parse(JSON.stringify(r)); raw.events[2].data.valuePercent = -1;
+    const done = await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId, siteId: null }, {
+      agentId, leaseId, startedAt: job.startedAt, network: { report: raw, onAck: vi.fn() },
+    });
+    expect(done?.status).toBe("completed");
+    expect(await storage.getEvalResultsByJob(job.id)).toHaveLength(1);
+    expect((await getJobNetworkHistory((await current()), 0, true)).resources).toMatchObject({ monitoring: "incomplete", highUsage: true });
+  });
+  it("claim reset drops prior resource coverage, while old host reports remain fenced", async () => {
+    const old = hostReport(); await record(old);
+    await pool.query("UPDATE eval_jobs SET status='pending' WHERE id=$1", [job.id]);
+    job = (await storage.claimEvalJob(job.id, agentId, identity()))!;
+    expect((await getJobNetworkHistory(job, 0, true)).resources).toBeNull();
+    expect((await receive(old)).networkReportStatus).toMatchObject({ status: "rejected", reason: "execution_mismatch" });
+    expect((await getJobNetworkHistory(await current(), 0, true)).resources).toBeNull();
   });
   it("rolls back a conflicting immutable event rather than overwriting it", async () => {
     const r = report(); await record(r); r.events[0].tags.link = "cellular";

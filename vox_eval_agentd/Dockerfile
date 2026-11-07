@@ -197,6 +197,8 @@ COPY vox_eval_agentd/link-type.ts /app/
 COPY vox_eval_agentd/net-signals.ts /app/
 COPY vox_eval_agentd/network-events.ts /app/
 COPY vox_eval_agentd/network-observer.ts /app/
+COPY vox_eval_agentd/host-resource-observer.ts /app/
+COPY vox_eval_agentd/host-resource-monitor.ts /app/
 COPY vox_eval_agentd/package.json /app/
 COPY shared/secrets.ts /shared/secrets.ts
 COPY shared/credentials.ts /shared/credentials.ts
@@ -206,6 +208,7 @@ COPY shared/placeholders.ts /shared/placeholders.ts
 COPY shared/wav.ts /shared/wav.ts
 COPY shared/tags.ts /shared/tags.ts
 COPY shared/network-event-protocol.ts /shared/network-event-protocol.ts
+COPY shared/host-resources.ts /shared/host-resources.ts
 
 # Install daemon dependencies (esbuild for TS compilation)
 RUN npm install

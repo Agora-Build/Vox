@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { isDeepStrictEqual } from "node:util";
 import type { EvalJob } from "@shared/schema";
 import {
   networkReportSchema, networkReportEnvelopeSchema, agentNetworkEventSchema,
@@ -9,6 +10,7 @@ import {
 import { pool } from "./storage";
 import { lookupAsn, normalizeIp } from "./location";
 import { ispFromAsn, LINK_VALUES } from "@shared/tags";
+import { isHostResourceEvent, type HostResourceSummary } from "@shared/host-resources";
 
 export class NetworkReportError extends Error {
   constructor(public status: number, message: string, public reason: NetworkRejectionReason = "execution_mismatch", public expectedFirstSeq?: number) { super(message); }
@@ -22,12 +24,13 @@ export function parseNetworkReport(raw: unknown): NetworkReport | undefined {
 }
 
 async function assertStoredEvent(client: PoolClient, job: Record<string, any>, event: AgentNetworkEvent): Promise<void> {
-  const { rows: [prior] } = await client.query(`SELECT event, occurred_at, offset_ms, tags->>'link' AS link, changed
+  const { rows: [prior] } = await client.query(`SELECT event, occurred_at, offset_ms, tags->>'link' AS link, changed, data
     FROM eval_job_network_events WHERE job_id = $1 AND started_at = $2 AND source = 'agent' AND seq = $3`,
   [job.id, job.started_at, event.seq]);
   if (!prior || prior.event !== event.event || new Date(prior.occurred_at).getTime() !== event.timestamp
     || prior.offset_ms !== event.offsetMs || prior.link !== event.tags.link
-    || JSON.stringify(prior.changed) !== JSON.stringify(event.changed)) {
+    || !isDeepStrictEqual(prior.changed, event.changed)
+    || !isDeepStrictEqual(prior.data ?? null, "data" in event ? event.data : null)) {
     throw new NetworkReportError(409, "Conflicting network event sequence", "event_conflict");
   }
 }
@@ -39,7 +42,7 @@ export async function initializeJobNetworkHistory(client: PoolClient, job: Recor
     VALUES ($1, $2, $3, $4, $5, $6, $7)
     ON CONFLICT (job_id) DO UPDATE SET agent_id = EXCLUDED.agent_id, lease_id = EXCLUDED.lease_id,
       started_at = EXCLUDED.started_at, observed_ip = EXCLUDED.observed_ip, link_type = EXCLUDED.link_type,
-      first_seq = NULL, last_seq = NULL, monitoring_gap = EXCLUDED.monitoring_gap, finalized = false`,
+      first_seq = NULL, last_seq = NULL, monitoring_gap = EXCLUDED.monitoring_gap, finalized = false, resources = NULL`,
   [job.id, job.eval_agent_id, agent.current_lease_id, job.started_at, agent.observed_ip, agent.link_type,
     !agent.current_lease_id || !agent.observed_ip]);
   await client.query(`INSERT INTO eval_job_network_events
@@ -67,7 +70,7 @@ export async function recordAgentNetworkEvents(opts: {
     }
     const { rows } = await client.query(`SELECT j.*, s.lease_id AS network_lease_id,
       s.observed_ip AS network_observed_ip, s.link_type AS network_link_type,
-      s.first_seq, s.last_seq, s.monitoring_gap, s.finalized, a.link_type AS current_link_type
+      s.first_seq, s.last_seq, s.monitoring_gap, s.finalized, s.resources AS resource_state, a.link_type AS current_link_type
       FROM eval_jobs j JOIN eval_job_network_state s ON s.job_id = j.id
       JOIN eval_agents a ON a.id = j.eval_agent_id
       WHERE j.eval_agent_id = $1 AND s.agent_id = $1
@@ -100,8 +103,9 @@ export async function recordAgentNetworkEvents(opts: {
       }
       const baseline = networkEventTags(job.tags);
       let changed = !!job.network_changed;
-      let monitoringGap = !!job.monitoring_gap || job.network_monitoring === "incomplete" || !!opts.incomplete
-        || (opts.lastHeartbeatAt !== undefined && Date.now() - Math.max(new Date(job.started_at).getTime(), opts.lastHeartbeatAt?.getTime() ?? 0) >= NETWORK_EVENT_RETENTION_MS);
+      const deliveryGap = !!opts.incomplete || (opts.lastHeartbeatAt !== undefined
+        && Date.now() - Math.max(new Date(job.started_at).getTime(), opts.lastHeartbeatAt?.getTime() ?? 0) >= NETWORK_EVENT_RETENTION_MS);
+      let monitoringGap = !!job.monitoring_gap || job.network_monitoring === "incomplete" || deliveryGap;
       const currentIp = opts.ip ? normalizeIp(opts.ip) : null;
       const previousIp = job.network_observed_ip ? normalizeIp(job.network_observed_ip) : null;
       const link = (LINK_VALUES as readonly string[]).includes(job.current_link_type) ? job.current_link_type : null;
@@ -127,13 +131,14 @@ export async function recordAgentNetworkEvents(opts: {
           // Delayed delivery does not prove which public ISP carried an earlier
           // observation. Keep it explicitly unknown; Core observations above
           // describe the verified egress at receipt time, without exposing IPs.
-          const tags = { ...baseline, link: event.tags.link, isp: null, access: null };
+          const tags = isHostResourceEvent(event.event) ? {} : { ...baseline, link: event.tags.link, isp: null, access: null };
           const inserted = await client.query(`INSERT INTO eval_job_network_events
-            (job_id, agent_id, lease_id, started_at, seq, event, source, occurred_at, offset_ms, tags, changed)
-            VALUES ($1, $2, $3, $4, $5, $6, 'agent', $7, $8, $9, $10)
+            (job_id, agent_id, lease_id, started_at, seq, event, source, occurred_at, offset_ms, tags, changed, data)
+            VALUES ($1, $2, $3, $4, $5, $6, 'agent', $7, $8, $9, $10, $11)
             ON CONFLICT (job_id, agent_id, lease_id, started_at, source, seq) DO NOTHING RETURNING id`,
           [job.id, opts.agentId, opts.leaseId, job.started_at, event.seq, event.event,
-            new Date(event.timestamp), event.offsetMs, JSON.stringify(tags), JSON.stringify(event.changed)]);
+            new Date(event.timestamp), event.offsetMs, JSON.stringify(tags), JSON.stringify(event.changed),
+            "data" in event ? JSON.stringify(event.data) : null]);
           if (!inserted.rows.length) {
             try { await assertStoredEvent(client, job, event); }
             catch (error) {
@@ -153,20 +158,36 @@ export async function recordAgentNetworkEvents(opts: {
         count(*) FILTER (WHERE source = 'agent' AND seq BETWEEN $3 AND $4)::int AS received,
         count(*) FILTER (WHERE event = 'network_change')::int AS changes,
         count(*) FILTER (WHERE source = 'agent' AND seq = $3 AND event = 'monitoring_start')::int AS starts,
-        count(*) FILTER (WHERE source = 'agent' AND seq = $4 AND event = 'monitoring_end')::int AS ends
+        count(*) FILTER (WHERE source = 'agent' AND seq = $4 AND event = 'monitoring_end')::int AS ends,
+        count(*) FILTER (WHERE event = 'host_start')::int AS host_starts,
+        count(*) FILTER (WHERE event = 'host_end')::int AS host_ends,
+        count(*) FILTER (WHERE event = 'host_gap')::int AS host_gaps,
+        count(*) FILTER (WHERE event = 'host_high')::int AS host_highs,
+        count(*) FILTER (WHERE event = 'host_rise')::int AS host_rises
         FROM eval_job_network_events WHERE job_id = $1 AND started_at = $2`, [job.id, job.started_at, firstSeq, lastSeq]);
       const final = opts.finalJobId === job.id;
       const complete = final && report && firstSeq !== null && !monitoringGap
         && report.lastSeq === lastSeq && lastSeq >= firstSeq && counts.received === lastSeq - firstSeq + 1
         && counts.starts === 1 && counts.ends === 1;
       const monitoring = final ? (complete ? "complete" : "incomplete") : monitoringGap ? "incomplete" : report ? "monitoring" : job.network_monitoring;
+      const priorResources = job.resource_state as HostResourceSummary | null;
+      let resources = priorResources;
+      if (report?.resources || priorResources) {
+        const gap = priorResources?.monitoring === "incomplete" || deliveryGap || (opts.rejectedEvents?.length ?? 0) > 0
+          || (report !== undefined && !report.resources?.continuous) || counts.host_gaps > 0;
+        const hostComplete = final && !!report?.resources && !gap && firstSeq !== null
+          && counts.received === lastSeq - firstSeq + 1 && counts.host_starts === 1 && counts.host_ends === 1;
+        resources = { ruleVersion: 1, monitoring: final ? (hostComplete ? "complete" : "incomplete") : gap ? "incomplete" : "monitoring",
+          highUsage: !!priorResources?.highUsage || !!report?.resources?.highUsage || counts.host_highs > 0,
+          rapidRise: !!priorResources?.rapidRise || !!report?.resources?.rapidRise || counts.host_rises > 0 };
+      }
       await client.query(`UPDATE eval_jobs SET network_changed = network_changed OR $2,
         network_monitoring = $3, network_change_count = GREATEST(network_change_count, $4) WHERE id = $1`,
       [job.id, changed, monitoring, Math.max(counts.changes, report?.changeCount ?? 0)]);
       await client.query(`UPDATE eval_job_network_state SET observed_ip = COALESCE($2, observed_ip),
         link_type = COALESCE($3, link_type), first_seq = $4, last_seq = $5,
-        monitoring_gap = $6, finalized = $7 WHERE job_id = $1`,
-      [job.id, currentIp, link, firstSeq, lastSeq, monitoringGap, final]);
+        monitoring_gap = $6, finalized = $7, resources = $8 WHERE job_id = $1`,
+      [job.id, currentIp, link, firstSeq, lastSeq, monitoringGap, final, resources ? JSON.stringify(resources) : null]);
     }
     if (!opts.client) await client.query("COMMIT");
     return ack;
@@ -238,7 +259,9 @@ export async function receiveAgentNetworkEvents(opts: {
       await client.query("SAVEPOINT network_incomplete_state");
       try {
         for (const job of affected) {
-          await client.query("UPDATE eval_job_network_state SET monitoring_gap=true WHERE job_id=$1 AND started_at=$2", [job.id, job.started_at]);
+          await client.query(`UPDATE eval_job_network_state SET monitoring_gap=true,
+            resources=CASE WHEN resources IS NULL THEN NULL ELSE jsonb_set(resources,'{monitoring}','"incomplete"'::jsonb) END
+            WHERE job_id=$1 AND started_at=$2`, [job.id, job.started_at]);
         }
       } catch (error) {
         await client.query("ROLLBACK TO SAVEPOINT network_incomplete_state");
@@ -257,7 +280,7 @@ export async function receiveAgentNetworkEvents(opts: {
           (job_id,agent_id,lease_id,started_at,monitoring_gap) VALUES($1,$2,$3,$4,true)
           ON CONFLICT (job_id) DO UPDATE SET agent_id=EXCLUDED.agent_id, lease_id=EXCLUDED.lease_id,
             started_at=EXCLUDED.started_at, observed_ip=NULL, link_type=NULL, first_seq=NULL,
-            last_seq=NULL, monitoring_gap=true, finalized=false
+            last_seq=NULL, monitoring_gap=true, finalized=false, resources=NULL
           WHERE eval_job_network_state.started_at <> EXCLUDED.started_at
             OR eval_job_network_state.agent_id <> EXCLUDED.agent_id
             OR eval_job_network_state.lease_id IS DISTINCT FROM EXCLUDED.lease_id RETURNING job_id`,
@@ -292,14 +315,19 @@ export async function receiveAgentNetworkEvents(opts: {
   } finally { if (!opts.client) client.release(); }
 }
 
-export async function getJobNetworkHistory(job: EvalJob, cursor = 0): Promise<NetworkHistory> {
-  const { rows } = await pool.query(`SELECT id, event, source, seq, occurred_at, offset_ms, tags, changed
-    FROM eval_job_network_events WHERE job_id = $1 AND started_at = $2 AND id > $3 ORDER BY id LIMIT 101`,
-  [job.id, job.startedAt, cursor]);
+export async function getJobNetworkHistory(job: EvalJob, cursor = 0, includeHost = false): Promise<NetworkHistory> {
+  const { rows } = await pool.query(`SELECT id, event, source, seq, occurred_at, offset_ms, tags, changed, data
+    FROM eval_job_network_events WHERE job_id = $1 AND started_at = $2 AND id > $3
+      AND ($4::boolean OR left(event, 5) <> 'host_') ORDER BY id LIMIT 101`,
+  [job.id, job.startedAt, cursor, includeHost]);
   const events = rows.slice(0, 100).map((row) => ({
     id: row.id, event: row.event, source: row.source, seq: row.seq === null ? null : Number(row.seq),
     timestamp: new Date(row.occurred_at).getTime(), offsetMs: row.offset_ms, tags: row.tags, changed: row.changed,
+    ...(row.data == null ? {} : { data: row.data }),
   }));
+  const resources = includeHost ? (await pool.query("SELECT resources FROM eval_job_network_state WHERE job_id=$1 AND started_at=$2",
+    [job.id, job.startedAt])).rows[0]?.resources ?? null : undefined;
   return { events, nextCursor: rows.length > 100 ? events.at(-1)!.id : null,
-    networkChanged: job.networkChanged, monitoring: job.networkMonitoring, changeCount: job.networkChangeCount };
+    networkChanged: job.networkChanged, monitoring: job.networkMonitoring, changeCount: job.networkChangeCount,
+    ...(includeHost ? { resources } : {}) };
 }

@@ -3,6 +3,7 @@ import {
   type AgentNetworkEvent, type NetworkAck, type NetworkReport, type NetworkReportStatus,
 } from "../shared/network-event-protocol";
 import type { LinkType } from "../shared/tags";
+import type { HostResourceEvent, HostResourceReport } from "../shared/host-resources";
 
 export type NetworkObservation = {
   link: LinkType | null;
@@ -19,6 +20,7 @@ export class NetworkEventBuffer {
     pending: Array<{ at: number; event: AgentNetworkEvent }>;
     networkChanged: boolean; changeCount: number; continuous: boolean; evictedThroughSeq: number;
     previous?: NetworkObservation; sampledAt: number; deliveredAt: number; ended: boolean;
+    resources?: HostResourceReport;
   };
   constructor(private now = () => performance.now(), private wall = () => Date.now()) {}
 
@@ -51,6 +53,16 @@ export class NetworkEventBuffer {
 
   gap(): void { this.observe(undefined); }
 
+  resource(event: HostResourceEvent): void {
+    const run = this.run;
+    if (!run || run.ended) return;
+    run.resources ??= { ruleVersion: 1, continuous: true, highUsage: false, rapidRise: false };
+    if (event.event === "host_gap") run.resources.continuous = false;
+    if (event.event === "host_high") run.resources.highUsage = true;
+    if (event.event === "host_rise") run.resources.rapidRise = true;
+    this.append(event.event, [], null, event.timestamp, event.data);
+  }
+
   noteMissingChanges(count: number): void {
     const run = this.run;
     if (!run || run.ended || count <= 0) return;
@@ -66,16 +78,17 @@ export class NetworkEventBuffer {
     this.run.ended = true;
   }
 
-  private append(event: AgentNetworkEvent["event"], changed: AgentNetworkEvent["changed"], link: LinkType | null, timestamp?: number): void {
+  private append(event: AgentNetworkEvent["event"], changed: AgentNetworkEvent["changed"], link: LinkType | null, timestamp?: number, data?: HostResourceEvent["data"]): void {
     const run = this.run!;
     if (this.seq - run.firstSeq + 1 >= MAX_NETWORK_EVENTS_PER_RUN) {
       run.continuous = false;
+      if (run.resources) run.resources.continuous = false;
       return;
     }
     const elapsed = Math.max(0, Math.round(this.now() - run.start));
     const offsetMs = timestamp === undefined ? elapsed : Math.max(0, Math.min(elapsed, timestamp - run.wallStart));
     run.pending.push({ at: this.now() - (elapsed - offsetMs), event: { seq: ++this.seq, event,
-      timestamp: timestamp ?? run.wallStart + elapsed, offsetMs, tags: { link }, changed } });
+      timestamp: timestamp ?? run.wallStart + elapsed, offsetMs, tags: { link }, changed, ...(data ? { data } : {}) } as AgentNetworkEvent });
     this.expire();
   }
 
@@ -89,18 +102,25 @@ export class NetworkEventBuffer {
   report(): NetworkReport | undefined {
     const run = this.run;
     if (!run) return undefined;
-    if (this.now() - run.deliveredAt >= NETWORK_EVENT_RETENTION_MS) run.continuous = false;
+    if (this.now() - run.deliveredAt >= NETWORK_EVENT_RETENTION_MS) {
+      run.continuous = false;
+      if (run.resources) run.resources.continuous = false;
+    }
     this.expire();
-    return { version: 1, jobId: run.jobId, startedAt: run.startedAt, firstSeq: run.firstSeq, lastSeq: this.seq,
+    return { version: run.resources ? 2 : 1, jobId: run.jobId, startedAt: run.startedAt, firstSeq: run.firstSeq, lastSeq: this.seq,
       networkChanged: run.networkChanged, changeCount: run.changeCount, continuous: run.continuous,
-      evictedThroughSeq: run.evictedThroughSeq, events: run.pending.map(({ event }) => structuredClone(event)) };
+      evictedThroughSeq: run.evictedThroughSeq, events: run.pending.map(({ event }) => structuredClone(event)),
+      ...(run.resources ? { resources: { ...run.resources } } : {}) };
   }
 
   acknowledge(ack: NetworkAck | undefined, sent?: NetworkReport): void {
     const run = this.run;
     if (!ack || !run || ack.jobId !== run.jobId || ack.startedAt !== run.startedAt || !Array.isArray(ack.ackedEventSeqs)) return;
     if (sent && (sent.jobId !== run.jobId || sent.startedAt !== run.startedAt)) return;
-    if (this.now() - run.deliveredAt >= NETWORK_EVENT_RETENTION_MS) run.continuous = false;
+    if (this.now() - run.deliveredAt >= NETWORK_EVENT_RETENTION_MS) {
+      run.continuous = false;
+      if (run.resources) run.resources.continuous = false;
+    }
     run.deliveredAt = this.now();
     const submitted = sent && new Set(sent.events.map((event) => event.seq));
     const accepted = new Set(ack.ackedEventSeqs.filter((seq) => !submitted || submitted.has(seq)));
@@ -111,7 +131,12 @@ export class NetworkEventBuffer {
     const run = this.run;
     if (!status || !run || !sent || status.jobId !== run.jobId || status.startedAt !== run.startedAt
       || sent.jobId !== run.jobId || sent.startedAt !== run.startedAt) return;
-    if (status.incomplete || status.status === "partial" || status.status === "rejected") run.continuous = false;
+    if (status.incomplete || status.status === "partial" || status.status === "rejected") {
+      run.continuous = false;
+      // Network-only gaps do not invalidate host samples. Rejected or lost
+      // telemetry does, because the shared sequence can no longer prove coverage.
+      if (run.resources && status.status !== "accepted") run.resources.continuous = false;
+    }
     if (status.status !== "partial" && status.status !== "rejected") return;
     const submitted = new Set(sent.events.map((event) => event.seq));
     const rejected = new Set((status.rejectedEvents ?? []).filter((event) => submitted.has(event.seq)).map((event) => event.seq));

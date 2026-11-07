@@ -16,7 +16,7 @@ import type { EvalJob, EvalResult } from "@shared/schema";
 import { EvalResultView } from "@/components/eval-result-view";
 import { formatTag, explainSystemReason, isSystemKey, type JobTag } from "@shared/tags";
 import { accessHint } from "@/lib/access-text";
-import { JobNetworkTimeline } from "@/components/job-network-timeline";
+import { JobEvents } from "@/components/job-events";
 
 const TAG_SOURCE_TEXT: Record<JobTag["source"], { label: string; title: string }> = {
   flow: { label: "flow", title: "Set on the eval flow" },
@@ -150,6 +150,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
   const userId = auth?.user?.id;
   const isAdmin = auth?.user?.isAdmin ?? false;
   const canReupload = isAdmin || job.createdBy === userId;
+  const jobEvents = job.kind === "eval" && job.startedAt ? <JobEvents key={`${job.id}:${job.startedAt}`} job={job} /> : null;
 
   return (
     <div className="space-y-6">
@@ -263,7 +264,6 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </div>
       </div>
 
-      {job.kind === "eval" && job.startedAt && <JobNetworkTimeline key={`${job.id}:${job.startedAt}`} job={job} />}
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -338,7 +338,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
         </div>
       </div>
 
-      {result && <EvalResultView result={result} />}
+      {result ? <EvalResultView result={result} beforeScreenshots={jobEvents} /> : jobEvents}
 
       {/* Immutable evalFlow + eval-set snapshot (as run) */}
       <Dialog open={snapshotOpen} onOpenChange={setSnapshotOpen}>

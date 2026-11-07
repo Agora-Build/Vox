@@ -2,12 +2,13 @@ import { INTERRUPT_ACTION_MAX_MS } from "@shared/metrics";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Download, Play, Phone } from "lucide-react";
+import { ChevronDown, Download, Play, Phone } from "lucide-react";
 import type { EvalResult } from "@shared/schema";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { EvalRecordingPlayer } from "@/components/eval-recording-player";
 import { isRecordingArtifact } from "@/lib/recording-transcript";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 // One eval result, as the eval job page shows it: call details, the metric
 // cards, per-case results, recordings, screenshots, turn-level tables and
@@ -22,7 +23,7 @@ interface ArtifactFile {
   contentType: string;
 }
 
-export function EvalResultView({ result }: { result: EvalResult }) {
+export function EvalResultView({ result, beforeScreenshots }: { result: EvalResult; beforeScreenshots?: ReactNode }) {
   const [recordingName, setRecordingName] = useState("");
   const artifactFiles = (result.artifactFiles ?? []) as ArtifactFile[];
   const rawData = (result.rawData ?? {}) as Record<string, unknown>;
@@ -220,9 +221,11 @@ export function EvalResultView({ result }: { result: EvalResult }) {
       </Card>
     )}
 
+    {beforeScreenshots}
+
     {/* Screenshots */}
     {screenshotFiles.length > 0 && (
-      <Card>
+      <Card data-testid="result-screenshots">
         <CardHeader>
           <CardTitle className="text-sm">Screenshots</CardTitle>
           <CardDescription>{screenshotFiles.length} screenshot{screenshotFiles.length !== 1 ? "s" : ""}</CardDescription>
@@ -342,12 +345,19 @@ export function EvalResultView({ result }: { result: EvalResult }) {
 
     {/* Artifact Files */}
     {artifactFiles.length > 0 && (
-      <Card>
+      <Collapsible key={result.id} defaultOpen={false} asChild><Card className="group/artifacts" data-testid="result-artifact-files">
         <CardHeader>
-          <CardTitle className="text-sm">Artifact Files</CardTitle>
-          <CardDescription>{artifactFiles.length} file{artifactFiles.length !== 1 ? "s" : ""} uploaded</CardDescription>
+          <CollapsibleTrigger asChild>
+            <button type="button" aria-label="Artifact Files" className="flex w-full items-center gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <div className="min-w-0 flex-1">
+                <CardTitle className="text-sm">Artifact Files</CardTitle>
+                <CardDescription className="mt-1.5">{artifactFiles.length} file{artifactFiles.length !== 1 ? "s" : ""} uploaded</CardDescription>
+              </div>
+              <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none group-data-[state=open]/artifacts:rotate-180" />
+            </button>
+          </CollapsibleTrigger>
         </CardHeader>
-        <CardContent>
+        <CollapsibleContent asChild><CardContent>
           <Table>
             <TableHeader>
               <TableRow>
@@ -372,8 +382,8 @@ export function EvalResultView({ result }: { result: EvalResult }) {
               ))}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
+        </CardContent></CollapsibleContent>
+      </Card></Collapsible>
     )}
     </>
   );

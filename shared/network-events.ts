@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { LINK_VALUES, type JobTag } from "./tags";
 import { MAX_NETWORK_EVENT_BATCH, MAX_NETWORK_EVENTS_PER_RUN } from "./network-event-protocol";
+import { HOST_RESOURCE_RULES, type HostResourceSummary } from "./host-resources";
 export { NETWORK_EVENT_RETENTION_MS, MAX_NETWORK_EVENT_BATCH, MAX_NETWORK_EVENTS_PER_RUN } from "./network-event-protocol";
 
 export type NetworkMode = "strict" | "all";
@@ -8,7 +9,7 @@ export type NetworkMonitoring = "unknown" | "monitoring" | "complete" | "incompl
 export type NetworkEventTags = Record<string, string | null>;
 
 const sequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-export const agentNetworkEventSchema = z.object({
+const networkEventSchema = z.object({
   seq: sequence.positive(),
   event: z.enum(["monitoring_start", "network_change", "monitoring_gap", "monitoring_end"]),
   timestamp: z.number().int().min(0).max(8_640_000_000_000_000),
@@ -17,8 +18,30 @@ export const agentNetworkEventSchema = z.object({
   changed: z.array(z.enum(["link", "interface", "egress", "monitoring"])).max(4),
 }).strict();
 
+const percent = z.number().finite().min(0).max(100);
+const resourceSnapshot = z.object({ ruleVersion: z.literal(1), cpuPercent: percent.nullable(), memoryPercent: percent.nullable() }).strict();
+const condition = z.object({
+  ruleVersion: z.literal(1), metric: z.enum(["cpu", "memory"]), valuePercent: percent,
+  thresholdPercent: percent, durationMs: z.number().int().min(HOST_RESOURCE_RULES.sustainedMs).max(Number.MAX_SAFE_INTEGER), peakPercent: percent,
+}).strict();
+const resourceBase = networkEventSchema.omit({ event: true, tags: true, changed: true }).extend({
+  tags: z.object({ link: z.null() }).strict(), changed: z.array(z.never()).max(0),
+});
+const resourceEventSchema = z.union([
+  resourceBase.extend({ event: z.enum(["host_start", "host_gap", "host_end"]), data: resourceSnapshot }).strict(),
+  resourceBase.extend({ event: z.literal("host_high"), data: condition.extend({ thresholdPercent: z.literal(HOST_RESOURCE_RULES.highPercent) }) }).strict()
+    .refine(({ data }) => data.valuePercent > data.thresholdPercent && data.peakPercent >= data.valuePercent),
+  resourceBase.extend({ event: z.literal("host_recovered"), data: condition.extend({ thresholdPercent: z.literal(HOST_RESOURCE_RULES.recoveryPercent) }) }).strict()
+    .refine(({ data }) => data.valuePercent < data.thresholdPercent && data.peakPercent >= data.valuePercent),
+  resourceBase.extend({ event: z.literal("host_rise"), data: z.object({
+    ruleVersion: z.literal(1), metric: z.enum(["cpu", "memory"]), valuePercent: percent, previousPercent: percent,
+    windowMs: z.literal(HOST_RESOURCE_RULES.riseWindowMs), risePoints: z.literal(HOST_RESOURCE_RULES.risePoints),
+  }).strict() }).strict().refine(({ data }) => data.valuePercent - data.previousPercent >= data.risePoints),
+]);
+export const agentNetworkEventSchema = z.union([networkEventSchema, resourceEventSchema]);
+
 export const networkReportEnvelopeSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   jobId: z.number().int().positive().max(2_147_483_647),
   startedAt: z.string().datetime(),
   firstSeq: sequence.positive(),
@@ -28,6 +51,7 @@ export const networkReportEnvelopeSchema = z.object({
   continuous: z.boolean(),
   evictedThroughSeq: sequence,
   events: z.array(z.unknown()).max(MAX_NETWORK_EVENT_BATCH),
+  resources: z.object({ ruleVersion: z.literal(1), continuous: z.boolean(), highUsage: z.boolean(), rapidRise: z.boolean() }).strict().optional(),
 }).strict();
 
 export const networkReportSchema = networkReportEnvelopeSchema.extend({
@@ -40,6 +64,10 @@ export const networkReportSchema = networkReportEnvelopeSchema.extend({
   }
   if (!report.networkChanged && (report.changeCount > 0 || report.events.some((e) => e.event === "network_change"))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Network change summary is inconsistent" });
+  }
+  if ((report.version === 1 && (report.resources || report.events.some((event) => event.event.startsWith("host_"))))
+    || (report.events.some((event) => event.event.startsWith("host_")) && !report.resources)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Host resource events require a version 2 resource summary" });
   }
 });
 
@@ -67,6 +95,7 @@ export type NetworkHistoryEvent = {
   offsetMs: number;
   tags: NetworkEventTags;
   changed: string[];
+  data?: import("./host-resources").HostResourceEventData;
 };
 export type NetworkHistory = {
   events: NetworkHistoryEvent[];
@@ -74,6 +103,7 @@ export type NetworkHistory = {
   networkChanged: boolean;
   monitoring: NetworkMonitoring;
   changeCount: number;
+  resources?: HostResourceSummary | null;
 };
 
 /** Preserve the baseline elsewhere; event snapshots prefer detected evidence. */

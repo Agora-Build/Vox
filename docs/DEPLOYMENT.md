@@ -49,7 +49,46 @@ read-only directory mount described in `vox_eval_agentd/README.md`; configure
 `VOX_NETWORK_STATUS_DIR` for `vox-manager.sh`. No host privileges, host-network
 mode, credentials, or public listener are required. The deployment script does
 not silently install or activate a host service. Missing/stale observations
-fail closed and are visible in a job's Network timeline.
+fail closed and are visible in a job's Events card.
+
+## Agent resource events rollout (schema 68)
+
+Deploy Core before the new daemon: `0067_agent_resource_events.sql` adds nullable
+event data and independent host-resource coverage to claim state. No historical
+coverage is backfilled. Version 1 network-only reports remain compatible. Updated
+daemons send version 2 through the existing `networkReport`/ACK protocol; older
+Core versions reject that telemetry, so do not upgrade daemons first.
+
+Then update `vox-eval-agentd` and restart the updated
+`scripts/vox-network-monitor.py` service on Docker hosts. The existing
+`VOX_NETWORK_STATUS_DIR` read-only directory mount also carries host-resource
+samples; there is no new privileged mount or listener. Native Linux processes
+can sample directly. Resource sampling is Linux-only in this release; macOS
+network monitoring remains supported, but CPU/memory coverage is unavailable.
+Older daemons/samplers continue running and show no host-resource coverage.
+
+Events now includes Network / CPU / Memory categories. Version 1 resource rules
+record CPU or memory above 80% for 30 seconds, recovery below 75% for 30 seconds,
+and increases of at least 20 **percentage points** over five minutes. Thresholds
+are fixed versioned defaults, not an admin-editable setting yet. CPU covers the
+whole machine; memory uses MemAvailable to account for reclaimable caches.
+The five-minute sample window stays local and is separate from the two-minute
+queue of pending event details. The sampler must remain running between jobs to
+provide a warm trend window. It does not send process names or command lines.
+
+Verify a job's authorized `/api/eval-jobs/:id/events` response and Events card:
+network and host coverage must be independent, unknown coverage must not be
+shown as healthy, and CPU warnings must not appear as network changes. The
+legacy `/network-events` endpoint remains network-only. Bad or conflicting host
+telemetry must not discard an authorized result. Sticky resource-condition
+summaries survive missing/expired details; a resource sampling gap marks host
+coverage incomplete, not a network change.
+
+**Strict eligibility is unchanged:** it checks complete network coverage and no
+detected network change. Host-resource events are diagnostic and do not fail the
+evaluation or silently change leaderboard filtering. Broader Strict policy and
+notification delivery require separate explicit decisions. Design:
+`designs/2026-11-07-agent-condition-events-design.md`.
 
 ## Credential-policy rollout (schema 67)
 

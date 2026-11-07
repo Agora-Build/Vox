@@ -142,6 +142,16 @@ Preserve owner/admin management gates, the owner's leave restriction, and the
 read-only member view. Resource-transfer HTTP behavior is unchanged.
 
 ### Eval Agent System
+
+**Agent Events (schema 68):** `designs/2026-11-07-agent-condition-events-design.md`
+maintains the generalized job Events card and versioned host CPU/memory rules.
+Host events extend the existing acknowledged execution stream with report v2;
+v1 network-only agents remain compatible. `shared/host-resources.ts` owns rule
+defaults, native Linux/Python host samplers measure host rather than container
+utilization, and missing resource evidence is explicitly unavailable. Baseline
+network tags and Strict eligibility stay unchanged (network coverage/changes
+only). Deploy Core before daemon/host sampler; no notification rules are enabled.
+
 1. Admin or non-basic users mint eval agent tokens with region assignment (admin: public/private visibility; non-admin: private only)
 2. Agents register with a token, then heartbeat and fetch/claim jobs for their region (`evalJobs`: `pending` → `running` → `completed`/`failed`)
 3. Agents run the eval framework and report to `evalResults`, linked to `eval_flows`/`evalSets` via nullable FKs

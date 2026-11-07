@@ -5,6 +5,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import type { Tag, JobTag, LineLookup } from "./tags";
 import type { NetworkMonitoring, NetworkEventTags } from "./network-events";
+import type { HostResourceSummary, HostResourceEventData } from "./host-resources";
 
 // Enums
 export const userPlanEnum = pgEnum("user_plan", ["basic", "premium", "principal", "fellow"]);
@@ -711,6 +712,7 @@ export const evalJobNetworkState = pgTable("eval_job_network_state", {
   lastSeq: bigint("last_seq", { mode: "number" }),
   monitoringGap: boolean("monitoring_gap").notNull().default(false),
   finalized: boolean("finalized").notNull().default(false),
+  resources: jsonb("resources").$type<HostResourceSummary>(),
 });
 
 export const evalJobNetworkEvents = pgTable("eval_job_network_events", {
@@ -726,6 +728,7 @@ export const evalJobNetworkEvents = pgTable("eval_job_network_events", {
   offsetMs: integer("offset_ms").notNull(),
   tags: jsonb("tags").$type<NetworkEventTags>().notNull(),
   changed: jsonb("changed").$type<string[]>().notNull().default([]),
+  data: jsonb("data").$type<HostResourceEventData>(),
 }, (table) => ({
   eventIdentityIdx: uniqueIndex("eval_job_network_events_identity_idx").on(table.jobId, table.agentId, table.leaseId, table.startedAt, table.source, table.seq),
   historyIdx: index("eval_job_network_events_history_idx").on(table.jobId, table.startedAt, table.id),

@@ -6147,7 +6147,7 @@ export async function registerRoutes(
     }
   };
 
-  app.get("/api/eval-jobs/:id/network-events", requireAuth, async (req, res) => {
+  const jobEventHistory = async (req: Request, res: Response, includeHost: boolean) => {
     try {
       const user = await getCurrentUser(req);
       if (!user) return res.status(401).json({ error: "Not authenticated" });
@@ -6157,11 +6157,17 @@ export async function registerRoutes(
       if (!canViewJob(user, job, flow)) return res.status(403).json({ error: "Not authorized to view this job" });
       const cursor = Number(req.query.cursor ?? 0);
       if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > 2_147_483_647) return res.status(400).json({ error: "Invalid cursor" });
-      res.json(await getJobNetworkHistory(job, cursor));
+      res.json(await getJobNetworkHistory(job, cursor, includeHost));
     } catch (error) {
-      console.error("Error fetching network events:", error);
-      res.status(500).json({ error: "Failed to fetch network events" });
+      console.error("Error fetching job events:", error);
+      res.status(500).json({ error: "Failed to fetch job events" });
     }
+  };
+  app.get("/api/eval-jobs/:id/network-events", requireAuth, async (req, res) => {
+    await jobEventHistory(req, res, false);
+  });
+  app.get("/api/eval-jobs/:id/events", requireAuth, async (req, res) => {
+    await jobEventHistory(req, res, true);
   });
 
   app.get("/api/eval-jobs/:id/detail", requireAuth, async (req, res) => {
