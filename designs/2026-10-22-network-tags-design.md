@@ -681,6 +681,11 @@ live dataset is needed to exercise fixture-backed tests.
 
 ## Mid-evaluation network history
 
+The generalized Events UI and additive host CPU/memory protocol are maintained
+in `2026-11-07-agent-condition-events-design.md`. This section remains the network
+contract. Schema 68 adds typed host-event data and separate resource coverage;
+resource conditions do not alter baseline network tags or current Strict rules.
+
 The network baseline stays in `eval_jobs.tags`, frozen atomically at claim.
 Neither heartbeats nor classifier refreshes rewrite it. A sticky, system-owned
 `network_changed` flag records detected handoffs; `network_monitoring` separately

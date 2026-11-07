@@ -44,6 +44,14 @@ default) and a separate aggregate owner budget. See the maintained
 ### Multi-Region Coverage
 Test from North America, Asia Pacific, Europe, and South America to see how each provider performs where your users are.
 
+### Agent Events
+Job details show network observations and host CPU/memory conditions in a shared
+Events timeline, with category filters, readable timestamps and technical
+details. Updated Linux agents/host samplers detect sustained resource pressure,
+five-minute usage rises and recoveries without changing evaluation results or
+the current network-only Strict policy. See the
+[resource-event rollout](docs/DEPLOYMENT.md#agent-resource-events-rollout-schema-68).
+
 ### Real-Time Dashboard
 Live dashboard with zoom/pan charts, per-provider series with gap detection, and the latest metrics (median, SD, P95).
 

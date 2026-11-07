@@ -3,7 +3,8 @@
 
 Run as the agent owner with an explicit --output directory. Bind-mount that
 directory read-only and set VOX_NETWORK_STATUS_FILE inside the container.
-Only hashed local topology and coarse link types are written; never IPs/SSIDs.
+Only hashed topology, coarse link types and host CPU/memory percentages are
+written; never IPs/SSIDs, process names or command lines.
 """
 import argparse
 import collections
@@ -65,6 +66,36 @@ def observe():
     return link, hashlib.sha256(fingerprint.encode()).hexdigest(), public
 
 
+class ResourceSampler:
+    """Linux host counters, not a container's processes or memory limit."""
+    def __init__(self):
+        self.previous = None
+
+    def sample(self):
+        if platform.system() != "Linux":
+            raise ValueError("Host resource sampling is not supported on this platform")
+        fields = Path("/proc/stat").read_text().splitlines()[0].split()
+        if fields[0] != "cpu" or len(fields) < 9:
+            raise ValueError("Missing aggregate CPU counters")
+        ticks = [int(value) for value in fields[1:9]]
+        if any(value < 0 for value in ticks):
+            raise ValueError("Invalid CPU counters")
+        total, idle = sum(ticks), ticks[3] + ticks[4]
+        previous = self.previous
+        self.previous = (total, idle)
+        memory = {key: int(value) for key, value in re.findall(
+            r"^(MemTotal|MemAvailable):\s+(\d+)\s+kB$", Path("/proc/meminfo").read_text(), re.M)}
+        if not memory.get("MemTotal") or "MemAvailable" not in memory or not 0 <= memory["MemAvailable"] <= memory["MemTotal"]:
+            raise ValueError("Missing available host memory")
+        if previous is None:
+            return None
+        elapsed, idle_elapsed = total - previous[0], idle - previous[1]
+        if elapsed <= 0 or not 0 <= idle_elapsed <= elapsed:
+            raise ValueError("CPU counters reset")
+        return {"cpuPercent": round((1 - idle_elapsed / elapsed) * 100, 2),
+                "memoryPercent": round((1 - memory["MemAvailable"] / memory["MemTotal"]) * 100, 2)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, help="Private directory, e.g. /var/lib/vox-network")
@@ -78,11 +109,17 @@ def main():
     last_sample = time.monotonic()
     available = False
     public = None
+    resources = ResourceSampler()
+    resource_samples = collections.deque(maxlen=310)
+    resource_available = False
+    resource_gaps = 0
     while True:
         started = time.monotonic()
         timestamp = int(time.time() * 1000)
         if started - last_sample > 5:
             gaps += 1
+            resource_gaps += 1
+            resource_samples.clear()
         last_sample = started
         try:
             link, fingerprint, public = observe()
@@ -97,10 +134,28 @@ def main():
             available = False
         while events and events[0]["timestamp"] < timestamp - 120000 and len(events) > 1:
             events.popleft()
+        try:
+            sample = resources.sample()
+            if sample is None:
+                raise ValueError("CPU sampler warming up")
+            if resource_samples and timestamp <= resource_samples[-1]["timestamp"]:
+                resource_gaps += 1
+                resource_samples.clear()
+            resource_samples.append({"timestamp": timestamp, **sample})
+            while len(resource_samples) > 1 and resource_samples[1]["timestamp"] <= timestamp - 300000:
+                resource_samples.popleft()
+            resource_available = True
+        except (OSError, ValueError, IndexError):
+            if resource_available:
+                resource_gaps += 1
+            resource_available = False
+            resource_samples.clear()
         status = {"version": 1, "monitor": monitor, "timestamp": timestamp, "seq": seq,
                   "gapCount": gaps, "available": available, "events": list(events),
                   "publicIpOnInterface": public,
-                  "link": previous[0] if previous else None, "fingerprint": previous[1] if previous else None}
+                  "link": previous[0] if previous else None, "fingerprint": previous[1] if previous else None,
+                  "resources": {"version": 1, "available": resource_available, "gapCount": resource_gaps,
+                                "samples": list(resource_samples)}}
         temporary = directory / "status.tmp"
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as stream:

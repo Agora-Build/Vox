@@ -71,7 +71,8 @@ python3 /opt/Vox/scripts/vox-network-monitor.py --output /var/lib/vox-network
 Use a dedicated private output directory writable only by the service owner.
 Run the command with the paths appropriate for your checkout/service account;
 supervise it with systemd/launchd and restart it on failure. It uses no Vox
-token, opens no listener, and writes only hashed topology/coarse status. It
+token, opens no listener, and writes only hashed topology/coarse status and
+host CPU/memory percentages. It
 retains two minutes/128 host transitions plus monotonic change/gap counters.
 
 Set `VOX_NETWORK_STATUS_DIR=/var/lib/vox-network` when using `vox-manager.sh`.
@@ -96,6 +97,46 @@ default to Strict; use `network=all` to include older data.
 Timestamp-less old daemons can complete a job's first execution, but cannot
 complete a retried/reclaimed job: Core cannot distinguish their delayed result
 from a successor on the same lease. Upgrade to echo the claim `startedAt`.
+
+### Host CPU/memory events
+
+Deploy Core/schema 68 before the updated daemon. The existing report/ACK path
+adds version 2 typed host events; Core continues accepting version 1 network
+reports from older agents. The Events card shows Network / CPU / Memory filters
+and independent coverage summaries; missing coverage is never called healthy.
+The legacy `/network-events` API remains network-only; `/events` includes both.
+Registration must explicitly advertise `eventReportVersion: 2` before a new
+daemon sends host events. Older Core keeps receiving network-only v1 reports;
+restart the daemon after a Core upgrade to negotiate host reporting. A run with
+no real host sample ever received by claim stays network-only and shows not monitored.
+If an established sampler becomes unavailable, coverage is incomplete instead.
+
+The daemon samples host resources every second, including between jobs. Native
+Linux reads aggregate `/proc/stat` counters and `/proc/meminfo` MemAvailable.
+Docker requires the updated host sampler and the same read-only status mount
+described above; never use container-only metrics as host evidence. Update and
+restart the Python service as well as the daemon. Resource sampling currently
+supports Linux only; macOS network sampling is unaffected. An old/missing/stale
+sampler produces unavailable resource coverage, not zero utilization.
+
+Rules v1: CPU/memory above 80% for 30 seconds; recovery below 75% for 30 seconds;
+rise of at least 20 percentage points over five minutes. Emit transitions, not
+every sample; recovery includes the episode peak. Rise alerts rearm only after
+the five-minute rise stays below 15 points for 30 seconds. Thresholds are fixed
+versioned defaults for now. Five minutes of local sample history (at most 310
+host samples) is distinct from two minutes/128 pending event details. A cold
+sampler waits for a full trend window; gaps reset that window. High-usage and
+rise summaries stay sticky even if unacknowledged details expire.
+Repeated host-gap details are limited to one every 30 seconds. Every gap still
+resets the evidence window; the first gap in a new run is always reported.
+
+Resource telemetry is diagnostic: it does not fail an evaluation, alter frozen
+tags, label CPU pressure as a network change, or change the current network-only
+Strict eligibility. Notification delivery and expanding Strict are separate
+work. Delivery integrity is shared: missing/rejected host events or shared-budget
+exhaustion can still make network coverage incomplete and exclude the run from
+Strict. A resource condition or a delivered host-gap event alone does not.
+See `designs/2026-11-07-agent-condition-events-design.md`.
 
 ### Artifact Upload (S3)
 

@@ -176,14 +176,16 @@ d("network event HTTP contract and benchmark policy", () => {
   });
   it("job history requires authorization and exposes neither leases nor addresses", async () => {
     job = await claimed(true);
-    const path = `/api/eval-jobs/${job.id}/network-events`;
-    await request(app).get(path).expect(401);
-    await request(app).get(path).set("x-test-user", "2").expect(403);
-    const history = await request(app).get(path).set("x-test-user", "1").expect(200);
-    expect(history.body.events[0].event).toBe("initial");
-    expect(JSON.stringify(history.body)).not.toMatch(/127\.0|leaseId|route-test-lease|agentId/);
-    await request(app).get(`${path}?cursor=-1`).set("x-test-user", "1").expect(400);
-    await request(app).get(`${path}?cursor=2147483648`).set("x-test-user", "1").expect(400);
+    for (const suffix of ["network-events", "events"]) {
+      const path = `/api/eval-jobs/${job.id}/${suffix}`;
+      await request(app).get(path).expect(401);
+      await request(app).get(path).set("x-test-user", "2").expect(403);
+      const history = await request(app).get(path).set("x-test-user", "1").expect(200);
+      expect(history.body.events[0].event).toBe("initial");
+      expect(JSON.stringify(history.body)).not.toMatch(/127\.0|leaseId|route-test-lease|agentId/);
+      await request(app).get(`${path}?cursor=-1`).set("x-test-user", "1").expect(400);
+      await request(app).get(`${path}?cursor=2147483648`).set("x-test-user", "1").expect(400);
+    }
   });
   it("never exposes internal phone-number hashes in flows or legacy job snapshots", async () => {
     const numberHash = "test-private-number-equality-token";

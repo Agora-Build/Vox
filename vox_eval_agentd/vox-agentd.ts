@@ -48,6 +48,8 @@ import { claimFirstAvailable, claimOutcome, type ClaimOutcome } from './job-pick
 import { UNMEASURED_DEFAULTS } from './result-defaults';
 import { NetworkEventBuffer } from './network-events';
 import { NetworkObserver } from './network-observer';
+import { HostResourceObserver } from './host-resource-observer';
+import { HostResourceMonitor } from './host-resource-monitor';
 import { Readable } from 'stream';
 import {
   CHUNK_SIZE,
@@ -81,6 +83,7 @@ interface EvalAgent {
   siteId: string | null;
   state: string;
   leaseId?: string;
+  eventReportVersion?: number;
 }
 
 interface EvalJob {
@@ -230,6 +233,7 @@ class VoxEvalAgentDaemon {
   private config: DaemonConfig;
   private agentId: number | null = null;
   private leaseId: string | null = null;
+  private hostEventsSupported = false;
   private siteId: string | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private jobPollTimer: NodeJS.Timeout | null = null;
@@ -249,6 +253,13 @@ class VoxEvalAgentDaemon {
   private networkEvents = new NetworkEventBuffer();
   private networkObserver = new NetworkObserver();
   private networkTimer: NodeJS.Timeout | null = null;
+  private resourceObserver = new HostResourceObserver();
+  private resourceMonitor = new HostResourceMonitor();
+  private resourceTimer: NodeJS.Timeout | null = null;
+
+  private sampleResources(): void {
+    for (const event of this.resourceMonitor.observe(this.resourceObserver.sample())) this.networkEvents.resource(event);
+  }
 
   private sampleNetwork() {
     const sample = this.networkObserver.sample();
@@ -262,6 +273,8 @@ class VoxEvalAgentDaemon {
   private finishNetwork(): void {
     if (this.networkTimer) clearInterval(this.networkTimer);
     this.networkTimer = null;
+    this.sampleResources();
+    this.networkEvents.resource({ event: 'host_end', data: this.resourceMonitor.snapshot() });
     this.networkEvents.finish(this.sampleNetwork());
   }
   // Decrypted values of the ACTIVE job's secrets, used only to scrub them out of
@@ -459,6 +472,7 @@ class VoxEvalAgentDaemon {
       this.agentId = agent.id;
       this.siteId = agent.siteId;
       this.leaseId = agent.leaseId ?? null;
+      this.hostEventsSupported = agent.eventReportVersion === 2;
 
       console.log(`[Daemon] Registered successfully!`);
       console.log(`  - Agent ID: ${agent.id}`);
@@ -583,7 +597,10 @@ class VoxEvalAgentDaemon {
 
       this.claimedJob = await response.json();
       if (this.claimedJob?.kind !== 'analyze' && this.claimedJob?.startedAt) {
-        this.networkEvents.start(jobId, this.claimedJob.startedAt, baseline.gap ? undefined : baseline.observations.at(-1));
+        this.sampleResources();
+        const hostEvents = this.hostEventsSupported ? this.resourceMonitor.begin() : [];
+        this.networkEvents.start(jobId, this.claimedJob.startedAt, baseline.gap ? undefined : baseline.observations.at(-1), hostEvents.length > 0);
+        for (const event of hostEvents) this.networkEvents.resource(event);
         this.sampleNetwork();
         this.networkTimer = setInterval(() => this.sampleNetwork(), 1000);
       }
@@ -2409,6 +2426,10 @@ class VoxEvalAgentDaemon {
     console.log(`  - S3 Artifacts: resolved per-job from Vox server`);
     console.log('');
 
+    // Keep the five-minute comparison warm between jobs; only condition events
+    // during an active evaluation enter its bounded reporting queue.
+    this.sampleResources();
+    this.resourceTimer = setInterval(() => this.sampleResources(), 1000);
     this.heartbeatTimer = setInterval(() => {
       this.sendHeartbeat();
     }, HEARTBEAT_INTERVAL);
@@ -2449,6 +2470,8 @@ class VoxEvalAgentDaemon {
     console.log(`[Daemon] Stopping...`);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.jobPollTimer) clearInterval(this.jobPollTimer);
+    if (this.networkTimer) clearInterval(this.networkTimer);
+    if (this.resourceTimer) clearInterval(this.resourceTimer);
     if (this.healthServer) this.healthServer.close();
   }
 }

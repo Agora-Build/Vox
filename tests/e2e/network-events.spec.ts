@@ -16,7 +16,7 @@ async function mockNetworkViews(page: Page, requests: URL[]) {
     else if (url.pathname === "/api/metrics/available-regions") data = { availableRegions: [], hasUnverified: false };
     else if (url.pathname === "/api/eval-jobs/42/detail") data = { job: { id: 42, kind: "eval", status: "completed", startedAt, completedAt: startedAt,
       createdAt: startedAt, config: {}, snapshot: null, siteId: null, tags: [{ key: "isp", value: "att", source: "detected" }] }, result: null, evalFlowName: "Network test", creatorName: "Owner" };
-    else if (url.pathname === "/api/eval-jobs/42/network-events") data = { networkChanged: true, monitoring: "incomplete", changeCount: 1,
+    else if (url.pathname === "/api/eval-jobs/42/events") data = { networkChanged: true, monitoring: "incomplete", changeCount: 1,
       events: url.searchParams.get("cursor") === "2" ? [event(3, "monitoring_end")] : [event(1, "initial"), event(2, "network_change")],
       nextCursor: url.searchParams.get("cursor") === "2" ? null : 2 };
     await route.fulfill({ json: data });
@@ -72,7 +72,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
       await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
-      await expect(page.getByTestId("strict-network-info")).toContainText("Health checks currently cover network monitoring and detected network changes only. CPU and memory checks are not yet available.");
+      await expect(page.getByTestId("strict-network-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
       await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       await toggle.click();
@@ -231,7 +231,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
       await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
-      await expect(page.getByTestId("strict-network-info")).toContainText("Health checks currently cover network monitoring and detected network changes only. CPU and memory checks are not yet available.");
+      await expect(page.getByTestId("strict-network-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
       await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
@@ -271,13 +271,16 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const requests: URL[] = []; await mockNetworkViews(page, requests);
       await page.goto("/console/eval-jobs/42");
       const timeline = page.getByTestId("job-network-timeline");
-      await expect(timeline).toContainText("Initial network");
+      await timeline.getByRole("button", { name: "Events", exact: true }).click();
+      await expect(timeline.getByRole("heading", { name: "Events", exact: true })).toBeVisible();
+      await expect(timeline).toContainText("Starting connection recorded by Core");
       await expect(timeline).toContainText("Network changed");
+      await timeline.getByTestId("job-event-2").locator("summary").click();
       await expect(timeline).toContainText("isp:unknown");
-      await expect(timeline).toContainText("some event details are missing");
+      await expect(timeline).toContainText("Network monitoring was also incomplete");
       await expect(page.getByTestId("job-tags")).toContainText("isp:att");
       await timeline.getByRole("button", { name: "Load more events" }).click();
-      await expect(timeline).toContainText("Monitoring ended");
+      await expect(timeline).toContainText("The agent finished recording network events");
       await expect(timeline.getByRole("button", { name: "Load more events" })).toHaveCount(0);
       expect(await timeline.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     });
