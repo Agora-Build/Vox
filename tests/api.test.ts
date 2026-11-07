@@ -68,6 +68,7 @@ interface EvalAgent {
   siteId: string;
   state: string;
   leaseId?: string;
+  eventReportVersion?: number;
 }
 
 interface EvalJob {
@@ -921,6 +922,7 @@ describe('Vox API Tests', () => {
       expect(agent.state).toBe('idle');
       expect(typeof agent.leaseId).toBe('string');
       expect(agent.leaseId!.length).toBeGreaterThan(0);
+      expect(agent.eventReportVersion).toBe(2);
       agentId = agent.id;
       leaseId = agent.leaseId!;
     });

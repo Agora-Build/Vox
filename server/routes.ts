@@ -4469,6 +4469,7 @@ export async function registerRoutes(
         locationTrust: loc.locationTrust,
         state: agent.state,
         leaseId,
+        eventReportVersion: 2,
       });
     } catch (error) {
       console.error("Error registering eval agent:", error);

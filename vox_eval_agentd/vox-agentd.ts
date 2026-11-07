@@ -83,6 +83,7 @@ interface EvalAgent {
   siteId: string | null;
   state: string;
   leaseId?: string;
+  eventReportVersion?: number;
 }
 
 interface EvalJob {
@@ -232,6 +233,7 @@ class VoxEvalAgentDaemon {
   private config: DaemonConfig;
   private agentId: number | null = null;
   private leaseId: string | null = null;
+  private hostEventsSupported = false;
   private siteId: string | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private jobPollTimer: NodeJS.Timeout | null = null;
@@ -470,6 +472,7 @@ class VoxEvalAgentDaemon {
       this.agentId = agent.id;
       this.siteId = agent.siteId;
       this.leaseId = agent.leaseId ?? null;
+      this.hostEventsSupported = agent.eventReportVersion === 2;
 
       console.log(`[Daemon] Registered successfully!`);
       console.log(`  - Agent ID: ${agent.id}`);
@@ -595,8 +598,9 @@ class VoxEvalAgentDaemon {
       this.claimedJob = await response.json();
       if (this.claimedJob?.kind !== 'analyze' && this.claimedJob?.startedAt) {
         this.sampleResources();
-        this.networkEvents.start(jobId, this.claimedJob.startedAt, baseline.gap ? undefined : baseline.observations.at(-1));
-        for (const event of this.resourceMonitor.begin()) this.networkEvents.resource(event);
+        const hostEvents = this.hostEventsSupported ? this.resourceMonitor.begin() : [];
+        this.networkEvents.start(jobId, this.claimedJob.startedAt, baseline.gap ? undefined : baseline.observations.at(-1), hostEvents.length > 0);
+        for (const event of hostEvents) this.networkEvents.resource(event);
         this.sampleNetwork();
         this.networkTimer = setInterval(() => this.sampleNetwork(), 1000);
       }

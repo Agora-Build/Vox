@@ -21,13 +21,14 @@ export class NetworkEventBuffer {
     networkChanged: boolean; changeCount: number; continuous: boolean; evictedThroughSeq: number;
     previous?: NetworkObservation; sampledAt: number; deliveredAt: number; ended: boolean;
     resources?: HostResourceReport;
+    resourcesEnabled: boolean;
   };
   constructor(private now = () => performance.now(), private wall = () => Date.now()) {}
 
-  start(jobId: number, startedAt: string, observation?: NetworkObservation): void {
+  start(jobId: number, startedAt: string, observation?: NetworkObservation, resourcesEnabled = true): void {
     this.run = { jobId, startedAt, firstSeq: this.seq + 1, start: this.now(), wallStart: this.wall(),
       pending: [], networkChanged: false, changeCount: 0, continuous: !!observation,
-      evictedThroughSeq: 0, previous: observation, sampledAt: this.now(), deliveredAt: this.now(), ended: false };
+      evictedThroughSeq: 0, previous: observation, sampledAt: this.now(), deliveredAt: this.now(), ended: false, resourcesEnabled };
     this.append("monitoring_start", [], observation?.link ?? null);
     if (!observation) this.append("monitoring_gap", ["monitoring"], null);
   }
@@ -55,7 +56,7 @@ export class NetworkEventBuffer {
 
   resource(event: HostResourceEvent): void {
     const run = this.run;
-    if (!run || run.ended) return;
+    if (!run || run.ended || !run.resourcesEnabled) return;
     run.resources ??= { ruleVersion: 1, continuous: true, highUsage: false, rapidRise: false };
     if (event.event === "host_gap") run.resources.continuous = false;
     if (event.event === "host_high") run.resources.highUsage = true;

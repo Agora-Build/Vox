@@ -10,6 +10,7 @@ export class HostResourceMonitor {
   private samples: HostResourceSample[] = [];
   private conditions = { cpu: emptyCondition(), memory: emptyCondition() };
   private available = false;
+  private sampled = false;
   private lastGapAt?: number;
 
   constructor(private now = () => Date.now()) {}
@@ -40,6 +41,7 @@ export class HostResourceMonitor {
       if (prior && sample.timestamp <= prior.timestamp) continue;
       if (prior && sample.timestamp - prior.timestamp > rules.maxSampleGapMs) this.gap(events);
       this.available = true;
+      this.sampled = true;
       this.samples.push(sample);
       const cutoff = sample.timestamp - rules.riseWindowMs;
       // Retain the sample immediately before the window, not just newer ones.
@@ -92,6 +94,7 @@ export class HostResourceMonitor {
 
   begin(): HostResourceEvent[] {
     this.lastGapAt = undefined;
+    if (!this.sampled) return [];
     const data = this.snapshot();
     const events: HostResourceEvent[] = [{ event: "host_start", data }];
     if (data.cpuPercent === null || data.memoryPercent === null) {

@@ -150,7 +150,9 @@ v1 network-only agents remain compatible. `shared/host-resources.ts` owns rule
 defaults, native Linux/Python host samplers measure host rather than container
 utilization, and missing resource evidence is explicitly unavailable. Baseline
 network tags and Strict eligibility stay unchanged (network coverage/changes
-only). Deploy Core before daemon/host sampler; no notification rules are enabled.
+only). Core advertises report v2 at registration; new daemons keep network-only
+v1 reports with older Core or when host sampling has never been available. Prefer
+Core before daemon/host sampler; no notification rules are enabled.
 
 1. Admin or non-basic users mint eval agent tokens with region assignment (admin: public/private visibility; non-admin: private only)
 2. Agents register with a token, then heartbeat and fetch/claim jobs for their region (`evalJobs`: `pending` → `running` → `completed`/`failed`)

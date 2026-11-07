@@ -72,6 +72,13 @@ An additive version 2 of the existing `networkReport` envelope carries typed
 events with a separate `resources` continuity/high-usage/rise summary. Version 1
 network-only reports stay valid; they cannot carry host events. The legacy wire
 field name avoids a second competing acknowledgment protocol.
+Core advertises `eventReportVersion: 2` in registration. Without that explicit
+capability, a new daemon keeps network-only version 1 reports, including their
+original sequence boundaries. No host events or summaries enter those reports.
+The choice is frozen for each run. If no real host sample has ever arrived at
+claim, host reporting also stays off for that run and the UI says not monitored,
+not interrupted. Later jobs can enable it once a sample arrives. If an established
+sampler becomes unavailable, host start/gap events still mark coverage incomplete.
 
 All events use the existing lease-global increasing sequence and submitted-batch
 ACK/rejection rules. Accepted IDs are removed; in-flight and other pending events
@@ -129,10 +136,11 @@ the evaluation itself. No notification rules are automatically enabled.
 
 ## Rollout and verification
 
-Deploy Core/schema 68 first, then the updated daemon, then restart the updated
-host sampler. Older agents continue evaluating without host coverage. An older
-Core rejects v2 telemetry, so do not roll out the daemon first. Container agents
-without the host sampler show unavailable host metrics.
+Prefer Core/schema 68 first, then the updated daemon and host sampler. Older
+agents continue evaluating without host coverage. A new daemon registered with
+older Core defaults to network-only v1 reporting instead of losing telemetry;
+restart it after upgrading Core to negotiate host events. Container agents
+without a working host sampler show neutral not-monitored host coverage.
 
 Regression coverage includes deterministic rule timing, threshold boundaries,
 recovery/rise hysteresis, native/Python CPU-counter parity, stale/missing host

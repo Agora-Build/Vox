@@ -53,11 +53,13 @@ fail closed and are visible in a job's Events card.
 
 ## Agent resource events rollout (schema 68)
 
-Deploy Core before the new daemon: `0067_agent_resource_events.sql` adds nullable
+Prefer deploying Core before the new daemon: `0067_agent_resource_events.sql` adds nullable
 event data and independent host-resource coverage to claim state. No historical
 coverage is backfilled. Version 1 network-only reports remain compatible. Updated
-daemons send version 2 through the existing `networkReport`/ACK protocol; older
-Core versions reject that telemetry, so do not upgrade daemons first.
+daemons send version 2 through the existing `networkReport`/ACK protocol only
+when registration explicitly advertises `eventReportVersion: 2`. With older
+Core they keep network-only version 1 telemetry. Restart/re-register after Core
+is upgraded to enable host events; the capability is negotiated per process.
 
 Then update `vox-eval-agentd` and restart the updated
 `scripts/vox-network-monitor.py` service on Docker hosts. The existing
@@ -66,6 +68,9 @@ samples; there is no new privileged mount or listener. Native Linux processes
 can sample directly. Resource sampling is Linux-only in this release; macOS
 network monitoring remains supported, but CPU/memory coverage is unavailable.
 Older daemons/samplers continue running and show no host-resource coverage.
+If no real host sample has ever arrived by claim, that run stays network-only and
+shows neutral not-monitored coverage; later runs can use an available sampler.
+An established sampler that subsequently fails still reports incomplete coverage.
 
 Events now includes Network / CPU / Memory categories. Version 1 resource rules
 record CPU or memory above 80% for 30 seconds, recovery below 75% for 30 seconds,

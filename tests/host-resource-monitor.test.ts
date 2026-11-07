@@ -92,9 +92,13 @@ describe("host resource condition rules", () => {
     now += 1000;
     expect(monitor.observe({ gap: true, samples: [] }).map((event) => event.event)).toEqual(["host_gap"]);
   });
-  it("starts unknown instead of inventing healthy host metrics", () => {
-    expect(monitor.begin().map((event) => event.event)).toEqual(["host_start", "host_gap"]);
+  it("leaves host monitoring unconfigured until a real sample has been observed", () => {
+    expect(monitor.begin()).toEqual([]);
     expect(monitor.snapshot()).toEqual({ ruleVersion: 1, cpuPercent: null, memoryPercent: null });
+    sample(0);
+    now += 6000;
+    monitor.observe({ samples: [], gap: true });
+    expect(monitor.begin().map((event) => event.event)).toEqual(["host_start", "host_gap"]);
   });
   it("keeps a pre-job sample window and records active conditions at claim", () => {
     series(0, 299, 20); sample(300, 45);
@@ -128,6 +132,27 @@ describe("resource events on the acknowledged execution stream", () => {
     const report = b.report()!;
     expect(report).toMatchObject({ version: 2, networkChanged: false, continuous: true, resources: { continuous: true, highUsage: true } });
     expect(networkReportSchema.safeParse(report).success).toBe(true);
+  });
+  it("keeps network-only v1 reporting when Core does not advertise host support", () => {
+    const b = new NetworkEventBuffer();
+    b.start(1, start, { link: "wifi", fingerprint: "private" }, false);
+    b.resource({ event: "host_start", data: snapshot }); b.resource(high);
+    b.resource({ event: "host_end", data: snapshot });
+    b.finish({ link: "wifi", fingerprint: "private" });
+    const report = b.report()!;
+    expect(report).toMatchObject({ version: 1, continuous: true, networkChanged: false, firstSeq: 1, lastSeq: 2 });
+    expect(report.resources).toBeUndefined();
+    expect(report.events.map((event) => event.event)).toEqual(["monitoring_start", "monitoring_end"]);
+    expect(networkReportSchema.safeParse(report).success).toBe(true);
+  });
+  it("does not begin mid-run host coverage when no samples existed at claim", () => {
+    const monitor = new HostResourceMonitor(), hostEvents = monitor.begin();
+    const b = new NetworkEventBuffer();
+    b.start(1, start, { link: "wifi", fingerprint: "private" }, hostEvents.length > 0);
+    b.resource(high); b.resource({ event: "host_end", data: snapshot });
+    b.finish({ link: "wifi", fingerprint: "private" });
+    expect(b.report()).toMatchObject({ version: 1, continuous: true, events: [expect.objectContaining({ event: "monitoring_start" }), expect.objectContaining({ event: "monitoring_end" })] });
+    expect(b.report()!.resources).toBeUndefined();
   });
   it("missing host metrics do not poison otherwise complete network monitoring", () => {
     const b = buffer(); b.resource({ event: "host_gap", data: snapshot });

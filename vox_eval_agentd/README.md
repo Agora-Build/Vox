@@ -105,6 +105,11 @@ adds version 2 typed host events; Core continues accepting version 1 network
 reports from older agents. The Events card shows Network / CPU / Memory filters
 and independent coverage summaries; missing coverage is never called healthy.
 The legacy `/network-events` API remains network-only; `/events` includes both.
+Registration must explicitly advertise `eventReportVersion: 2` before a new
+daemon sends host events. Older Core keeps receiving network-only v1 reports;
+restart the daemon after a Core upgrade to negotiate host reporting. A run with
+no real host sample ever received by claim stays network-only and shows not monitored.
+If an established sampler becomes unavailable, coverage is incomplete instead.
 
 The daemon samples host resources every second, including between jobs. Native
 Linux reads aggregate `/proc/stat` counters and `/proc/meminfo` MemAvailable.

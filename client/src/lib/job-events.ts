@@ -72,7 +72,7 @@ export function networkEventSummary(history: NetworkHistory, running: boolean, i
 
 export function hostEventSummary(resources: HostResourceSummary | null | undefined): EventPresentation {
   if (!resources || resources.monitoring === "unknown") return { label: "Host resources not monitored", tone: "neutral",
-    description: "No host CPU/memory coverage was reported. An updated agent and supported host sampler are required." };
+    description: "No host CPU/memory coverage was reported. Updated Core/agent support and a working host sampler are required when the run starts." };
   if (resources.highUsage) return { label: "High host usage recorded", tone: "warning",
     description: `CPU or memory exceeded 80% for at least 30 seconds.${resources.monitoring === "incomplete" ? " Host monitoring was also incomplete." : ""} See events for recoveries and measured values.` };
   if (resources.monitoring === "incomplete") return { label: "Host monitoring incomplete", tone: "warning",
