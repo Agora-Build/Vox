@@ -263,8 +263,11 @@ a dispatch the server would refuse.
 - Tokens list: `siteId` column shows the agent's detected siteId or an
   "auto" placeholder for non-public tokens.
 - Agents list (console + public `/api/eval-agents`): show detected
-  region/city plus a trust badge — `Verified` (trusted), `Verified ·
-  datacenter`, or `Unverified`. The coarse `location_trust` value is exposed;
+  region/city plus a trust badge — `Verified` (trusted or datacenter), or
+  `Unverified`, for non-public agents. Network classification is a separate
+  read-only `access` tag, not part of Tier or the location badge; see
+  [the current table layout](2026-10-22-network-tags-design.md#agent-badge-follows-access).
+  The coarse `location_trust` value is exposed;
   the raw IP, coordinates, and ASN never are (`location_source` stays
   Core-internal, same rule as `observed_ip`).
 

@@ -63,10 +63,8 @@ env_config_error() {
     exit 1
 }
 
-print_manager_update_commands() {
+print_manual_download_instructions() {
     printf '%s\n' \
-        'Manager script update (run separately before upgrading containers):' \
-        '  ./vox-manager.sh self' \
         'Manual download (saves vox-manager.sh in the current directory):' \
         "  curl -fsSL --proto '=https' --proto-redir '=https' \\" \
         '    -o vox-manager.sh \' \
@@ -76,7 +74,7 @@ print_manager_update_commands() {
 }
 
 self_update() (
-    print_manager_update_commands
+    print_manual_download_instructions
     script_path="${BASH_SOURCE[0]}"
     if [ -L "$script_path" ]; then
         echo "Error: self-update through a symlink is not supported; run the real script path." >&2
@@ -119,6 +117,7 @@ self_update() (
 case "${1:-}" in
     -h|--help|help)
         usage
+        print_manual_download_instructions
         exit 0
         ;;
     self)
@@ -180,7 +179,7 @@ while [ "$#" -gt 0 ]; do
                 usage >&2; exit 2
             fi
             ;;
-        -h|--help) usage; exit 0 ;;
+        -h|--help) usage; print_manual_download_instructions; exit 0 ;;
         -*) echo "Error: unknown option: $1" >&2; usage >&2; exit 2 ;;
         *)
             if [ -n "$manager_env_file" ] || [ -z "$1" ]; then
@@ -395,8 +394,6 @@ if ! docker_err=$(docker info 2>&1 >/dev/null); then
     fi
     exit 1
 fi
-
-print_manager_update_commands
 
 # Search the invoking and sudo users' sockets unless DIALF_SOCKET is explicit.
 detect_dialf_socket() {

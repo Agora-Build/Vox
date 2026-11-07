@@ -17,7 +17,7 @@ import { formatSmartTimestamp } from "@/lib/utils";
 import { useRegionLocationOptions } from "@/hooks/use-regions";
 import { TagInput } from "@/components/tag-input";
 import { formatTag, explainSystemReason, type Tag } from "@shared/tags";
-import { ACCESS_TEXT, UNKNOWN_ACCESS_TEXT } from "@/lib/access-text";
+import { accessHint } from "@/lib/access-text";
 
 interface AuthStatus {
   initialized: boolean;
@@ -59,7 +59,7 @@ interface EvalAgent {
 }
 
 /**
- * An agent's network tags: the link type it detected (marked "detected") and
+ * An agent's network tags: system access class, detected link type, and
  * the tags its operator set by hand. A hand-set link that differs from the
  * detected one shows both — results on Mainline use the detected one. Only the
  * operator gets the edit button (the server's canEditTags), so it never 403s.
@@ -69,6 +69,7 @@ function AgentTagsCell({ agent }: { agent: EvalAgent }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Tag[]>([]);
   const tags = agent.tags ?? [];
+  const accessBadge = getAccessBadge(agent);
   const save = useMutation({
     mutationFn: async () => (await apiRequest("PATCH", `/api/eval-agents/${agent.id}/tags`, { tags: draft })).json(),
     onSuccess: () => {
@@ -80,6 +81,7 @@ function AgentTagsCell({ agent }: { agent: EvalAgent }) {
   });
   return (
     <div className="flex flex-wrap items-center gap-1" data-testid={`agent-tags-${agent.id}`}>
+      {accessBadge}
       {agent.linkType && (
         <Badge variant="outline" className="gap-1 font-mono font-normal" title="Detected by the agent on its host">
           link:{agent.linkType}
@@ -89,7 +91,7 @@ function AgentTagsCell({ agent }: { agent: EvalAgent }) {
       {tags.map((t) => (
         <Badge key={t.key} variant="secondary" className="font-mono font-normal" title="Set by hand">{formatTag(t)}</Badge>
       ))}
-      {!agent.linkType && tags.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
+      {!accessBadge && !agent.linkType && tags.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
       {agent.canEditTags && (
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) setDraft(tags); }}>
           <DialogTrigger asChild>
@@ -159,29 +161,27 @@ function HintBadge({ className, hint, testId, children }: { className: string; h
   );
 }
 
-/**
- * The location badge (design "Agent badge follows access"): Verified ·
- * last mile / Verified · datacenter / Verified (access unknown) / Unverified.
- * The first word is location trust, the second the access class; the tooltip
- * says why in plain words. Public agents are configured by an admin, so they
- * carry no location badge — only an access chip when it's known.
- */
-function getTrustBadge(agent: Pick<EvalAgent, "id" | "locationTrust" | "dispatchTier" | "accessClass" | "accessReason">) {
-  const trust = agent.locationTrust;
+function getAccessBadge(agent: Pick<EvalAgent, "id" | "accessClass" | "accessReason" | "locationTrust">) {
   // A stored trust of `datacenter` is derived from access = datacenter.
-  const access = agent.accessClass ?? (trust === "datacenter" ? "datacenter" : null);
-  const text = access === "lastmile" || access === "datacenter" ? ACCESS_TEXT[access] : undefined;
+  const access = agent.accessClass ?? (agent.locationTrust === "datacenter" ? "datacenter" : null);
+  if (!access) return null;
   const why = explainSystemReason("access", agent.accessReason);
-  const accessHint = text ? `${text.hint}${why ? ` (${why})` : ""}.` : `${UNKNOWN_ACCESS_TEXT}${why ? ` (${why})` : ""}.`;
+  return (
+    <HintBadge className="gap-1 font-mono font-normal" hint={`${accessHint(access)}${why ? ` (${why})` : ""}. Set by Vox; cannot be edited.`} testId={`agent-access-tag-${agent.id}`}>
+      access:{access}
+      <span className="font-sans text-[10px] uppercase tracking-wide text-muted-foreground">detected</span>
+    </HintBadge>
+  );
+}
+
+/** Public agents use an admin-configured region, not location verification. */
+function getTrustBadge(agent: Pick<EvalAgent, "id" | "locationTrust" | "dispatchTier">) {
+  if (agent.dispatchTier === "public") return null;
   const testId = `agent-location-badge-${agent.id}`;
-  if (agent.dispatchTier === "public") {
-    if (!text) return null;
-    return <HintBadge className="text-muted-foreground" hint={accessHint} testId={testId}>{text.label.charAt(0).toUpperCase() + text.label.slice(1)}</HintBadge>;
-  }
-  if (trust === "trusted" || trust === "datacenter") {
+  if (agent.locationTrust === "trusted" || agent.locationTrust === "datacenter") {
     return (
-      <HintBadge className="text-green-600 border-green-600" hint={`Location confirmed from its network address. ${accessHint}`} testId={testId}>
-        {text ? `Verified · ${text.label}` : "Verified"}
+      <HintBadge className="text-green-600 border-green-600" hint="Location confirmed from its network address." testId={testId}>
+        Verified
       </HintBadge>
     );
   }
@@ -378,17 +378,17 @@ export default function ConsoleEvalAgents() {
                 {agents.map((agent) => (
                   <TableRow key={agent.id}>
                     <TableCell className="font-medium">{agent.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="gap-1">
-                        <MapPin className="h-3 w-3" />
-                        {agent.siteLabel ?? (agent.siteId ?? "auto")}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1.5">
-                        {getTierBadge(agent.dispatchTier)}
+                    <TableCell data-testid={`agent-region-${agent.id}`}>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="secondary" className="gap-1">
+                          <MapPin className="h-3 w-3" />
+                          {agent.siteLabel ?? (agent.siteId ?? "auto")}
+                        </Badge>
                         {getTrustBadge(agent)}
                       </div>
+                    </TableCell>
+                    <TableCell data-testid={`agent-tier-${agent.id}`}>
+                      {getTierBadge(agent.dispatchTier)}
                     </TableCell>
                     <TableCell>
                       {getStateBadge(agent.state)}

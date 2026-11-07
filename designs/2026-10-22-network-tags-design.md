@@ -617,13 +617,19 @@ Each SIM entry should supply an operator name plus MCC and MNC strings:
 
 ## Agent badge follows `access`
 
-The Eval Agents page's location badge (zero-trust region: Verified / Verified ·
-datacenter / Unverified) keeps meaning **location**, but its second word comes from
-`access` instead of region trust's old hosting-ASN classification:
-**Verified · last mile**, **Verified · datacenter**, **Verified** (access unknown),
-**Unverified**. One classification for both. Stored `location_trust`
-values keep their names, but `datacenter` is now derived from `access` (see "Location
-vs access") — no gating changes, since `trusted` and `datacenter` are handled alike.
+The Eval Agents page separates three properties: **Tier** shows only
+Public/Private/Shared/Team; **Region** includes the **Verified** or **Unverified**
+location badge for non-public agents; **Tags** shows `access:lastmile`,
+`access:datacenter` or `access:unknown` alongside detected link and hand-set tags.
+Public agents use an admin-configured region and have no location-verification
+badge. Access tags are system-controlled and read-only; their tooltip explains
+the classification and its reason. A never-classified agent has no access tag
+until one is available. Legacy `location_trust = datacenter` supplies the existing
+datacenter fallback when `access_class` is absent.
+
+Stored `location_trust` values keep their names, but `datacenter` is derived from
+`access` (see "Location vs access"). This is a display-only separation: no gating
+changes, since `trusted` and `datacenter` are handled alike.
 
 ## Group by region
 

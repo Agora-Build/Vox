@@ -98,8 +98,10 @@ describe("management command dispatch", () => {
     expect(fs.existsSync(path.resolve(__dirname, "../scripts/vox-upgrade.sh"))).toBe(false);
   });
 
-  it.each(["--help", "-h", "help"])("%s documents all commands without reading .env or calling external services", (command) => {
-    const result = run([command]);
+  it.each([
+    ["--help"], ["-h"], ["help"], ["vox_agent", "--help"], ["vox_agent", "-h"],
+  ].map((args) => ({ args })))("$args documents all commands without reading .env or calling external services", ({ args }) => {
+    const result = run(args);
     expect(result.status).toBe(0);
     expect(result.out).toContain("vox_agent");
     expect(result.out).not.toContain("--version");
@@ -111,6 +113,11 @@ describe("management command dispatch", () => {
     expect(result.out).toContain("current working directory");
     expect(result.out).toContain("self");
     expect(result.out).toContain("not supported yet");
+    expect(result.out.match(/Manual download/g)).toHaveLength(1);
+    expect(result.out).toContain("curl -fsSL --proto '=https' --proto-redir '=https'");
+    expect(result.out).toContain("-o vox-manager.sh");
+    expect(result.out).toContain(DOWNLOAD_URL);
+    expect(result.out).toContain("chmod +x vox-manager.sh");
     expect(result.calls).toBe("");
     expect(fs.existsSync(executed)).toBe(false);
   });
@@ -132,6 +139,7 @@ describe("management command dispatch", () => {
     const result = run(args);
     expect(result.status).toBe(2);
     expect(result.out).toContain("Usage:");
+    expect(result.out).not.toContain("Manual download");
     expect(result.calls).toBe("");
     expect(fs.existsSync(executed)).toBe(false);
   });
@@ -146,6 +154,7 @@ describe("management command dispatch", () => {
     const result = run(args[0] === "self" ? args : ["vox_agent", ...args]);
     expect(result.status).toBe(2);
     expect(result.out).toContain("Usage:");
+    expect(result.out).not.toContain("Manual download");
     expect(result.calls).toBe("");
     expect(fs.existsSync(executed)).toBe(false);
   });
@@ -154,6 +163,7 @@ describe("management command dispatch", () => {
     const result = run(["vox_agent", ...args]);
     expect(result.status).toBe(2);
     expect(result.out).toContain("Usage:");
+    expect(result.out).not.toContain("Manual download");
     expect(result.calls).toBe("");
     expect(fs.existsSync(executed)).toBe(false);
   });
@@ -259,7 +269,7 @@ describe("atomic self-update", () => {
   it.each([false, true])("prints manual download/save instructions before the update without executing them (download fails: %s)", (downloadFails) => {
     const result = run(["self"], { env: downloadFails ? { VM_DOWNLOAD_FAIL: "1" } : {} });
     expect(result.status).toBe(downloadFails ? 1 : 0);
-    expect(result.out).toContain("  ./vox-manager.sh self");
+    expect(result.out.match(/Manual download/g)).toHaveLength(1);
     expect(result.out).toContain("Manual download (saves vox-manager.sh in the current directory):");
     expect(result.out).toContain("curl -fsSL --proto '=https' --proto-redir '=https'");
     expect(result.out).toContain("-o vox-manager.sh");
