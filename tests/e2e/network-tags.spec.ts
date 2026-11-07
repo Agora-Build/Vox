@@ -291,7 +291,7 @@ test.describe("network tags", () => {
     }
   });
 
-  test("the Agents page badge follows location trust and access", async ({ page }) => {
+  test("the Agents page separates location verification from access tags", async ({ page }) => {
     test.skip(!process.env.DATABASE_URL, "needs the dev DB");
     const { pool } = await import("../../server/storage");
     const stamp = `${Date.now()}`;
@@ -319,12 +319,16 @@ test.describe("network tags", () => {
       await set(unv, "low_confidence", "unknown", "v1: private-ip");
 
       await page.goto("/console/eval-agents");
-      await expect(page.getByTestId(`agent-location-badge-${lm}`)).toHaveText("Verified · last mile");
-      await expect(page.getByTestId(`agent-location-badge-${dc}`)).toHaveText("Verified · datacenter");
+      await expect(page.getByTestId(`agent-region-${lm}`).getByTestId(`agent-location-badge-${lm}`)).toHaveText("Verified");
+      await expect(page.getByTestId(`agent-region-${dc}`).getByTestId(`agent-location-badge-${dc}`)).toHaveText("Verified");
       await expect(page.getByTestId(`agent-location-badge-${unk}`)).toHaveText("Verified");
       await expect(page.getByTestId(`agent-location-badge-${unv}`)).toHaveText("Unverified");
+      for (const [id, access] of [[lm, "lastmile"], [dc, "datacenter"], [unk, "unknown"], [unv, "unknown"]] as const) {
+        await expect(page.getByTestId(`agent-tags-${id}`).getByTestId(`agent-access-tag-${id}`)).toContainText(`access:${access}`);
+        await expect(page.getByTestId(`agent-tier-${id}`)).toHaveText("Private");
+      }
       // The tooltip says why, in plain words.
-      await page.getByTestId(`agent-location-badge-${lm}`).hover();
+      await page.getByTestId(`agent-access-tag-${lm}`).hover();
       await expect(page.getByRole("tooltip")).toContainText("home ISP + residential address name");
     } finally {
       if (agentIds.length) await pool.query("DELETE FROM eval_agents WHERE id = ANY($1)", [agentIds]);

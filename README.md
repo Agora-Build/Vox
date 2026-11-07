@@ -422,9 +422,10 @@ explicit, and failed replacements retain the old container for manual recovery
 without automatically restarting it. Older builds must still be compatible with
 the running Vox server and host setup.
 
-Before a container upgrade or `self` update, the manager prints
-`./vox-manager.sh self` and the full manual download command, including saving `vox-manager.sh` in
-the current directory and making it executable. These instructions are printed
+The manager prints the full manual download command only for `self` (before the
+update starts) and explicit help requests (`--help`, `-h` or `help`), not during
+normal container installation or upgrades. The command saves `vox-manager.sh` in
+the current directory and makes it executable. These instructions are printed
 only; they do not add a prompt or run an extra download.
 
 `self` downloads the latest script from the official Vox `main` branch over HTTPS,

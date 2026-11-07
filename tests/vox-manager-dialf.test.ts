@@ -1244,16 +1244,12 @@ describe("Docker-assigned loopback health ports", () => {
 });
 
 describe("install/upgrade command dispatch", () => {
-  it.each([false, true])("prints manager self-update and manual download/save commands before container upgrades (runner: %s)", (runner) => {
+  it.each([false, true])("omits manual download instructions during container upgrades (runner: %s)", (runner) => {
     const r = upgrade({ RUNNING_ID: "abc" }, { runner });
     expect(r.status).toBe(0);
-    expect(r.out).toContain("  ./vox-manager.sh self");
-    expect(r.out).toContain("Manual download (saves vox-manager.sh in the current directory):");
-    expect(r.out).toContain("curl -fsSL --proto '=https' --proto-redir '=https'");
-    expect(r.out).toContain("-o vox-manager.sh");
-    expect(r.out).toContain("https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-manager.sh");
-    expect(r.out).toContain("chmod +x vox-manager.sh");
-    expect(r.out.indexOf("Manual download")).toBeLessThan(r.out.indexOf("Pulling selected image:"));
+    expect(r.out).not.toContain("Manual download");
+    expect(r.out).not.toContain("Manager script update");
+    expect(r.out).not.toContain("https://raw.githubusercontent.com/Agora-Build/Vox/main/scripts/vox-manager.sh");
   });
 
   it("no arguments still use .env and match an explicit vox_agent command", () => {
@@ -1263,6 +1259,8 @@ describe("install/upgrade command dispatch", () => {
     const explicit = upgrade(env, { command: true, defaultEnv: true });
     expect(implicit.status).toBe(0);
     expect(explicit.status).toBe(0);
+    expect(implicit.out).not.toContain("Manual download");
+    expect(explicit.out).not.toContain("Manual download");
     expect(implicit.comparableCalls).toEqual(explicit.comparableCalls);
   });
 
@@ -1270,6 +1268,7 @@ describe("install/upgrade command dispatch", () => {
     fs.copyFileSync(path.join(dir, "agent.env"), path.join(dir, ".env"));
     const r = upgrade({}, { defaultEnv: true, answers: "y\n" });
     expect(r.status).toBe(0);
+    expect(r.out).not.toContain("Manual download");
     expect(r.actions).toEqual(["run"]);
     expect(r.calls).toContain("docker pull ghcr.io/agora-build/vox-eval-agentd:latest");
     const run = r.calls.find((call) => call.startsWith("docker run"));
@@ -1294,6 +1293,7 @@ describe("install/upgrade command dispatch", () => {
   it("vox_agent also installs a new agent when no container exists", () => {
     const r = upgrade({}, { command: true, answers: "y\n" });
     expect(r.status).toBe(0);
+    expect(r.out).not.toContain("Manual download");
     expect(r.actions).toEqual(["run"]);
     expect(r.out).toContain("Starting new container");
   });
