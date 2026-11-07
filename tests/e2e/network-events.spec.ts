@@ -72,7 +72,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
       await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
-      await expect(page.getByTestId("strict-network-info")).toContainText("CPU and memory events are diagnostic and do not affect Strict eligibility.");
+      await expect(page.getByTestId("strict-network-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
       await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       await toggle.click();
@@ -231,7 +231,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole("button", { name: "About strict mode" }).click();
       await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
       await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
-      await expect(page.getByTestId("strict-network-info")).toContainText("CPU and memory events are diagnostic and do not affect Strict eligibility.");
+      await expect(page.getByTestId("strict-network-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
       await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);

@@ -10,6 +10,7 @@ export class HostResourceMonitor {
   private samples: HostResourceSample[] = [];
   private conditions = { cpu: emptyCondition(), memory: emptyCondition() };
   private available = false;
+  private lastGapAt?: number;
 
   constructor(private now = () => Date.now()) {}
 
@@ -20,7 +21,12 @@ export class HostResourceMonitor {
   }
 
   private gap(events: HostResourceEvent[]): void {
-    if (this.available) events.push({ event: "host_gap", data: { ruleVersion: 1, cpuPercent: null, memoryPercent: null } });
+    const now = this.now();
+    // Repeated gaps still reset all evidence, but need not flood the shared queue.
+    if (this.available && (this.lastGapAt === undefined || now < this.lastGapAt || now - this.lastGapAt >= rules.gapEventIntervalMs)) {
+      events.push({ event: "host_gap", data: { ruleVersion: 1, cpuPercent: null, memoryPercent: null } });
+      this.lastGapAt = now;
+    }
     this.available = false;
     this.samples = [];
     this.conditions = { cpu: emptyCondition(), memory: emptyCondition() };
@@ -85,9 +91,13 @@ export class HostResourceMonitor {
   }
 
   begin(): HostResourceEvent[] {
+    this.lastGapAt = undefined;
     const data = this.snapshot();
     const events: HostResourceEvent[] = [{ event: "host_start", data }];
-    if (data.cpuPercent === null || data.memoryPercent === null) return [...events, { event: "host_gap", data }];
+    if (data.cpuPercent === null || data.memoryPercent === null) {
+      this.lastGapAt = this.now();
+      return [...events, { event: "host_gap", data }];
+    }
     const latest = this.samples.at(-1)!;
     for (const metric of ["cpu", "memory"] as const) {
       const state = this.conditions[metric];

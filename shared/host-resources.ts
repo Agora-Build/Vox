@@ -7,6 +7,7 @@ export const HOST_RESOURCE_RULES = {
   risePoints: 20,
   riseWindowMs: 300_000,
   maxSampleGapMs: 5_000,
+  gapEventIntervalMs: 30_000,
 } as const;
 
 export type HostResourceMetric = "cpu" | "memory";

@@ -38,6 +38,9 @@ above the trigger; pre-job historical events are not replayed into the job.
 Without a full five-minute sample window, the rise rule waits, never inventing
 a baseline. A missing sample, sampler restart or interval over five seconds
 resets the evidence window; no rise or sustained threshold crosses a gap.
+Repeated host-gap details are emitted at most once every 30 seconds to bound
+sampler-flapping noise. Every gap still resets the evidence window, and the
+first gap of each run is always reported so host coverage becomes incomplete.
 
 ## Measurement and host support
 
@@ -76,6 +79,11 @@ are preserved. After two minutes without delivery, detail eviction never clears
 sticky high-usage/rise summaries, and coverage remains incomplete. Shared event
 sequence gaps conservatively prevent complete coverage; a host sampling gap alone
 does not imply a network sampling gap, or vice versa.
+This is deliberately a shared delivery-integrity boundary: a rejected or lost
+host event, or exhaustion of the shared event budget, can make network coverage
+incomplete and therefore exclude a run from Strict. A resource condition or a
+successfully delivered `host_gap` alone does not do so. Host-gap rate limiting
+reduces shared-queue pressure; it does not claim independent delivery guarantees.
 
 Schema 68 (`0067_agent_resource_events.sql`) adds nullable typed event `data`
 and a separate resource summary to existing claim state. No baseline tags are
@@ -115,7 +123,8 @@ as a fully verified healthy machine when host telemetry is absent.
 and no detected network change. CPU/memory conditions are diagnostic. Broadening
 Strict to exclude sustained resource pressure needs a separate explicit policy
 decision and rollout, including historical/older-agent coverage. Rapid rises
-alone must not silently exclude low-utilization runs. Host issues never fail
+alone must not silently exclude low-utilization runs. The shared telemetry
+delivery-integrity caveat above still applies. Host issues never fail
 the evaluation itself. No notification rules are automatically enabled.
 
 ## Rollout and verification
@@ -141,3 +150,6 @@ TypeScript, lint and whitespace checks.
 The Events placement and folded Artifact Files follow-up passed 66 browser
 regressions (including the shared recording player), TypeScript, lint and
 whitespace checks.
+The review follow-up adds host-gap noise limiting and explicitly documents the
+shared delivery-integrity boundary; all 50 focused host-resource/presentation
+regressions passed before the final full-gate rerun.

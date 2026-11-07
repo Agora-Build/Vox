@@ -74,6 +74,24 @@ describe("host resource condition rules", () => {
     const events = monitor.observe({ gap: true, samples: [{ timestamp: now, cpuPercent: 60, memoryPercent: 40 }] });
     expect(events.map((event) => event.event)).toEqual(["host_gap"]);
   });
+  it("rate-limits flapping gap details without retaining invalid threshold evidence", () => {
+    sample(0, 90);
+    const events: HostResourceEvent[] = [];
+    for (let seconds = 1; seconds <= 90; seconds++) {
+      now = start + seconds * 1000;
+      events.push(...monitor.observe({ gap: true, samples: [{ timestamp: now, cpuPercent: 90, memoryPercent: 40 }] }));
+    }
+    expect(events.map((event) => event.event)).toEqual(["host_gap", "host_gap", "host_gap"]);
+    expect(monitor.begin().some((event) => event.event === "host_high")).toBe(false);
+  });
+  it("always reports the first gap of a new run even after a recent idle gap", () => {
+    sample(0);
+    now = start + 1000;
+    expect(monitor.observe({ gap: true, samples: [{ timestamp: now, cpuPercent: 20, memoryPercent: 40 }] })[0].event).toBe("host_gap");
+    expect(monitor.begin().map((event) => event.event)).toEqual(["host_start"]);
+    now += 1000;
+    expect(monitor.observe({ gap: true, samples: [] }).map((event) => event.event)).toEqual(["host_gap"]);
+  });
   it("starts unknown instead of inventing healthy host metrics", () => {
     expect(monitor.begin().map((event) => event.event)).toEqual(["host_start", "host_gap"]);
     expect(monitor.snapshot()).toEqual({ ruleVersion: 1, cpuPercent: null, memoryPercent: null });

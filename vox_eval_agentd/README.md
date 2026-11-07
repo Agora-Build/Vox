@@ -122,11 +122,16 @@ versioned defaults for now. Five minutes of local sample history (at most 310
 host samples) is distinct from two minutes/128 pending event details. A cold
 sampler waits for a full trend window; gaps reset that window. High-usage and
 rise summaries stay sticky even if unacknowledged details expire.
+Repeated host-gap details are limited to one every 30 seconds. Every gap still
+resets the evidence window; the first gap in a new run is always reported.
 
 Resource telemetry is diagnostic: it does not fail an evaluation, alter frozen
 tags, label CPU pressure as a network change, or change the current network-only
 Strict eligibility. Notification delivery and expanding Strict are separate
-work. See `designs/2026-11-07-agent-condition-events-design.md`.
+work. Delivery integrity is shared: missing/rejected host events or shared-budget
+exhaustion can still make network coverage incomplete and exclude the run from
+Strict. A resource condition or a delivered host-gap event alone does not.
+See `designs/2026-11-07-agent-condition-events-design.md`.
 
 ### Artifact Upload (S3)
 

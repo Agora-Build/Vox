@@ -118,7 +118,8 @@ export function JobEvents({ job }: { job: EvalJob }) {
         <div className="mt-2 max-w-3xl space-y-2 leading-relaxed">
           <p>Initial network tags stay frozen. Later events describe observations, not replacements for the baseline. Missing monitoring cannot be reconstructed later.</p>
           <p>CPU and memory warnings require usage above 80% for 30 seconds; recovery requires below 75% for 30 seconds. A rapid rise means at least 20 percentage points over five minutes, not a relative 20% increase.</p>
-          <p>Host-resource events are diagnostic and do not change the evaluation result or current Strict eligibility. Strict currently checks complete network coverage and no detected network changes.</p>
+          <p>Host-resource conditions are diagnostic and do not change the evaluation result. High CPU or memory does not directly exclude a run from Strict, which currently checks complete network coverage and no detected network changes.</p>
+          <p>All events share a delivery sequence. Missing or rejected events can make coverage incomplete even if no network change was detected. Repeated host-sampling gaps are summarized at most once every 30 seconds; the first gap always marks host coverage incomplete.</p>
           <p>The agent retains unacknowledged events for two minutes. Recorded conditions remain in its run summary even if pending details expire. Missing samples never prove stability.</p>
           {history.changeCount > 0 && <p>{history.changeCount} network change observation(s). Core and agent may observe the same transition.</p>}
         </div>

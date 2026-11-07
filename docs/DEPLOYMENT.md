@@ -75,6 +75,8 @@ whole machine; memory uses MemAvailable to account for reclaimable caches.
 The five-minute sample window stays local and is separate from the two-minute
 queue of pending event details. The sampler must remain running between jobs to
 provide a warm trend window. It does not send process names or command lines.
+Repeated host-gap details are rate-limited to one every 30 seconds; the first
+gap in each run is always reported, and every gap resets the sampling evidence.
 
 Verify a job's authorized `/api/eval-jobs/:id/events` response and Events card:
 network and host coverage must be independent, unknown coverage must not be
@@ -87,7 +89,11 @@ coverage incomplete, not a network change.
 **Strict eligibility is unchanged:** it checks complete network coverage and no
 detected network change. Host-resource events are diagnostic and do not fail the
 evaluation or silently change leaderboard filtering. Broader Strict policy and
-notification delivery require separate explicit decisions. Design:
+notification delivery require separate explicit decisions. Events still share
+one delivery sequence and budget: lost/rejected host-event deliveries or budget
+exhaustion can conservatively mark network coverage incomplete and exclude a
+run from Strict. High resource usage or a delivered host-gap event alone cannot.
+Design:
 `designs/2026-11-07-agent-condition-events-design.md`.
 
 ## Credential-policy rollout (schema 67)
