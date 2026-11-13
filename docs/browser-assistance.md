@@ -85,7 +85,9 @@ metadata alone does not authorize access; clients without this browser metadata
 still need the forwarded protocol to match. Responses use `Cache-Control: no-store`;
 browser paths and payloads are excluded from request logging. Browser command
 bodies are limited to 16 KiB and have a separate per-session production rate
-limit suitable for live polling. Anonymous requests retain the general limiter.
+limit of 6,000 requests/minute/user, with headroom for ten viewers' polling plus
+input/control. Viewer admission remains bounded to 10/target and 100 globally.
+Anonymous requests retain the general limiter.
 
 ## Routing And Lifetime
 
@@ -403,3 +405,18 @@ concurrency has its own validation gate.
 
 No production deployment, real-provider login, physical iPad qualification or
 multi-viewer throughput/audio-latency benchmark is implied by these results.
+
+### PR Review Gate On 2026-11-13
+
+- A fresh isolated build/schema-71 migration and Core/client/daemon type checks
+  passed. Full unit/integration: **3,857 passed, 84 skipped**. Full browser suite:
+  **284 passed, 35 skipped**, including all ten browser-assistance UI cases.
+- Final focused regressions: **44 passed**, covering Runtime-trust admission,
+  cached/slow-frame revocation, proxy-origin checks, disabled users and both
+  PostgreSQL/Drizzle constraint names. Late cancellation failure reports return
+  an idempotent acknowledgement without changing the cancelled execution.
+- Audio: **29/29 passed** on both the cached test image and an independent fresh
+  legacy-builder image. An earlier attempt failed during PipeWire startup; the
+  fresh-image rerun did not reproduce it. This PR does not change the audio stack.
+- Focused lint and whitespace passed. Fresh per-frame authorization remains
+  intentional; the viewer/request limits are not a throughput qualification.

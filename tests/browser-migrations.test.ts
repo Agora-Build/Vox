@@ -19,7 +19,6 @@ d("concurrent-viewer migration", () => {
       await client.query(routing);
       if (suffix === "unique") await client.query("ALTER TABLE browser_viewer_grants RENAME CONSTRAINT browser_viewer_grants_target_key_key TO browser_viewer_grants_target_key_unique");
       await client.query(concurrent);
-      await client.query(concurrent);
       await client.query("INSERT INTO users VALUES (1); INSERT INTO eval_jobs VALUES (1)");
       for (let i = 0; i < 2; i++) await client.query(`INSERT INTO browser_viewer_grants
         (id, user_id, job_id, target_key, target, expires_at) VALUES ($1, 1, 1, 'shared-target', '{}', clock_timestamp() + interval '6 seconds')`, [randomUUID()]);

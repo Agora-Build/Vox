@@ -118,10 +118,9 @@ const rateLimitDisabled = process.env["RATE_LIMIT_DISABLED"] === "true";
 const rateLimitExempt = new Set(["/api/auth/status", "/api/plugins/oauth/providers"]);
 const isSessionBrowserRequest = (req: Request) => !!req.session?.userId && /^\/api\/eval-jobs\/\d+\/browser(?:\/|$)/.test(req.path);
 
-// A live view polls at 5 fps. Give signed-in viewers a separate, bounded budget
-// rather than exhausting their normal API allowance in two minutes.
+// Ten views use about 4,400 polls/minute; leave bounded headroom for input and control.
 const browserLimiter = rateLimit({
-  windowMs: 60_000, max: 900, standardHeaders: true, legacyHeaders: false,
+  windowMs: 60_000, max: 6000, standardHeaders: true, legacyHeaders: false,
   keyGenerator: (req) => String(req.session!.userId),
   skip: (req) => rateLimitDisabled || !isProduction || !isSessionBrowserRequest(req),
   message: { error: "Browser request limit reached. Close the view and try again shortly." },
