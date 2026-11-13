@@ -49,6 +49,8 @@ export const SENSITIVE_PATHS = new Set([
 const SENSITIVE_PREFIXES = Array.from(SENSITIVE_PATHS);
 
 export function isSensitiveResponsePath(path: string): boolean {
+  if (path === "/internal/core-routing") return true;
+  if (/^\/api\/eval-jobs\/\d+\/browser(?:\/|$)/.test(path)) return true;
   if (SENSITIVE_PATHS.has(path)) return true;
   return SENSITIVE_PREFIXES.some((p) => path.startsWith(p));
 }

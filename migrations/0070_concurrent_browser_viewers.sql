@@ -1,0 +1,2 @@
+ALTER TABLE browser_viewer_grants DROP CONSTRAINT browser_viewer_grants_target_key_key;
+CREATE INDEX browser_viewer_grants_target_idx ON browser_viewer_grants (target_key);

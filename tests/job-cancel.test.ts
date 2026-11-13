@@ -113,6 +113,33 @@ d("cancelling a pending job", () => {
     expect((await detail(me.cookie, id)).job).toMatchObject({ status: "running", cancelledAt: null });
   });
 
+  it("a capable web agent receives active cancellation on heartbeat, and its late result cannot revive the job", async () => {
+    const me = await user("active");
+    const tok = await (await call(me.cookie, "POST", "/api/eval-agent-tokens", { name: `active-cancel-${stamp}`, dispatchTier: "private" })).json();
+    tokenIds.push(tok.id);
+    const registered = await bearer(tok.token, "POST", "/api/eval-agent/register", { name: `active-cancel-${stamp}`, metadata: { browserAssistance: "1", frameworkVersion: "v0.4.4" } });
+    expect(registered.ok).toBe(true);
+    const agent = await registered.json();
+    const id = await pendingJob(me);
+    const startedAt = new Date(Date.now() - 1000).toISOString();
+    await pool.query("UPDATE eval_jobs SET status='running', started_at=$1, eval_agent_id=$2 WHERE id=$3", [startedAt, agent.id, id]);
+    const before = await detail(me.cookie, id);
+    expect(before.canCancel).toBe(false); expect(before.canCancelRunning).toBe(true); expect(before.canAccessBrowser).toBe(true);
+    expect((await call(me.cookie, "POST", `/api/eval-jobs/${id}/browser/cancel-job`)).status).toBe(200);
+    const heartbeat = await bearer(tok.token, "POST", "/api/eval-agent/heartbeat", { agentId: agent.id, leaseId: agent.leaseId, state: "occupied", execution: { jobId: id, startedAt } });
+    expect(heartbeat.status).toBe(200);
+    expect((await heartbeat.json()).cancelExecution).toEqual({ jobId: id, startedAt });
+    const late = await bearer(tok.token, "POST", `/api/eval-agent/jobs/${id}/complete`, {
+      agentId: agent.id, leaseId: agent.leaseId, startedAt, results: { responseRate: 1, rawData: {} },
+    });
+    expect(late.status).toBe(200);
+    expect((await detail(me.cookie, id)).job).toMatchObject({ status: "failed", cancelledBy: me.id });
+    expect((await pool.query("SELECT id FROM eval_results WHERE eval_job_id=$1", [id])).rows).toHaveLength(0);
+    const staleHeartbeat = await bearer(tok.token, "POST", "/api/eval-agent/heartbeat", { agentId: agent.id, leaseId: agent.leaseId,
+      state: "occupied", execution: { jobId: id, startedAt: new Date(Date.parse(startedAt) - 1000).toISOString() } });
+    expect((await staleHeartbeat.json()).cancelExecution).toBeUndefined();
+  });
+
   it("the API (DELETE /api/v1/jobs/:id) records who cancelled it too", async () => {
     const me = await user("api");
     const id = await pendingJob(me);

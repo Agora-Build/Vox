@@ -17,6 +17,7 @@ import { EvalResultView } from "@/components/eval-result-view";
 import { formatTag, explainSystemReason, isSystemKey, type JobTag } from "@shared/tags";
 import { accessHint } from "@/lib/access-text";
 import { JobEvents } from "@/components/job-events";
+import { BrowserAssistance } from "@/components/browser-assistance";
 
 const TAG_SOURCE_TEXT: Record<JobTag["source"], { label: string; title: string }> = {
   flow: { label: "flow", title: "Set on the eval flow" },
@@ -46,6 +47,8 @@ interface JobDetailResponse {
   waiting?: { canTake: number; busy: number; message: string } | null;
   /** Server-decided: pending, and this user may cancel it. */
   canCancel?: boolean;
+  canAccessBrowser?: boolean;
+  canCancelRunning?: boolean;
   /** Who cancelled it, when it was cancelled while pending. */
   cancelledByName?: string | null;
 }
@@ -79,7 +82,8 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
 
   const cancelMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("DELETE", `/api/eval-jobs/${jobId}`);
+      if (data?.job.status === "running") await apiRequest("POST", `/api/eval-jobs/${jobId}/browser/cancel-job`);
+      else await apiRequest("DELETE", `/api/eval-jobs/${jobId}`);
     },
     onSuccess: () => {
       setCancelOpen(false);
@@ -219,8 +223,9 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {job.status === "pending" && data.canCancel && (
+        <div className="flex flex-wrap items-center gap-2">
+          {data.canAccessBrowser && <BrowserAssistance jobId={jobId} />}
+          {(data.canCancel || data.canCancelRunning) && (
             <Button variant="outline" className="gap-2" onClick={() => setCancelOpen(true)} data-testid="button-cancel-job">
               <Ban className="h-4 w-4" /> Cancel job
             </Button>
@@ -269,7 +274,9 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Cancel job #{job.id}?</AlertDialogTitle>
             <AlertDialogDescription>
-              It hasn't started, so nothing runs and no agent is charged; a paid job's held credits go back right away.
+              {job.status === "running"
+                ? "This stops the active evaluation. No result will be saved, and the agent will terminate its browser process when it receives the cancellation. "
+                : "It hasn't started, so nothing runs and no agent is charged; a paid job's held credits go back right away. "}
               This can't be undone — run the Eval Flow again to queue a new job.
             </AlertDialogDescription>
           </AlertDialogHeader>

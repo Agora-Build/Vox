@@ -36,8 +36,10 @@ import { sessionScopeForEvalFlow, ensureSession, stampOwnerSession, credentialKe
 import { credentialAgentViolation, credentialPoolViolation, ownsCredentialScope, isPersonalCredentialAgent } from "./credential-policy";
 import { createCredentialTrialJob, findCredentialTrialJob, getCredentialTrialAllowance, CredentialTrialError, jobMayUseCredentials } from "./credential-trials";
 import { registerCredentialTrialRoutes } from "./routes-credential-trials";
+import { registerBrowserAssistanceRoutes, canAccessJobBrowser } from "./routes-browser-assistance";
+import { hasBrowserAssistance } from "./browser-agent-bridge";
 import { flowTrialLimitsSchema } from "@shared/credential-trials";
-import { validateRegisterPayload, cacheBrokerMintSecret, hasBrokerMintSecret, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
+import { validateRegisterPayload, publishBrokerMintSecret, getBrokerTarget, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
 import { validateRestfulTrigger, parseStepsScript, stepsContainCallDial, unsupportedFrameworkError } from "./storage";
 import { PHONE_NUMBER_RE } from "@shared/steps";
@@ -460,6 +462,7 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   registerCredentialTrialRoutes(app);
+  registerBrowserAssistanceRoutes(app);
   registerArtifactPreviewRoutes(app, {
     user: getCurrentUser,
     job: (id) => storage.getEvalJob(id),
@@ -4104,7 +4107,7 @@ export async function registerRoutes(
           state: "idle", currentLeaseId: leaseId, lastSeenAt: new Date(),
         });
       }
-      cacheBrokerMintSecret(broker.id, mintSecret);
+      await publishBrokerMintSecret(broker.id, leaseId, mintSecret);
       storage.updateBrokerObservedIp(broker.id, clientIp(req) ?? ""); // fire-and-forget
       storage.updateBrokerRegistrationTokenLastUsed(tok.id);
       res.json({ brokerId: broker.id, leaseId, mintSecret }); // mintSecret returned once
@@ -4128,8 +4131,9 @@ export async function registerRoutes(
       const { brokerId, leaseId, state } = req.body ?? {};
       const broker = await storage.getBroker(brokerId);
       if (!broker) return res.status(404).json({ error: "unknown broker" });
+      if (broker.tokenId !== tok.id) return res.status(403).json({ error: "invalid broker owner" });
       if (broker.currentLeaseId && leaseId !== broker.currentLeaseId) return res.json({ superseded: true });
-      if (!hasBrokerMintSecret(broker.id)) return res.json({ reregister: true }); // Core cold-cache
+      if (!await getBrokerTarget(broker)) return res.json({ reregister: true });
       await storage.updateBrokerHeartbeat(broker.id);
       if (state && state !== broker.state) await storage.updateBroker(broker.id, { state });
       storage.updateBrokerObservedIp(broker.id, clientIp(req) ?? "");
@@ -4568,7 +4572,15 @@ export async function registerRoutes(
         agentId: agent.id, leaseId: typeof leaseId === "string" ? leaseId : null, ip: callerIp,
         rawReport: req.body.networkReport, lastHeartbeatAt: agent.lastSeenAt,
       });
-      res.json({ message: "Heartbeat received", ...networkResponse });
+      let cancelExecution: { jobId: number; startedAt: string } | undefined;
+      const execution = req.body.execution;
+      if (Number.isSafeInteger(execution?.jobId) && typeof execution?.startedAt === "string") {
+        const current = await storage.getEvalJob(execution.jobId);
+        if (current?.evalAgentId === agent.id && current.cancelledAt && current.startedAt?.toISOString() === execution.startedAt) {
+          cancelExecution = { jobId: current.id, startedAt: execution.startedAt };
+        }
+      }
+      res.json({ message: "Heartbeat received", ...networkResponse, ...(cancelExecution ? { cancelExecution } : {}) });
     } catch (error) {
       if (error instanceof NetworkReportError) return res.status(error.status).json({ error: error.message, ...(error.status === 403 ? { superseded: true } : {}) });
       console.error("Error processing heartbeat:", error);
@@ -6196,6 +6208,8 @@ export async function registerRoutes(
 
       // Get creator name
       const creator = job.createdBy ? await storage.getUser(job.createdBy) : null;
+      const browserEligible = job.kind === "eval" && job.transport === "web" && ["pending", "running"].includes(job.status);
+      const runningAgent = browserEligible && job.evalAgentId ? await storage.getEvalAgent(job.evalAgentId) : undefined;
 
       // Sign artifact URLs if available
       let signedArtifactUrl: string | null = null;
@@ -6235,6 +6249,8 @@ export async function registerRoutes(
         // Server-decided, so the page never offers a Cancel that would 403 (or
         // 400 on a job that isn't pending).
         canCancel: job.status === "pending" && canCancelJob(user, job, evalFlow),
+        canAccessBrowser: browserEligible && canAccessJobBrowser(user, job),
+        canCancelRunning: job.status === "running" && browserEligible && hasBrowserAssistance(runningAgent?.metadata) && canCancelJob(user, job, evalFlow),
         cancelledByName: job.cancelledBy != null ? (await storage.getUser(job.cancelledBy))?.username ?? null : null,
       });
     } catch (error) {

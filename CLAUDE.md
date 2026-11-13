@@ -184,6 +184,37 @@ Region locations are admin-managed; site IDs are `<location-base>-<sequence>` (e
 - **My Evals** (`/api/metrics/my-evals`, auth): eval flow or eval set private, owned by requester
 
 ### Auth-Session Broker
+
+**Live browser assistance (aeval v0.4.4):** maintained contract in
+`docs/browser-assistance.md`; schema 69 persists fenced mint routing and schema
+70 adds Core connection ownership, replay nonces and shared viewer grants; schema
+71 permits concurrent target grants. The owner-Core's `BrowserCaptures` module
+multiplexes at most 10 viewers onto one engine capture with one explicit controller.
+Spectators cannot mutate browser state. Individual close/expiry does not close
+others; controller loss uses native release/resume and last-viewer loss closes
+capture. Heartbeats are coalesced independently of slow mutations/status, and
+never renew another viewer's grant. Browser
+access requires personal frozen flow/credential ownership AND launching the job;
+neither party can inspect a borrowed personal run. Organization access is exact-org
+owner/admin only, even when a plain member created the flow or launched the job.
+There is no wider job-visible spectator role and no global-admin, agent-operator,
+public-visibility or API-key bypass. `canAccessJobBrowser` applies the launch gate
+alongside `canCreateEvalFlowSecrets`; reuse it for UI capabilities, HTTP requests
+and owner-Core grant maintenance. Broker logins stay on the broker; daemon
+access uses outbound `/ws/eval-browser`, current agent lease + job claim identity.
+Read-only open, explicit control, navigation fences, bounded non-replayed input,
+immediate close and five-second engine leases are security requirements. Holds
+are 60 seconds within unchanged mint deadlines, not a ten-minute extension.
+Active web cancellation is a separate job right; heartbeat fallback stops only
+the matching execution and late completion cannot restore it. Viewer grants and
+owner metadata are shared in PostgreSQL; WebSockets and broker mint keys stay
+on their owning Core. Single-Core calls execute locally. Multiple replicas need
+their own private `VOX_CORE_INTERNAL_URL` and shared `VOX_CORE_ROUTING_SECRET`;
+signed, non-replayed RPC reaches the owner. No sticky sessions, frame/credential
+persistence, or uncertain-input retries. Block `/internal/core-routing` publicly.
+`browser_observation.mode` is factual, not measurement validity and
+does not change Strict filtering. Recorder/LLM generation remains deferred.
+
 Some targets need an authenticated web login before an eval. Brokered secrets (`brokerType` non-null) are **Core-only** — structurally withheld from the job-secrets path at every dispatch tier; agents get a pre-minted session, never the credential. (`brokerType == null` = runtime/agent-exposed.)
 
 **Current credential policy:** `designs/agent-credentials-design.md` is the single

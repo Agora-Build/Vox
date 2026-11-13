@@ -37,6 +37,21 @@ d("web_sessions store", () => {
     await db.delete(webSessions).where(eq(webSessions.id, claimed!.id));
   });
 
+  it("fences the browser operation to the current mint and clears routing when a new mint claims it", async () => {
+    const platformId = pid("browser-route");
+    const claimed = await storage.claimWebSessionMint({ userId: 1 }, platformId, CK, 180, 300);
+    const deadline = new Date(Date.now() + 60000);
+    expect(await storage.setWebSessionBrowserTarget(claimed!.id, claimed!.mintStartedAt!, 123, "operation", deadline)).toBe(true);
+    const session = await storage.getWebSession({ userId: 1 }, platformId, CK);
+    expect(session).toMatchObject({ mintBrokerId: 123, mintOperationId: "operation" });
+    expect(session!.mintDeadlineAt!.getTime()).toBe(deadline.getTime());
+    const wrongFence = new Date(claimed!.mintStartedAt!.getTime() - 1);
+    expect(await storage.setWebSessionBrowserTarget(claimed!.id, wrongFence, 124, "stale-operation", deadline)).toBe(false);
+    await storage.markWebSessionFailed(claimed!.id, "fixture", claimed!.mintStartedAt!);
+    const next = await storage.claimWebSessionMint({ userId: 1 }, platformId, CK, 180, 300);
+    expect(next).toMatchObject({ mintBrokerId: null, mintOperationId: null, mintDeadlineAt: null });
+  });
+
   it("fractional TTL hours does not throw (make_interval secs)", async () => {
     const platformId = pid("frac-ttl");
     const claimed = await storage.claimWebSessionMint({ userId: 1 }, platformId, CK, 180, 300);

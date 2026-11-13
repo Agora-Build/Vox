@@ -19,6 +19,8 @@ import type { NotificationsService } from "@vox/plugin-sdk";
 import { pool } from "./storage";
 import { startLocationServices } from "./location";
 import { setupClashWebSocket } from "./clash-ws";
+import { setupBrowserAgentBridge } from "./browser-agent-bridge";
+import { coreRouting } from "./core-routing-runtime";
 import { loadPlugins } from "./plugins/loader";
 import { setMarketplace, type EvalMarketplace } from "./marketplace";
 import { setOrganizations, type OrganizationsProvider } from "./organizations";
@@ -39,6 +41,9 @@ httpServer.headersTimeout = 66_000;
 
 // Security headers (CSP disabled — Vite injects inline scripts, shadcn/ui uses inline styles)
 app.use(helmet({ contentSecurityPolicy: false }));
+// Authenticate and parse the bounded raw envelope before the general JSON parser.
+// It is not an API/session endpoint and never enters request-body logging.
+coreRouting.register(app);
 
 // Trust proxy when behind reverse proxy (Coolify, nginx, etc.)
 if (process.env["NODE_ENV"] === "production") {
@@ -86,6 +91,7 @@ declare module "http" {
   }
 }
 
+app.use("/api/eval-jobs/:id/browser", express.json({ limit: "16kb" }));
 app.use(
   express.json({
     limit: "50mb",
@@ -110,6 +116,16 @@ const rateLimitDisabled = process.env["RATE_LIMIT_DISABLED"] === "true";
 
 // Paths exempt from rate limiting (lightweight read-only checks)
 const rateLimitExempt = new Set(["/api/auth/status", "/api/plugins/oauth/providers"]);
+const isSessionBrowserRequest = (req: Request) => !!req.session?.userId && /^\/api\/eval-jobs\/\d+\/browser(?:\/|$)/.test(req.path);
+
+// A live view polls at 5 fps. Give signed-in viewers a separate, bounded budget
+// rather than exhausting their normal API allowance in two minutes.
+const browserLimiter = rateLimit({
+  windowMs: 60_000, max: 900, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => String(req.session!.userId),
+  skip: (req) => rateLimitDisabled || !isProduction || !isSessionBrowserRequest(req),
+  message: { error: "Browser request limit reached. Close the view and try again shortly." },
+});
 
 // Rate limiting for API routes
 const apiLimiter = rateLimit({
@@ -119,7 +135,7 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
   keyGenerator: clientIpKey, // the real caller behind Cloudflare (server/client-ip.ts)
-  skip: (req) => rateLimitDisabled || !isProduction || !req.path.startsWith("/api") || rateLimitExempt.has(req.path),
+  skip: (req) => rateLimitDisabled || !isProduction || !req.path.startsWith("/api") || rateLimitExempt.has(req.path) || isSessionBrowserRequest(req),
 });
 
 // Stricter rate limit for authentication endpoints
@@ -134,6 +150,7 @@ const authLimiter = rateLimit({
 });
 
 app.use(apiLimiter);
+app.use(browserLimiter);
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/activate", authLimiter);
@@ -168,7 +185,7 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
+    if (path.startsWith("/api") && !/^\/api\/eval-jobs\/\d+\/browser(?:\/|$)/.test(path)) {
       // Bodies only on failure, capped and without URL query strings (#208).
       log(requestLogLine(req.method, path, res.statusCode, duration, capturedJsonResponse));
     }
@@ -186,6 +203,7 @@ app.use((req, res, next) => {
   await registerRoutes(httpServer, app);
   registerVerificationRoutes(app);
   setupClashWebSocket(httpServer);
+  setupBrowserAgentBridge(httpServer);
 
   // Load enabled plugins (routes mounted before the error handler + vite catch-all).
   // Any misconfiguration throws here — fail-before-listen (strict startup).
@@ -230,6 +248,7 @@ app.use((req, res, next) => {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    await coreRouting.stop();
     await plugins.shutdown();
     process.exit(0);
   };
@@ -274,6 +293,7 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      coreRouting.start();
 
       // Start background worker for stale job detection and agent status
       startBackgroundWorker();

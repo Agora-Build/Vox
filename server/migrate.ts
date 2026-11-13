@@ -92,6 +92,9 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 66, description: "per-run network event history and strict benchmark eligibility", file: "0065_job_network_events.sql" },
   { version: 67, description: "owner-controlled credential trials and durable admission quotas", file: "0066_credential_trials.sql" },
   { version: 68, description: "host CPU and memory condition events", file: "0067_agent_resource_events.sql" },
+  { version: 69, description: "fenced browser assistance routing for session mints", file: "0068_browser_assistance_mints.sql" },
+  { version: 70, description: "Core connection ownership and shared browser viewers", file: "0069_core_connection_routing.sql" },
+  { version: 71, description: "Concurrent read-only browser viewer grants", file: "0070_concurrent_browser_viewers.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

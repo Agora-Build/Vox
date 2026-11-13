@@ -102,7 +102,7 @@ d("ensureSession (DB + mock fetch)", () => {
 
   beforeAll(async () => {
     const { storage } = await import("../server/storage");
-    const { cacheBrokerMintSecret, clearBrokerMintSecret } = await import("../server/broker-registry");
+    const { publishBrokerMintSecret } = await import("../server/broker-registry");
     const token = await storage.createBrokerRegistrationToken({
       name: "test-auth-session-broker-token",
       tokenHash: `test-hash-${Date.now()}`,
@@ -115,12 +115,13 @@ d("ensureSession (DB + mock fetch)", () => {
       name: "test-auth-session-broker",
       tokenId,
       brokerType: "auth-session",
-      url: "http://broker.test",
+      url: "http://broker.internal",
+      currentLeaseId: "test-session-broker-lease",
       state: "idle",
       lastSeenAt: new Date(),
     });
     brokerId = broker.id;
-    cacheBrokerMintSecret(brokerId, "s");
+    await publishBrokerMintSecret(brokerId, "test-session-broker-lease", "s");
   });
 
   afterAll(async () => {
@@ -165,7 +166,7 @@ d("ensureSession (DB + mock fetch)", () => {
       mockFetch,
     );
 
-    expect(capturedUrl).toBe("http://broker.test/mint");
+    expect(capturedUrl).toBe("http://broker.internal/mint");
     expect(capturedInit?.headers).toMatchObject({ authorization: "Bearer s" });
     const body = JSON.parse(capturedInit!.body as string);
     expect(body.email).toBe(email);
