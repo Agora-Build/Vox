@@ -145,14 +145,40 @@ Request history is engine-local, not an exactly-once guarantee across crashes.
 
 ### Deadline Budget
 
-The local assistance hold is **60 seconds per supported wait**, absolute and
-non-renewable. Viewing alone does not start or extend it. Existing outer limits
-remain in force: broker mint default 180 seconds, configured ceiling 200 seconds;
-Core abort +15 seconds and stale reclaim +30 seconds; daemon mint poll 240
-seconds. The earliest deadline wins. The UI shows the remaining local hold and
-warns that job/login deadlines still apply. A ten-minute broker verification
-window requires a separately coordinated deadline change; this release does
-not promise one.
+The local assistance hold defaults to **120 seconds per supported wait**,
+absolute and non-renewable. Configure it with
+`VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS`; it is always capped by the configured
+login budget, and broker logins additionally cap it by their actual child
+deadline. Viewing alone does not start or extend the hold.
+
+Brokered login defaults to **600 seconds**, also its supported ceiling, through
+`WEB_SESSION_MINT_TIMEOUT_SECONDS`. Core sends its budget to the broker; the
+broker uses the shorter of that budget and its own local setting. Core abort
+remains login budget +15 seconds; stale reclaim remains +30 seconds. Updated
+agents wait up to 640 seconds (the supported ceiling +40), independently of
+their local configuration. The earliest job, login, or assistance deadline
+always wins; increasing assistance does not extend an existing deadline.
+
+For `vox-manager.sh`, put these in the selected `.env`, then run the manager:
+
+```dotenv
+WEB_SESSION_MINT_TIMEOUT_SECONDS=600
+VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=120
+```
+
+The manager validates and forwards both settings to the eval daemon, not the
+Clash runner. It clamps assistance to login and recreates a container when
+these settings change, even on the same image, using the usual idle checks and
+rollback-safe replacement. Invalid values fail before any Docker operation.
+For a separately deployed auth-session broker, set these variables in its own
+environment too; the manager does not deploy that service. Set the login budget
+on Core as well when overriding the default.
+
+**Rollout:** upgrade agents before extending login past 200 seconds; older
+agents still stop waiting after 240 seconds. Upgrade the broker to honor Core's
+per-request budget. Existing running processes retain their original budgets;
+new settings apply to new processes/runs. The daemon's normal evaluation
+timeout (20 minutes per aeval invocation by default) is unchanged.
 
 ### One Core Or Multiple Replicas
 

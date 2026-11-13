@@ -33,15 +33,16 @@ import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsSafely, createBoundedCapture, LINE_TERMINATORS } from './aeval-output';
 import { credentialForms, redactValues, fingerprintForLog, formatLastFailedHttpStatus } from '../shared/credentials';
-import { mintTimeoutSeconds } from '../shared/mint-timeout';
+import { mintTimeoutSeconds, MAX_MINT_TIMEOUT_SECONDS } from '../shared/mint-timeout';
 import { LocalBrowserSessions } from './browser-control';
-import { browserOperationSchema, BROWSER_ASSISTANCE_SECONDS } from '../shared/browser-assistance';
+import { browserOperationSchema } from '../shared/browser-assistance';
+import { browserAssistanceTimeoutSeconds } from '../shared/browser-assistance-timeout';
 export { credentialForms } from '../shared/credentials';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
 
-export interface MintRequest { platformId: string; email: string; password: string; browserOperationId?: string }
+export interface MintRequest { platformId: string; email: string; password: string; browserOperationId?: string; timeoutSeconds?: number }
 export type MintFn = (req: MintRequest) => Promise<unknown>;
 
 const PLATFORM_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -219,6 +220,8 @@ export function readLastFailedHttpStatus(aevalStderr: string, ...roots: string[]
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
 export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promise<unknown> {
+  // Core can request a shorter budget than this broker's local configuration.
+  timeoutMs = Math.min(timeoutMs, mintTimeoutSeconds() * 1000, (req.timeoutSeconds ?? MAX_MINT_TIMEOUT_SECONDS) * 1000);
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-mint-'));
   const storageFile = path.join(workDir, 'session.json');
   const scenarioFile = path.join(workDir, 'mint.yaml');
@@ -257,7 +260,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       // (same discipline as vox-agentd's runAeval).
       const args = ['run', scenarioFile];
       if (browser) args.push('--browser-control-socket', path.join(workDir, 'control.sock'),
-        '--browser-assistance-timeout', String(Math.max(1, Math.min(BROWSER_ASSISTANCE_SECONDS, Math.floor(timeoutMs / 1000)))));
+        '--browser-assistance-timeout', String(browserAssistanceTimeoutSeconds(timeoutMs / 1000)));
       const proc = spawn('aeval', args, {
         cwd: AEVAL_DATA_PATH,
         env: { ...process.env },
@@ -418,6 +421,7 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
       if (typeof body.email !== 'string' || !body.email) return json(400, { error: 'email is required' });
       if (typeof body.password !== 'string' || !body.password) return json(400, { error: 'password is required' });
       if (body.browserOperationId !== undefined && (typeof body.browserOperationId !== 'string' || !/^[0-9a-f-]{36}$/.test(body.browserOperationId))) return json(400, { error: 'invalid browser operation' });
+      if (body.timeoutSeconds !== undefined && (!Number.isSafeInteger(body.timeoutSeconds) || body.timeoutSeconds <= 0 || body.timeoutSeconds > MAX_MINT_TIMEOUT_SECONDS)) return json(400, { error: 'invalid login timeout' });
       // Fingerprint, never the values: lengths plus a hash of the IDENTIFIER
       // only. See fingerprintForLog for why the secret gets its length alone.
       // Logged on the REQUEST rather than only on failure, so a mint that hangs

@@ -112,6 +112,8 @@ case "$1" in
         else
           [ -n "\${PREV_SOCK:-}" ] && echo "VOX_DIALF_SOCKET=$PREV_SOCK"
           [ -n "\${PREV_HEALTH_PORT:-}" ] && echo "HEALTH_PORT=$PREV_HEALTH_PORT"
+          [ -n "\${PREV_LOGIN_TIMEOUT:-}" ] && echo "WEB_SESSION_MINT_TIMEOUT_SECONDS=$PREV_LOGIN_TIMEOUT"
+          [ -n "\${PREV_ASSISTANCE_TIMEOUT:-}" ] && echo "VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=$PREV_ASSISTANCE_TIMEOUT"
           printf 'AGENT_TOKEN=evtest\\nRUNNER_TOKEN=crtest\\n'
         fi ;;
       *"RestartPolicy"*) echo "\${CURRENT_RESTART_POLICY:-unless-stopped}" ;;
@@ -672,6 +674,74 @@ describe("private Docker credential files", () => {
 
 describe("Docker argument boundaries and runtime preflight", () => {
 
+  it("loads timeout settings from .env and forwards them only to the eval daemon", () => {
+    const envFile = path.join(dir, "browser-timeouts.env");
+    fs.writeFileSync(envFile, "EVAL_TOKEN=evtest\nCLASH_TOKEN=crtest\nWEB_SESSION_MINT_TIMEOUT_SECONDS=480\nVOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=180\n");
+    const r = upgrade({ RUNNING_ID: "abc" }, { both: true, defaultEnv: true, args: ["--env", envFile, "--force"] });
+    expect(r.status).toBe(0);
+    const runs = r.argvCalls.filter((args) => args[0] === "run");
+    const agent = runs.find((args) => args.at(-1) === AGENT_REF)!;
+    const runner = runs.find((args) => args.at(-1) === RUNNER_REF)!;
+    expect(agent).toContain("WEB_SESSION_MINT_TIMEOUT_SECONDS=480");
+    expect(agent).toContain("VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=180");
+    expect(runner.some((arg) => arg.startsWith("WEB_SESSION_MINT_TIMEOUT_SECONDS="))).toBe(false);
+    expect(runner.some((arg) => arg.startsWith("VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS="))).toBe(false);
+  });
+
+  it.each([
+    ["600", "120", "600", "120"], ["60", "120", "60", "60"],
+    ["900", "800", "600", "600"],
+  ])("bounds configured login %s and assistance %s before starting a container", (login, assistance, expectedLogin, expectedAssistance) => {
+    const r = upgrade({ RUNNING_ID: "abc", WEB_SESSION_MINT_TIMEOUT_SECONDS: login, VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS: assistance });
+    expect(r.status).toBe(0);
+    const run = r.argvCalls.find((args) => args[0] === "run")!;
+    expect(run).toContain(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${expectedLogin}`);
+    expect(run).toContain(`VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=${expectedAssistance}`);
+  });
+
+  it.each(["WEB_SESSION_MINT_TIMEOUT_SECONDS", "VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS"].flatMap((key) =>
+    ["0", "-1", "1.5", "120 --privileged", "NaN", "99999999999999999999"].map((value) => [key, value])))("invalid timeout %s=%j leaves existing containers untouched", (key, value) => {
+    const r = upgrade({ RUNNING_ID: "abc", [key]: value }, { args: ["--force"] });
+    expect(r.status).toBe(1);
+    expect(r.calls).toEqual([]);
+    expect(r.out).toContain(`${key} must be a positive whole number`);
+  });
+
+  it.each([
+    { VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS: "240" },
+    { WEB_SESSION_MINT_TIMEOUT_SECONDS: "480" },
+    { PREV_ASSISTANCE_TIMEOUT: "60", PREV_LOGIN_TIMEOUT: "180" },
+  ])("applies changed timeout settings even on the same image: %j", (settings) => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW, ...settings });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("login/browser assistance settings changed");
+    expect(r.actions).toContain("run");
+  });
+
+  it("does not replace a same-image container with unchanged timeout settings", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW,
+      PREV_LOGIN_TIMEOUT: "600", PREV_ASSISTANCE_TIMEOUT: "240", VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS: "240" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("Skipping replacement");
+  });
+
+  it("preserves idle confirmation when a config-only replacement would interrupt work", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW,
+      VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS: "240", HEALTH_STEPS: "occupied" }, { answers: "n\n" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("Skipping vox-eval-agentd");
+  });
+
+  it("requires confirmation before a timeout-only replacement would lose DialF support", () => {
+    const r = upgrade({ RUNNING_ID: "abc", RUNNING_IMAGE: IMAGE_NEW,
+      VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS: "240", PREV_SOCK: "/missing/dialfd.sock" }, { answers: "n\n" });
+    expect(r.status).toBe(0);
+    expect(r.actions).toEqual([]);
+    expect(r.out).toContain("Leaving the running vox-eval-agentd as it is.");
+  });
+
   it.each([false, true])("preserves whitespace, globs, quotes, newlines and option-like text as literal env values (runner: %s)", (runner) => {
     const tokenName = runner ? "CLASH_TOKEN" : "EVAL_TOKEN";
     const values = {
@@ -691,7 +761,7 @@ describe("Docker argument boundaries and runtime preflight", () => {
       if (key === tokenName) expect(r.tokenFiles[0].content).toBe(`${runner ? "RUNNER_TOKEN" : "AGENT_TOKEN"}=${value}\n`);
       else expect(envValues).toContain(`${key}=${value}`);
     }
-    expect(envValues).toHaveLength(Object.keys(values).length);
+    expect(envValues).toHaveLength(Object.keys(values).length + (runner ? 0 : 2));
     expect(run.join("\n")).not.toContain(values[tokenName]);
     expect(run).not.toContain("--privileged");
     expect(run).not.toContain("--network");
@@ -921,6 +991,7 @@ describe("container replacement preserves manual recovery", () => {
   it.each([
     { RUNNING_IMAGE: IMAGE_NEW, DIALF_SOCKET: "socket" },
     { RUNNING_IMAGE: IMAGE_NEW, DOCKER_STATES: "exited" },
+    { RUNNING_IMAGE: IMAGE_NEW, VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS: "240" },
   ])("same-image recreation retains the old container when startup fails (%j)", (options) => {
     const r = upgrade({ RUNNING_ID: "abc", RUN_FAIL: "1", ...options, ...(options.DIALF_SOCKET ? { DIALF_SOCKET: sock } : {}) });
     expect(r.status).toBe(1);

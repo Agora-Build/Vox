@@ -60,7 +60,8 @@ Optional:
 - `PORT` (default 5000)
 - `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_CALLBACK_URL`, `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`/`GITHUB_CALLBACK_URL` — sign-in with Google/GitHub, served by the **`oauth` plugin** (needs `oauth` in `VOX_PLUGINS`; each provider turns on when its ID+secret are set). Google's redirect URI is `<origin>/api/plugins/oauth/google/callback`; GitHub's registered callback is the web page `<origin>/auth/github/callback`, which POSTs the code to the plugin
 - `WEB_SESSION_TTL_HOURS` (default 1) — minted storageState freshness
-- `WEB_SESSION_MINT_TIMEOUT_SECONDS` (default 180) — read by both Core and broker to bound a mint
+- `WEB_SESSION_MINT_TIMEOUT_SECONDS` (default/max 600) — read by Core and broker; Core sends its budget, broker honors the shorter of request/local budgets. Updated agent session polling uses the shared ceiling +40s (640s); upgrade old agents before raising login past 200s.
+- `VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS` (default 120) — daemon/broker assistance per supported wait, capped by login and actual broker child budget. Manager `.env` forwards both timeout variables and safely recreates same-image agents if settings change.
 - `GEOIP_DB_DIR` (default `./geoip`) — absent DBs = non-public agents stay Unverified (safe default; self-heals on refresh)
 - `MAXMIND_LICENSE_KEY` — bootstrap-only fallback; the key is normally console-managed (Regions page, stored encrypted in `systemConfig`). `server/geoip-refresh.ts` refreshes in-app (startup when missing/stale >7d, weekly timer, admin Refresh button); no key → automatic DB-IP Lite fallback (no account needed)
 - `VOX_CONTACT_EMAIL` (default `vox@agora.build`), `VOX_GITHUB_URL` (default `https://github.com/Agora-Build/Vox`), `VOX_X_URL` (no default) — public footer contact links, served from `GET /api/config` at runtime so a fork or rebrand changes them with an env var + restart, not a rebuild. **Unset ⇒ the icon is not rendered**, deliberately: a social link that goes nowhere is worse than none (the footer previously shipped a bare `https://twitter.com`).
@@ -208,7 +209,9 @@ session consent. Frame polling authorizes freshly at the owner, even for cached
 pixels, and rechecks after slow capture without duplicate full receiver checks.
 Read-only open, explicit control, navigation fences, bounded non-replayed input,
 immediate close and five-second engine leases are security requirements. Holds
-are 60 seconds within unchanged mint deadlines, not a ten-minute extension.
+default to 120 seconds per supported wait, configurable but no longer than login.
+Login defaults/caps at 600s; Core abort +15s, stale reclaim +30s, updated agent poll
+640s. Upgrade older 240s-poll agents before extending login beyond 200s.
 Active unpaid web cancellation is a separate job right; marketplace settlement
 contexts are excluded until a mid-run settlement policy exists. Delivery is
 `acknowledged` or `pending`, not proof of process exit. Heartbeat fallback stops only
@@ -354,7 +357,7 @@ Run `./scripts/dev-local-run.sh clean-test-data [--yes]` on a DB that has accumu
 - `shared/schema.ts` — all tables/enums/Zod schemas (single source of truth)
 - `shared/secrets.ts` — secret naming + `isAuthFieldName`; **client-safe, must stay dependency-free**
 - `shared/credentials.ts` — redaction + fingerprinting shared by Core/daemon/broker; **Node-only, never import from client/**
-- `shared/mint-timeout.ts` — the one clamped `WEB_SESSION_MINT_TIMEOUT_SECONDS` reader; the clamp orders four deadlines (broker child < Core abort +15s < stale reclaim +30s < daemon's hard-coded 240s poll) — raising `MAX_MINT_TIMEOUT_SECONDS` requires raising that poll too
+- `shared/mint-timeout.ts` — the one clamped login-budget reader and derived agent poll deadline (broker child <=600s < Core abort +15s < stale reclaim +30s < agent poll 640s). `shared/browser-assistance-timeout.ts` reads the 120s default assistance budget and caps it at login/actual broker budget.
 - `server/routes.ts`, `server/storage.ts`, `server/auth.ts`, `server/permissions.ts`, `server/stripe.ts`, `client/src/App.tsx`
 - `designs/CLASH_DESIGN.md`, `designs/vox-arch.png`; dated design docs in `designs/` carry the reasoning per change. `designs/IMPLEMENTATION_PLAN.md` is the ORIGINAL plan, kept for history and no longer accurate
 - `scripts/vox-manager.sh [vox_agent] [--env env-file]` — install/upgrade/roll back eval agent / clash runner containers. No arguments means `vox_agent` and `.env` in the current working directory. `EVAL_VERSION` / `CLASH_VERSION` in the env file independently select each service's tag or manifest digest, defaulting to `latest` when missing/empty. CLI `--version` is rejected before loading configuration; no version CLI flags are supported. Ignore a service's version if it has no token. Validate every enabled version before any Docker operation, then verify all images and official repository digests before any stop. Launches use named immutable `ghcr.io/agora-build/<component>@sha256:...` references with `--pull=never`; `org.agora.vox.image`/`org.agora.vox.version` labels retain each service's selected reference/version, also shown in the final table. Missing or mismatched images/digests leave containers unchanged. `self` atomically updates only the script from official main without loading `.env` or touching Docker; `vox` is not supported yet. The positional env-file form still works but cannot be combined with `--env`.

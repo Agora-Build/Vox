@@ -18,7 +18,7 @@
  * Dockerfile COPY, the arrangement `shared/secrets.ts` already uses.
  */
 
-export const DEFAULT_MINT_TIMEOUT_SECONDS = 180;
+export const DEFAULT_MINT_TIMEOUT_SECONDS = 600;
 
 /**
  * Upper clamp, chosen to keep the four deadlines in order rather than as a
@@ -27,17 +27,14 @@ export const DEFAULT_MINT_TIMEOUT_SECONDS = 180;
  *   broker child timeout   = T                    (this value)
  *   Core abort             = T + 15
  *   stale-mint reclaim     = T + 30
- *   daemon session poll    = 240s, HARD-CODED in vox-agentd.ts fetchSession
+ *   daemon session poll    = MAX_MINT_TIMEOUT_SECONDS + 40
  *
- * The daemon's deadline is not configurable from here — it runs on a different
- * host and cannot read Core's env — so T must stay low enough that the agent
- * outlasts the mint it is waiting on. At 200 the chain is 200 < 215 < 230 < 240.
- * A larger ceiling would let an operator invert it: the agent would give up
- * first, fail the job with "timed out waiting for session mint", and the real
- * diagnosis would never reach the job error while Core was still legitimately
- * working. Raising this means raising that poll deadline too.
+ * The daemon may run on another host with different configuration, so its poll
+ * budget follows the shared ceiling, not its local configured login timeout.
+ * At the ceiling the chain is 600 < 615 < 630 < 640 seconds.
  */
-export const MAX_MINT_TIMEOUT_SECONDS = 200;
+export const MAX_MINT_TIMEOUT_SECONDS = 600;
+export const SESSION_MINT_POLL_TIMEOUT_SECONDS = MAX_MINT_TIMEOUT_SECONDS + 40;
 
 export function mintTimeoutSeconds(): number {
   // Trimmed: a CRLF-edited .env leaves "120\r" (#225 review).
@@ -51,9 +48,7 @@ export function mintTimeoutSeconds(): number {
     return DEFAULT_MINT_TIMEOUT_SECONDS;
   }
   if (configured > MAX_MINT_TIMEOUT_SECONDS) {
-    // Said out loud (#139): an operator who set 600 should not have to read
-    // this file to learn they got 200.
-    warnOnce(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${configured} exceeds the ${MAX_MINT_TIMEOUT_SECONDS}s ceiling (the eval agent stops waiting for a session at 240s); using ${MAX_MINT_TIMEOUT_SECONDS}s`);
+    warnOnce(`WEB_SESSION_MINT_TIMEOUT_SECONDS=${configured} exceeds the ${MAX_MINT_TIMEOUT_SECONDS}s ceiling (the eval agent stops waiting for a session at ${SESSION_MINT_POLL_TIMEOUT_SECONDS}s); using ${MAX_MINT_TIMEOUT_SECONDS}s`);
     return MAX_MINT_TIMEOUT_SECONDS;
   }
   return configured;

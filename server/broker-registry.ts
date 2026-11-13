@@ -321,8 +321,10 @@ export async function mintViaBroker(
   // signal did not exist, so a hung broker left this promise pending forever,
   // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
   // never fired.
-  const abortMs = (mintTimeoutSeconds() + 15) * 1000;
-  const res = await callBroker("session", () => fetchViaBroker(target, "/mint", JSON.stringify(req), abortMs, fetchImpl));
+  const timeoutSeconds = mintTimeoutSeconds();
+  const abortMs = (timeoutSeconds + 15) * 1000;
+  const body = JSON.stringify({ ...req, timeoutSeconds });
+  const res = await callBroker("session", () => fetchViaBroker(target, "/mint", body, abortMs, fetchImpl));
   if (res.status === 401 || res.status === 403) {
     // The broker doesn't know Core's mint secret: it restarted and hasn't
     // re-registered yet (it does on its next heartbeat). Not a login failure.

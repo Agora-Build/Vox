@@ -44,8 +44,10 @@ Public job visibility and global-admin moderation grant no bypass. The same
 eligibility applies to viewing and control. Views start read-only; control is
 explicit and bounded. Closing one view does not close the others. Controller
 release/expiry resumes automation; the next controller must explicitly acquire
-control at a supported wait. The local hold is 60 seconds and does not extend existing
-180/200-second broker mint deadlines. Recording and LLM flow generation are not
+control at a supported wait. The local hold defaults to 120 seconds, configurable
+but capped by the login budget (default/max 600 seconds). Upgrade older agents
+before extending login past 200 seconds; they still stop waiting at 240 seconds.
+Recording and LLM flow generation are not
 included. See [Live Browser Assistance](browser-assistance.md) for the security
 contract, cancellation behavior, replica routing and verification steps.
 
@@ -455,7 +457,8 @@ plugin tests to avoid their existing CREATE DATABASE race.
 | `AGORA_APP_ID` / `AGORA_APP_CERTIFICATE` / `AGORA_CONVOAI_CONFIG` | Agora RTC and the Clash live moderator | — |
 | `S3_ENDPOINT` / `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` / `S3_REGION` | Artifact storage (S3 or Cloudflare R2). Without them, uploads are off and everything else works. | — |
 | `WEB_SESSION_TTL_HOURS` | How long a minted login session stays fresh | `1` |
-| `WEB_SESSION_MINT_TIMEOUT_SECONDS` | Upper bound on minting one login session | `180` |
+| `WEB_SESSION_MINT_TIMEOUT_SECONDS` | Login-mint budget, positive whole seconds, capped at `600`. Configure Core and auth-session broker; the broker also honors Core's shorter per-request budget. Forwarded to eval agents by `vox-manager.sh`. Upgrade agents before extending past `200` seconds; old agents stop waiting at `240`. | `600` |
+| `VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS` | Assistance hold per supported browser wait, positive whole seconds, capped by login budget. Configure eval daemon and auth-session broker; forwarded to eval agents by `vox-manager.sh`. Config changes trigger safe replacement even on the same image. | `120` |
 | `GEOIP_DB_DIR` | Where GeoIP databases **and** the access-classification data sources (below) live | `./geoip` |
 | `MAXMIND_LICENSE_KEY` | Fallback only; normally set in Console → Regions. Without any key, the free DB-IP Lite database is used. | — |
 | `VOX_PUBLIC_IP_ON_IFACE` | `true`/`false`. Whether the eval agent's default-route interface carries a public address directly (no home router) — one of the agent's `netSignals` used by access classification. Set by `scripts/vox-manager.sh`, which measures it on the **host** (a container only sees its own veth) and passes it through to the container; omitted when undetermined. Not meant to be set by hand. | — |

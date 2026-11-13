@@ -37,6 +37,8 @@ usage() {
     echo "  No arguments installs/upgrades vox_agent using .env in the current directory."
     echo "  EVAL_TOKEN selects eval; CLASH_TOKEN selects Clash. Missing/empty tokens leave that service untouched."
     echo "  EVAL_VERSION / CLASH_VERSION select each service's image tag or sha256 manifest digest (default: latest)."
+    echo "  WEB_SESSION_MINT_TIMEOUT_SECONDS sets the login budget (default/max: 600s)."
+    echo "  VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS sets browser assistance (default: 120s, capped by login budget)."
     echo "  A positional env-file path is still accepted for compatibility."
     echo "  Maintenance: VOX_INSTANCE_DISABLED=true in the env file skips all container operations, even with --force."
 }
@@ -53,6 +55,8 @@ print_env_sample() {
         'VOX_INSTANCE_DISABLED=false' \
         'RESTART_POLICY=unless-stopped' \
         'HEALTH_PORT=8099' \
+        'WEB_SESSION_MINT_TIMEOUT_SECONDS=600' \
+        'VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=120' \
         '' \
         'Use KEY=value assignments; quote values containing spaces. Keep .env private (chmod 600 .env).'
 }
@@ -265,6 +269,24 @@ if [[ ! "$HEALTH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$HEALTH_PORT" -gt 65535 ]; 
 fi
 
 VOX_SERVER="${VOX_SERVER:-https://vox.agora.build}"
+if [ -n "${EVAL_TOKEN:-}" ]; then
+    WEB_SESSION_MINT_TIMEOUT_SECONDS="${WEB_SESSION_MINT_TIMEOUT_SECONDS:-600}"
+    VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS="${VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS:-120}"
+    for timeout_name in WEB_SESSION_MINT_TIMEOUT_SECONDS VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS; do
+        if [[ ! "${!timeout_name}" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            env_config_error "$timeout_name must be a positive whole number of seconds. No containers were changed."
+        fi
+    done
+    if [ "$WEB_SESSION_MINT_TIMEOUT_SECONDS" -gt 600 ]; then
+        echo "WARNING: login timeout exceeds the 600s ceiling; using 600s."
+        WEB_SESSION_MINT_TIMEOUT_SECONDS=600
+    fi
+    if [ "$VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS" -gt "$WEB_SESSION_MINT_TIMEOUT_SECONDS" ]; then
+        echo "WARNING: browser assistance exceeds the login timeout; using ${WEB_SESSION_MINT_TIMEOUT_SECONDS}s."
+        VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS="$WEB_SESSION_MINT_TIMEOUT_SECONDS"
+    fi
+fi
+
 REGISTRY="ghcr.io/agora-build"
 declare -A images=()
 declare -A image_versions=()
@@ -823,7 +845,27 @@ for name in "${!images[@]}"; do
         docker_state=$(docker inspect --format '{{.State.Status}}' "$running_id" 2>/dev/null) || docker_state="unknown"
         case "$docker_state" in created|exited|dead|restarting) recovery_needed=1 ;; esac
     fi
-    if [ -n "$prev_dialf_socket" ] && [ -z "$host_dialf_socket" ] && [ "$running_image_id" == "$selected_image_id" ] && [ -z "$recovery_needed" ]; then
+    timeout_config_changed=""
+    if [ -n "$running_id" ] && [ "$name" = vox-eval-agentd ] && [ "$running_image_id" = "$selected_image_id" ]; then
+        if ! current_timeout_env=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$running_id"); then
+            echo "Error: cannot inspect timeout settings; leaving $name unchanged." >&2
+            manager_failed=1
+            continue
+        fi
+        current_login_timeout=600
+        current_assistance_timeout=120
+        while IFS= read -r setting; do
+            case "$setting" in
+                WEB_SESSION_MINT_TIMEOUT_SECONDS=*) current_login_timeout="${setting#*=}" ;;
+                VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=*) current_assistance_timeout="${setting#*=}" ;;
+            esac
+        done <<< "$current_timeout_env"
+        if [ "$current_login_timeout" != "$WEB_SESSION_MINT_TIMEOUT_SECONDS" ] ||
+            [ "$current_assistance_timeout" != "$VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS" ]; then
+            timeout_config_changed=1
+        fi
+    fi
+    if [ -n "$prev_dialf_socket" ] && [ -z "$host_dialf_socket" ] && [ "$running_image_id" == "$selected_image_id" ] && [ -z "$recovery_needed" ] && [ -z "$timeout_config_changed" ]; then
         echo "WARNING: the running container was started with DialF ($prev_dialf_socket), but that"
         echo "         socket is gone — it can't take phone jobs. Start dialfd (with the same socket"
         echo "         path, or set DIALF_SOCKET) and re-run this, or restart the container."
@@ -851,6 +893,13 @@ for name in "${!images[@]}"; do
         if [ "$running_image_id" == "$selected_image_id" ] && [ -n "$dialf_missing_in_container" ]; then
             echo "Already on the selected image, but DialF is on this host ($host_dialf_socket) and the"
             echo "running container wasn't started with it — recreating it so it can take phone jobs."
+            if ! wait_for_idle "$running_id"; then
+                echo "Skipping $name (user chose not to force stop)."
+                echo "-----------------------------------"
+                continue
+            fi
+        elif [ "$running_image_id" == "$selected_image_id" ] && [ -n "$timeout_config_changed" ]; then
+            echo "Already on the selected image, but login/browser assistance settings changed; recreating container."
             if ! wait_for_idle "$running_id"; then
                 echo "Skipping $name (user chose not to force stop)."
                 echo "-----------------------------------"
@@ -939,6 +988,8 @@ for name in "${!images[@]}"; do
     mount_args=()
     dialf_detected=""
     if [ "$name" = "vox-eval-agentd" ]; then
+        env_args+=(-e "WEB_SESSION_MINT_TIMEOUT_SECONDS=$WEB_SESSION_MINT_TIMEOUT_SECONDS"
+            -e "VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS=$VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS")
         mount_args+=(-v vox-aeval-cache:/root/.cache)
         if [ -d /dev/snd ]; then
             # aeval resolves card IDs through /proc/asound, which Docker masks by default.
