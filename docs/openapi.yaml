@@ -132,23 +132,25 @@ components:
       description: API key with prefix `vox_live_`
 
   parameters:
-    NetworkPolicy:
-      name: network
+    HealthPolicy:
+      name: health
       in: query
       schema:
         type: string
         enum: [strict, all]
-        default: strict
+        default: all
       description: >
-        Defaults to fully monitored evaluation runs with no detected network changes.
-        Use `all` to include unstable, historical and unverified runs. This deliberately
-        changes the default for older clients: historical results require `network=all`.
-        Uploaded analyses in `tier=mine` are exempt because network stability does not
-        apply to an uploaded recording. Unlike this API, the Real-time and Leaderboard
-        UIs default to All networks and explicitly request `network=all`.
-        Pass `network=all` to compare this API with those default views. UI network
-        filters are temporary selections and reset to All on refresh; enable Strict
-        in the page controls for a strict benchmark.
+        Defaults to all otherwise eligible runs, including changed, historical and
+        unverified runs, matching the Real-time and Leaderboard pages. Omit the
+        parameter or use `health=all` for this default. Opt in with `health=strict`
+        to include only fully monitored runs without detected network changes.
+        Strict currently checks network monitoring, not CPU or memory pressure.
+        Uploaded analyses in `tier=mine` are exempt because the analyzing machine's
+        network does not describe the recording. Other filters and authorization
+        still apply. Page selections reset to All with Strict off on refresh.
+        This is the only health selector; unsupported query parameters, including
+        `network` and `strict`, return 400. Invalid or repeated health values also
+        return 400. Response metadata reports the applied policy as `health` only.
     TagFilter:
       name: tag
       in: query
@@ -1520,8 +1522,9 @@ paths:
       description: >
         Returns the most recent evaluation results of one tier and one transport. With no
         parameters: the Mainline tier (eval flow and eval set public+mainline, a public agent),
-        web, and strict network coverage. This deliberately excludes historical and
-        unverified runs; use `network=all` for the previous dataset. `tier=community`
+        web, and all agent-health states, matching the page default. Opt in to
+        strict network coverage with `health=strict`; `health=all` or omission
+        includes historical and unverified runs. `tier=community`
         is public too; `tier=mine` returns your own private evals and needs an API key.
       security:
         - {}            # mainline / community: no key
@@ -1552,7 +1555,7 @@ paths:
           description: Only results from the last N hours (omit for all time).
         - $ref: '#/components/parameters/TagFilter'
         - $ref: '#/components/parameters/TagGroupBy'
-        - $ref: '#/components/parameters/NetworkPolicy'
+        - $ref: '#/components/parameters/HealthPolicy'
         - name: limit
           in: query
           schema:
@@ -1599,8 +1602,12 @@ paths:
                         type: string
                         nullable: true
                         description: The groupBy key, or null.
+                      health:
+                        type: string
+                        enum: [strict, all]
+                        description: The applied agent-health policy; defaults to all.
         '400':
-          description: An invalid tier, transport, hours, limit, tag or groupBy
+          description: An unsupported query parameter or an invalid tier, transport, hours, limit, tag, groupBy or health
         '401':
           description: "`tier=mine` without an API key"
         '429':
@@ -1613,9 +1620,10 @@ paths:
       summary: Get leaderboard
       description: >
         Returns provider rankings (averages per provider and site) for one tier and one
-        transport. With no parameters: Mainline, web, and strict network coverage.
-        This deliberately excludes historical and unverified runs; use `network=all`
-        for the previous dataset. `tier=community` is public too; `tier=mine` ranks
+        transport. With no parameters: Mainline, web, and all agent-health states,
+        matching the page default. Opt in to strict network coverage with
+        `health=strict`; `health=all` or omission includes historical and unverified
+        runs. `tier=community` is public too; `tier=mine` ranks
         your own private evals and needs an API key.
       security:
         - {}            # mainline / community: no key
@@ -1646,7 +1654,7 @@ paths:
           description: Only results from the last N hours (omit for all time).
         - $ref: '#/components/parameters/TagFilter'
         - $ref: '#/components/parameters/TagGroupBy'
-        - $ref: '#/components/parameters/NetworkPolicy'
+        - $ref: '#/components/parameters/HealthPolicy'
         - name: siteId
           in: query
           schema:
@@ -1692,8 +1700,12 @@ paths:
                         type: string
                         nullable: true
                         description: The groupBy key, or null.
+                      health:
+                        type: string
+                        enum: [strict, all]
+                        description: The applied agent-health policy; defaults to all.
         '400':
-          description: An invalid tier, transport, hours, limit, tag or groupBy
+          description: An unsupported query parameter or an invalid tier, transport, hours, tag, groupBy or health
         '401':
           description: "`tier=mine` without an API key"
         '429':

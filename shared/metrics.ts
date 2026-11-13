@@ -3,6 +3,9 @@
  * the console UI (display), so thresholds can never drift between them.
  */
 
+/** Whether metrics require fully monitored, unchanged runs. */
+export type HealthMode = "strict" | "all";
+
 /**
  * A stop more than this long after an interruption is not treated as a
  * reaction — real data shows the analyzer attributes the agent's natural

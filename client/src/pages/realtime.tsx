@@ -39,7 +39,7 @@ import { useRegionLocations } from "@/hooks/use-regions";
 import { RegionScopeSelector } from "@/components/region-scope-selector";
 import { useMetricsTagState, appendTagParams, tagParamsKey, customTagKeys, groupLabel } from "@/components/metrics-tag-controls";
 import { MetricsFilterBar } from "@/components/metrics-filter-bar";
-import type { NetworkMode } from "@shared/network-events";
+import type { HealthMode } from "@shared/metrics";
 import { formatTag, type Tag } from "@shared/tags";
 
 interface EvalResult {
@@ -767,12 +767,12 @@ interface MetricsSectionProps {
   hiddenProviders?: Set<string>;
   /** Active tag filters — the zoom's detail request must carry them too. */
   tagFilters: Tag[];
-  network: NetworkMode;
+  health: HealthMode;
   /** Grouped by a tag: the detail endpoint has no groupBy, so zoom stays on the overview rows. */
   grouped?: boolean;
 }
 
-function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, detailEndpoint, regionScopes, transport, refreshInterval, userId, testIdPrefix = "", showEvalFlow = false, hiddenProviders, tagFilters, network, grouped = false }: MetricsSectionProps) {
+function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionLabel, navigationKey, detailEndpoint, regionScopes, transport, refreshInterval, userId, testIdPrefix = "", showEvalFlow = false, hiddenProviders, tagFilters, health, grouped = false }: MetricsSectionProps) {
   const { data: providerList } = useQuery<Array<{ id: string; brandColor: string | null }>>({
     queryKey: ["/api/providers"],
     staleTime: 60000,
@@ -834,7 +834,7 @@ function MetricsSection({ metrics, isLoading, timeRangeLabel, timeRange, regionL
       const params = new URLSearchParams({ from: String(window.from), to: String(window.to), transport });
       appendRegionScopes(params, regionScopes);
       // Same tag filters as the overview: a filtered chart's zoom never shows unfiltered rows.
-      appendTagParams(params, tagFilters, undefined, network);
+      appendTagParams(params, tagFilters, undefined, health);
       const res = await fetch(`${detailEndpoint}?${params}`, { signal });
       if (!res.ok) throw new Error("Failed to load chart detail");
       return res.json();
@@ -1238,8 +1238,8 @@ export default function Dashboard() {
   // Provider multi-select: hidden set (default empty = all shown).
   const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
   // Network tags: filters (all must match) + groupBy, reset on page load.
-  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagState();
-  const tagKey = tagParamsKey(tagFilters, groupBy, network);
+  const { tagFilters, setTagFilters, groupBy, setGroupBy, health, setHealth } = useMetricsTagState();
+  const tagKey = tagParamsKey(tagFilters, groupBy, health);
   const { data: regionLocations } = useRegionLocations();
   const { data: providerList } = useQuery<Array<{ id: string; name: string }>>({
     queryKey: ["/api/providers"],
@@ -1261,7 +1261,7 @@ export default function Dashboard() {
     queryKey: ["/api/metrics/available-regions", availabilityTier, availabilityTier === "my-evals" ? authStatus?.user?.id : null, timeRange, evalMode, tagKey],
     queryFn: async () => {
       const params = new URLSearchParams({ tier: availabilityTier, transport: evalMode });
-      appendTagParams(params, tagFilters, undefined, network);
+      appendTagParams(params, tagFilters, undefined, health);
       if (timeRange !== "all") params.set("hours", timeRange);
       const res = await fetch(`/api/metrics/available-regions?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error("available-regions failed");
@@ -1292,7 +1292,7 @@ export default function Dashboard() {
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy, network);
+      appendTagParams(params, tagFilters, groupBy, health);
       // No limit param: the server owns row counts + raw-vs-bucket per window.
       const res = await fetch(`/api/metrics/realtime?${params}`);
       if (!res.ok) throw new Error("Failed to fetch metrics");
@@ -1309,7 +1309,7 @@ export default function Dashboard() {
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy, network);
+      appendTagParams(params, tagFilters, groupBy, health);
       const res = await fetch(`/api/metrics/community?${params}`);
       if (!res.ok) throw new Error("Failed to fetch community metrics");
       return res.json();
@@ -1325,7 +1325,7 @@ export default function Dashboard() {
       if (timeRange !== "all") params.set("hours", timeRange);
       if (evalMode !== "web") params.set("transport", evalMode);
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy, network);
+      appendTagParams(params, tagFilters, groupBy, health);
       const res = await fetch(`/api/metrics/my-evals?${params}`, { signal });
       if (!res.ok) throw new Error("Failed to fetch my eval metrics");
       return res.json();
@@ -1338,7 +1338,7 @@ export default function Dashboard() {
     queryKey: ['/api/config'],
   });
 
-  const { data: health } = useQuery<HealthData>({
+  const { data: systemHealth } = useQuery<HealthData>({
     queryKey: ['/api/health'],
     refetchInterval: 30000,
   });
@@ -1454,25 +1454,25 @@ export default function Dashboard() {
           </div>
           <p className="text-xs sm:text-sm text-muted-foreground flex flex-wrap items-center gap-2">
             <span className="relative flex h-2 w-2 shrink-0">
-              {health?.status === "operational" ? (
+              {systemHealth?.status === "operational" ? (
                 <>
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                 </>
-              ) : health?.status === "degraded" ? (
+              ) : systemHealth?.status === "degraded" ? (
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
-              ) : health?.status === "down" ? (
+              ) : systemHealth?.status === "down" ? (
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
               ) : (
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
               )}
             </span>
             <span data-testid="text-system-status">
-              {health?.status === "operational" ? "System Status: Operational"
-                : health?.status === "degraded" ? "System Status: Degraded"
-                : health?.status === "down" ? "System Status: Down"
+              {systemHealth?.status === "operational" ? "System Status: Operational"
+                : systemHealth?.status === "degraded" ? "System Status: Degraded"
+                : systemHealth?.status === "down" ? "System Status: Down"
                 : "System Status: Checking..."}
-              {health?.agents && ` (${health.agents.online}/${health.agents.total} agents online)`}
+              {systemHealth?.agents && ` (${systemHealth.agents.online}/${systemHealth.agents.total} agents online)`}
             </span>
             <span className="text-muted-foreground/50">|</span>
             <span data-testid="text-latest-test">Latest: {latestTestTime}m ago</span>
@@ -1486,8 +1486,8 @@ export default function Dashboard() {
           onTagFiltersChange={setTagFilters}
           groupBy={groupBy}
           onGroupByChange={setGroupBy}
-          network={network}
-          onNetworkChange={setNetwork}
+          health={health}
+          onHealthChange={setHealth}
           customKeys={tagCustomKeys}
           actions={<>
             <Popover>
@@ -1600,7 +1600,7 @@ export default function Dashboard() {
             testIdPrefix=""
             hiddenProviders={hiddenProviders}
             tagFilters={tagFilters}
-            network={network}
+            health={health}
             grouped={!!groupBy}
           />
         </TabsContent>
@@ -1621,7 +1621,7 @@ export default function Dashboard() {
             showEvalFlow
             hiddenProviders={hiddenProviders}
             tagFilters={tagFilters}
-            network={network}
+            health={health}
             grouped={!!groupBy}
           />
         </TabsContent>
@@ -1644,7 +1644,7 @@ export default function Dashboard() {
               showEvalFlow
               hiddenProviders={hiddenProviders}
               tagFilters={tagFilters}
-              network={network}
+              health={health}
               grouped={!!groupBy}
             />
           ) : (

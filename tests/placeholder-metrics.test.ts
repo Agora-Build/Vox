@@ -93,7 +93,7 @@ d("#217 placeholder metrics", () => {
 
   it("My Evals reports N/A as null, not 0", async () => {
     const r = await complete({ networkResilience: null, naturalness: null, noiseReduction: null });
-    const rows = await (await fetch(`${BASE_URL}/api/metrics/my-evals?hours=24&network=all`, { headers: { Cookie: cookie } })).json();
+    const rows = await (await fetch(`${BASE_URL}/api/metrics/my-evals?hours=24`, { headers: { Cookie: cookie } })).json();
     const row = (rows as Array<Record<string, unknown>>).find((x) => x.id === r.id);
     expect(row).toMatchObject({ networkResilience: null, naturalness: null, noiseReduction: null });
   });

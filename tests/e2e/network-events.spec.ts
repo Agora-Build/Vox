@@ -1,5 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
+const hasNoHealthFilter = (url: URL) => !["health", "network", "strict"].some((key) => url.searchParams.has(key));
+
 async function mockNetworkViews(page: Page, requests: URL[]) {
   const startedAt = "2026-11-05T00:00:00.000Z";
   const event = (id: number, name: string) => ({ id, event: name, source: id === 1 ? "core" : "agent", seq: id, timestamp: Date.parse(startedAt) + id * 1000,
@@ -40,8 +42,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByTestId("access-toggle-lastmile")).toHaveCount(0);
       await expect(page.getByTestId("metrics-tag-filter")).toHaveCount(0);
       await expect(page.getByTestId("select-group-by")).toHaveCount(0);
-      await expect(page.getByTestId("network-policy")).toHaveCount(0);
-      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && url.searchParams.get("network") === "all")).toBe(true);
+      await expect(page.getByTestId("health-policy")).toHaveCount(0);
+      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && hasNoHealthFilter(url))).toBe(true);
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
       const originalTabs = await tabs.boundingBox();
       await all.click();
@@ -51,14 +53,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByTestId("metrics-tag-filter")).toBeVisible();
       await expect(page.getByTestId("select-group-by")).toBeVisible();
       await expect(toggle).not.toBeChecked();
-      await expect(page.getByTestId("network-policy")).toHaveText("Strict");
+      await expect(page.getByTestId("health-policy")).toHaveText("Strict");
       await expect(extended.getByTestId("access-toggle-lastmile")).toBeVisible();
       await expect(extended.getByTestId("metrics-tag-filter")).toBeVisible();
       await expect(extended.getByTestId("select-group-by")).toBeVisible();
-      await expect(primary.getByTestId("strict-network-mode")).toBeVisible();
-      await expect(extended.getByTestId("strict-network-mode")).toHaveCount(0);
+      await expect(primary.getByTestId("strict-health-mode")).toBeVisible();
+      await expect(extended.getByTestId("strict-health-mode")).toHaveCount(0);
       expect(await toggle.evaluate((element) => element.previousElementSibling?.textContent)).toBe("Strict");
-      expect(await primary.evaluate((element) => element.firstElementChild?.getAttribute("data-testid"))).toBe("network-policy");
+      expect(await primary.evaluate((element) => element.firstElementChild?.getAttribute("data-testid"))).toBe("health-policy");
       const primaryBounds = await primary.boundingBox();
       const extendedBounds = await extended.boundingBox();
       expect(extendedBounds!.y - primaryBounds!.y - primaryBounds!.height).toBeCloseTo(8, 0);
@@ -70,19 +72,19 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         expect((await tabs.boundingBox())!.y).toBeGreaterThanOrEqual(extendedBounds!.y + extendedBounds!.height);
       }
       await page.getByRole("button", { name: "About strict mode" }).click();
-      await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
-      await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
-      await expect(page.getByTestId("strict-network-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
-      await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
+      await expect(page.getByTestId("strict-health-info")).toContainText("Only fully monitored runs");
+      await expect(page.getByTestId("strict-health-info")).toContainText("Strict agent health checks");
+      await expect(page.getByTestId("strict-health-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
+      await expect(page.getByTestId("strict-health-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       await toggle.click();
       await expect(toggle).toBeChecked();
       await expect(page).toHaveURL(/\/realtime$/);
-      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && url.searchParams.get("network") === "strict")).toBe(true);
-      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/available-regions" && url.searchParams.get("network") === "strict")).toBe(true);
+      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && url.searchParams.get("health") === "strict")).toBe(true);
+      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/available-regions" && url.searchParams.get("health") === "strict")).toBe(true);
       await page.reload();
       await expect(all).toHaveAttribute("data-state", "on");
-      await expect(page.getByTestId("network-policy")).toHaveCount(0);
+      await expect(page.getByTestId("health-policy")).toHaveCount(0);
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
       expect(await page.locator("body").evaluate((element) => element.scrollWidth <= window.innerWidth)).toBe(true);
     });
@@ -110,12 +112,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.keyboard.press("Escape");
       await all.click();
       await expect(all).toHaveAttribute("data-state", "on");
-      await expect(page.getByTestId("network-policy")).toHaveCount(0);
+      await expect(page.getByTestId("health-policy")).toHaveCount(0);
       await expect(page).toHaveURL(/\/realtime$/);
       await expect(page.getByRole("combobox").filter({ hasText: "30 days" })).toBeVisible();
       await expect(page.getByTestId("tab-mode-phone")).toHaveAttribute("aria-selected", "true");
       await expect(page.getByTestId("button-provider-filter")).toContainText("Providers 0/1");
-      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && url.searchParams.get("network") === "all" && url.searchParams.get("hours") === "720" && url.searchParams.get("transport") === "phone" && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
+      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/realtime" && hasNoHealthFilter(url) && url.searchParams.get("hours") === "720" && url.searchParams.get("transport") === "phone" && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
       await all.click();
       await expect(toggle).not.toBeChecked();
       await expect(page.getByTestId("select-group-by")).toHaveText("No grouping");
@@ -128,8 +130,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await all.click();
       for (const [tab, endpoint] of [["Community", "community"], ["My Evals", "my-evals"]]) {
         await page.getByRole("tab", { name: tab, exact: true }).click();
-        await expect(page.getByTestId("network-policy")).toHaveCount(0);
-        await expect.poll(() => requests.some((url) => url.pathname === `/api/metrics/${endpoint}` && url.searchParams.get("network") === "all")).toBe(true);
+        await expect(page.getByTestId("health-policy")).toHaveCount(0);
+        await expect.poll(() => requests.some((url) => url.pathname === `/api/metrics/${endpoint}` && hasNoHealthFilter(url))).toBe(true);
         await all.click();
         await expect(toggle).not.toBeChecked();
         await all.click();
@@ -139,16 +141,16 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       test(`${pageName} ignores legacy filter URLs and preserves unrelated URL state`, async ({ page }) => {
         const requests: URL[] = []; await mockNetworkViews(page, requests);
         const endpoint = pageName === "realtime" ? "my-evals" : "leaderboard";
-        for (const network of ["all", "strict"]) {
+        for (const [selector, mode] of [["health", "all"], ["health", "strict"], ["network", "all"], ["network", "strict"], ["strict", "all"]]) {
           requests.length = 0;
-          await page.goto(`/${pageName}?tab=my-evals&tag=isp%3Aatt&tag=access%3Adatacenter&groupBy=link&network=${network}#saved`);
+          await page.goto(`/${pageName}?tab=my-evals&tag=isp%3Aatt&tag=access%3Adatacenter&groupBy=link&${selector}=${mode}#saved`);
           await expect(page).toHaveURL(new RegExp(`/${pageName}\\?tab=my-evals#saved$`));
           await expect(page.getByTestId("access-toggle-all")).toHaveAttribute("data-state", "on");
           await expect(page.getByTestId(`${pageName}-network-filters`)).toHaveCount(0);
-          await expect(page.getByTestId("network-policy")).toHaveCount(0);
+          await expect(page.getByTestId("health-policy")).toHaveCount(0);
           await expect.poll(() => requests.some((url) => url.pathname === `/api/metrics/${endpoint}`)).toBe(true);
           const metricsRequests = requests.filter((url) => url.pathname === `/api/metrics/${endpoint}`);
-          expect(metricsRequests.every((url) => url.searchParams.get("network") === "all" && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
+          expect(metricsRequests.every((url) => hasNoHealthFilter(url) && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
         }
       });
       test(`${pageName} resets selected tags, grouping and Strict on refresh`, async ({ page }) => {
@@ -165,14 +167,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await page.getByTestId("select-group-by").click();
         await page.getByRole("option", { name: "Group by link (connection)", exact: true }).click();
         await toggle.click();
-        await expect.poll(() => requests.some((url) => url.pathname === `/api/metrics/${endpoint}` && url.searchParams.get("network") === "strict" && url.searchParams.getAll("tag").includes("isp:att") && url.searchParams.getAll("tag").includes("access:lastmile") && url.searchParams.get("groupBy") === "link")).toBe(true);
+        await expect.poll(() => requests.some((url) => url.pathname === `/api/metrics/${endpoint}` && url.searchParams.get("health") === "strict" && url.searchParams.getAll("tag").includes("isp:att") && url.searchParams.getAll("tag").includes("access:lastmile") && url.searchParams.get("groupBy") === "link")).toBe(true);
         await expect(page).toHaveURL(new RegExp(`/${pageName}$`));
         requests.length = 0;
         await page.reload();
         await expect(all).toHaveAttribute("data-state", "on");
         await expect(all).toHaveAttribute("aria-expanded", "false");
-        await expect(page.getByTestId("network-policy")).toHaveCount(0);
-        await expect.poll(() => requests.some((url) => url.pathname === `/api/metrics/${endpoint}` && url.searchParams.get("network") === "all" && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
+        await expect(page.getByTestId("health-policy")).toHaveCount(0);
+        await expect.poll(() => requests.some((url) => url.pathname === `/api/metrics/${endpoint}` && hasNoHealthFilter(url) && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
         await all.click();
         await expect(toggle).not.toBeChecked();
         await expect(page.getByTestId("select-group-by")).toHaveText("No grouping");
@@ -189,25 +191,25 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const toggle = page.getByRole("switch", { name: "Strict", exact: true });
       await expect(all).toHaveAttribute("data-state", "on");
       await expect(extended).toHaveCount(0);
-      await expect(page.getByTestId("network-policy")).toHaveCount(0);
+      await expect(page.getByTestId("health-policy")).toHaveCount(0);
       await expect(page).toHaveURL(/\/leaderboard$/);
-      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/leaderboard" && url.searchParams.get("network") === "all")).toBe(true);
+      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/leaderboard" && hasNoHealthFilter(url))).toBe(true);
       await all.click();
       await expect(toggle).not.toBeChecked();
       await expect(all).toHaveAttribute("data-state", "off");
       await expect(all).toHaveAttribute("aria-expanded", "true");
-      await expect(primary.getByTestId("network-policy")).toHaveText("Strict");
+      await expect(primary.getByTestId("health-policy")).toHaveText("Strict");
       expect(await toggle.evaluate((element) => element.previousElementSibling?.textContent)).toBe("Strict");
-      expect(await primary.evaluate((element) => element.firstElementChild?.getAttribute("data-testid"))).toBe("network-policy");
+      expect(await primary.evaluate((element) => element.firstElementChild?.getAttribute("data-testid"))).toBe("health-policy");
       await expect(extended.getByTestId("access-toggle-lastmile")).toBeVisible();
       await expect(extended.getByTestId("metrics-tag-filter")).toBeVisible();
       await expect(extended.getByTestId("select-group-by")).toBeVisible();
-      await expect(extended.getByTestId("network-policy")).toHaveCount(0);
+      await expect(extended.getByTestId("health-policy")).toHaveCount(0);
       const primaryBounds = await primary.boundingBox();
       const extendedBounds = await extended.boundingBox();
       expect(extendedBounds!.y - primaryBounds!.y - primaryBounds!.height).toBeCloseTo(8, 0);
       await toggle.click();
-      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/leaderboard" && url.searchParams.get("network") === "strict")).toBe(true);
+      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/leaderboard" && url.searchParams.get("health") === "strict")).toBe(true);
       await primary.getByRole("combobox").click();
       await page.getByRole("option", { name: "30 days", exact: true }).click();
       await page.getByTestId("access-toggle-lastmile").click();
@@ -220,19 +222,19 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(all).toHaveAttribute("data-state", "on");
       await expect(all).toHaveAttribute("aria-expanded", "false");
       await expect(extended).toHaveCount(0);
-      await expect(page.getByTestId("network-policy")).toHaveCount(0);
+      await expect(page.getByTestId("health-policy")).toHaveCount(0);
       await expect(page).toHaveURL(/\/leaderboard$/);
       await expect(primary.getByRole("combobox")).toContainText("30 days");
-      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/leaderboard" && url.searchParams.get("network") === "all" && url.searchParams.get("hours") === "720" && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
+      await expect.poll(() => requests.some((url) => url.pathname === "/api/metrics/leaderboard" && hasNoHealthFilter(url) && url.searchParams.get("hours") === "720" && !url.searchParams.has("tag") && !url.searchParams.has("groupBy"))).toBe(true);
       await all.click();
       await expect(toggle).not.toBeChecked();
       await expect(page.getByTestId("select-group-by")).toHaveText("No grouping");
       await expect(page.getByTestId("metrics-tag-filter-chip-access")).toHaveCount(0);
       await page.getByRole("button", { name: "About strict mode" }).click();
-      await expect(page.getByTestId("strict-network-info")).toContainText("Only fully monitored runs");
-      await expect(page.getByTestId("strict-network-info")).toContainText("Strict agent health checks");
-      await expect(page.getByTestId("strict-network-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
-      await expect(page.getByTestId("strict-network-info")).toContainText("Other filters still apply.");
+      await expect(page.getByTestId("strict-health-info")).toContainText("Only fully monitored runs");
+      await expect(page.getByTestId("strict-health-info")).toContainText("Strict agent health checks");
+      await expect(page.getByTestId("strict-health-info")).toContainText("High CPU or memory does not directly exclude a run. Missing or rejected event deliveries can make monitoring incomplete.");
+      await expect(page.getByTestId("strict-health-info")).toContainText("Other filters still apply.");
       await page.keyboard.press("Escape");
       expect(requests.some((url) => url.pathname === "/api/metrics/network-coverage")).toBe(false);
       expect(await page.locator("body").evaluate((element) => element.scrollWidth <= window.innerWidth)).toBe(true);

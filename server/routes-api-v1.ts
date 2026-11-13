@@ -19,7 +19,7 @@ import { getOrganizations } from "./organizations";
 import { settleEndedJobsNow } from "./settle-now";
 import { startFlowLineRefresh, withLineLookupState } from "./number-lookup";
 import { publicEvalFlow, publicEvalJob } from "./network-response";
-import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
+import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTier, parseMetricsTags, validateMetricsQuery, groupValue, accessColumn, wantsAccessColumns, type ApiMetricsTier } from "./metrics-params";
 import type { MetricTier } from "./storage";
 
 type ApiRegionLocation = Awaited<ReturnType<typeof storage.getAllRegionLocations>>[number];
@@ -906,14 +906,14 @@ export function registerApiV1Routes(app: Express): void {
    * mixed) and an optional `hours` window. mainline and community are public;
    * mine is the caller's own private evals (the console's My Evals) and needs
    * an API key or a signed-in session. No parameters means mainline, web,
-   * all time, network=strict. Historical/unverified runs require network=all.
+   * all time, all agent-health states. Strict is opt-in with health=strict.
    *
    * Network tags (design 2026-10-22 "Analysis"): `tag=key:value` (repeatable,
    * all must match the effective value on the tier's board) and `groupBy=key`
    * — or `groupBy=region`, the result's region (reserved: not a tag key).
    */
   async function metricsView(req: Request): Promise<
-    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number; tagFilters: Tag[]; groupBy?: string; network: "strict" | "all" }
+    | { tier: ApiMetricsTier; storageTier: MetricTier; transport: "web" | "phone"; hoursBack?: number; userId?: number; tagFilters: Tag[]; groupBy?: string; health: "strict" | "all" }
     | { status: number; error: string }
   > {
     const tier = parseMetricsTier(req.query.tier);
@@ -931,16 +931,18 @@ export function registerApiV1Routes(app: Express): void {
       if (!user.isEnabled) return { status: 401, error: "Account is disabled" };
       userId = user.id;
     }
-    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId, tagFilters: tags.tagFilters, groupBy: tags.groupBy, network: tags.network };
+    return { tier: tier.tier, storageTier: tier.storageTier, transport: tp.transport, hoursBack: win.hoursBack, userId, tagFilters: tags.tagFilters, groupBy: tags.groupBy, health: tags.health };
   }
   /** What the response actually covers, so a client can't misread it. */
-  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number; tagFilters: Tag[]; groupBy?: string; network: "strict" | "all" }) => ({
+  const viewMeta = (v: { tier: ApiMetricsTier; transport: "web" | "phone"; hoursBack?: number; tagFilters: Tag[]; groupBy?: string; health: "strict" | "all" }) => ({
     tier: v.tier, transport: v.transport, hours: v.hoursBack ?? null,
-    tag: v.tagFilters.map(formatTag), groupBy: v.groupBy ?? null, network: v.network,
+    tag: v.tagFilters.map(formatTag), groupBy: v.groupBy ?? null, health: v.health,
   });
 
   app.get("/api/v1/metrics/realtime", async (req: Request, res: Response) => {
     try {
+      const invalid = validateMetricsQuery(req.originalUrl, "v1Realtime");
+      if (invalid) return res.status(400).json(invalid);
       const locations = await storage.getAllRegionLocations();
       const regionScope = apiRegionScope(locations, req.query);
       if ("error" in regionScope) return res.status(400).json({ error: regionScope.error });
@@ -957,7 +959,7 @@ export function registerApiV1Routes(app: Express): void {
         limit = n;
       }
       const results = await storage.getTierEvalResults(view.storageTier, limit, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters, network: view.network,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters, health: view.health,
       });
 
       // Transform to API format
@@ -999,6 +1001,8 @@ export function registerApiV1Routes(app: Express): void {
    */
   app.get("/api/v1/metrics/leaderboard", async (req: Request, res: Response) => {
     try {
+      const invalid = validateMetricsQuery(req.originalUrl, "v1Leaderboard");
+      if (invalid) return res.status(400).json(invalid);
       const { siteId, location, country, macroRegion, regionScope: requestedScopes } = req.query;
       const locations = await storage.getAllRegionLocations();
       const regionScope = apiRegionScope(locations, { siteId, location, country, macroRegion, regionScope: requestedScopes });
@@ -1009,7 +1013,7 @@ export function registerApiV1Routes(app: Express): void {
       const view = await metricsView(req);
       if ("error" in view) return res.status(view.status).json({ error: view.error });
       const results = await storage.getTierEvalResults(view.storageTier, 1000, {
-        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters, network: view.network,
+        hoursBack: view.hoursBack, userId: view.userId, scope: regionScope.scope, transport: view.transport, tagFilters: view.tagFilters, health: view.health,
       });
 
       // Aggregate by provider and site — and, with groupBy, by that tag's

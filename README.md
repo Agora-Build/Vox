@@ -61,8 +61,10 @@ Compare providers across regions with sortable rankings, P95 latency columns, an
 Real-time and Leaderboard start with **All** networks selected and advanced network
 filters hidden. Click All to reveal filters and the Strict switch; select All again
 to reset them. Network filters and grouping stay out of the page URL and reset to
-All on refresh. Metrics APIs still default to Strict; use `network=all` to match
-the default dashboard views.
+All on refresh. Metrics APIs also default to All without a health filter, matching
+the default dashboard views. Use `health=strict` to opt in to Strict checks.
+`health` is the only health selector; unsupported API query parameters return
+400 instead of being silently ignored.
 
 ### Job Detail & Artifacts
 Per-job metrics, turn-level latency, recorded audio playback, and full artifact bundles from S3-compatible storage.
@@ -482,8 +484,14 @@ curl -H "Authorization: Bearer vox_live_xxxxxxxxxxxx" \
 | `GET /api/v1/results` | Yes | List results (with P95) |
 | `GET /api/v1/results/:id` | Yes | Result details |
 | `GET /api/v1/providers` | No | All providers |
-| `GET /api/v1/metrics/realtime` | No (`tier=mine`: Yes) | Recent results — `tier=mainline` (default) · `community` · `mine`, `transport=web` (default) · `phone`, `hours`, `limit`, `tag=key:value` (repeatable, e.g. `tag=access:lastmile`), `groupBy=key` (e.g. `groupBy=region`) |
-| `GET /api/v1/metrics/leaderboard` | No (`tier=mine`: Yes) | Averages per provider and site — same `tier` / `transport` / `hours` / `tag` / `groupBy` |
+| `GET /api/v1/metrics/realtime` | No (`tier=mine`: Yes) | Recent results — `tier=mainline` (default) · `community` · `mine`, `transport=web` (default) · `phone`, `health=all` (default) · `strict`, `hours`, `limit`, `tag=key:value` (repeatable, e.g. `tag=access:lastmile`), `groupBy=key` (e.g. `groupBy=region`) |
+| `GET /api/v1/metrics/leaderboard` | No (`tier=mine`: Yes) | Averages per provider and site — same `tier` / `transport` / `health` / `hours` / `tag` / `groupBy`; no `limit` parameter |
+
+Both metrics endpoints include all otherwise eligible agent-health states by
+default. Add `?health=strict` for fully monitored runs without detected network
+changes. Response metadata reports `health`; there is no `network` alias.
+Unsupported parameters (including `network`, `strict` and misspellings) return
+400 with a list of supported parameters instead of being silently ignored.
 
 Keyless calls to the public endpoints are limited to 12 per minute per IP (`PUBLIC_API_RATE_LIMIT_PER_MINUTE`); calls with an API key aren't counted. `access` (`lastmile`/`datacenter`/`unknown`) and `sim` are tags Vox sets itself from its own network detection — no eval flow or agent can set or override them. Full reference: `/api-docs`.
 

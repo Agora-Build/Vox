@@ -6,7 +6,7 @@ import { formatRegion } from "@/lib/utils";
 import { LAST_MILE_HINT, DATACENTER_HINT } from "@/lib/access-text";
 import { accessView, withAccessView, type AccessView } from "@/lib/access-view";
 import { KNOWN_TAG_KEYS, MAX_TAG_FILTERS, REGION_GROUP_KEY, formatTag, type Tag } from "@shared/tags";
-import type { NetworkMode } from "@shared/network-events";
+import type { HealthMode } from "@shared/metrics";
 
 /**
  * The network-tag knobs of a metrics view (designs/2026-10-22-network-tags-design.md
@@ -22,32 +22,35 @@ const KNOWN_KEY_LABELS: Record<string, string> = {
   sim: "SIM operator",
 };
 
-/** Transient network filters; every page load starts with All and Strict off. */
+/** Transient health and tag filters; every page load starts with All and Strict off. */
 export function useMetricsTagState() {
   const [tagFilters, setTagFilters] = useState<Tag[]>([]);
   const [groupBy, setGroupBy] = useState<string | undefined>();
-  const [network, setNetwork] = useState<NetworkMode>("all");
+  const [health, setHealth] = useState<HealthMode>("all");
   useEffect(() => {
     // Retire saved filter URLs without touching other page state, e.g. the active tab.
     const url = new URL(window.location.href);
     url.searchParams.delete("tag");
     url.searchParams.delete("groupBy");
     url.searchParams.delete("network");
+    url.searchParams.delete("health");
+    url.searchParams.delete("strict");
     if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
   }, []);
-  return { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork };
+  return { tagFilters, setTagFilters, groupBy, setGroupBy, health, setHealth };
 }
 
 /** Add the tag knobs to a metrics request. */
-export function appendTagParams(params: URLSearchParams, tagFilters: Tag[], groupBy?: string, network: NetworkMode = "strict") {
+export function appendTagParams(params: URLSearchParams, tagFilters: Tag[], groupBy?: string, health: HealthMode = "all") {
   for (const t of tagFilters) params.append("tag", formatTag(t));
   if (groupBy) params.set("groupBy", groupBy);
-  params.set("network", network);
+  if (health === "strict") params.set("health", "strict");
+  else params.delete("health");
 }
 
 /** A stable query-key part for the tag knobs. */
-export function tagParamsKey(tagFilters: Tag[], groupBy?: string, network: NetworkMode = "strict"): string {
-  return `${tagFilters.map(formatTag).sort().join(",")}|${groupBy ?? ""}|${network}`;
+export function tagParamsKey(tagFilters: Tag[], groupBy?: string, health: HealthMode = "all"): string {
+  return `${tagFilters.map(formatTag).sort().join(",")}|${groupBy ?? ""}|${health}`;
 }
 
 /** Custom (not known) keys seen in rows' tags, for the Group by list. */

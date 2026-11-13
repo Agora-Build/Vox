@@ -324,14 +324,14 @@ d("Core network history, claim fencing and strict metrics", () => {
     await storage.finalizeRunningJobWithResult(job.id, undefined, { evalJobId: job.id, providerId, siteId: "na-us-seattle-02", responseLatencyMedian: 1000 });
     const filter = [{ key: "test", value: `job-${stableId}` }];
     await pool.query("UPDATE eval_jobs SET tags=COALESCE(tags,'[]') || $1::jsonb WHERE id=ANY($2::int[])", [JSON.stringify([{ ...filter[0], source: "flow" }]), [stableId, job.id]]);
-    const strict = { tagFilters: filter }, all = { ...strict, network: "all" as const };
+    const strict = { tagFilters: filter, health: "strict" as const }, all = { tagFilters: filter };
     expect((await storage.getMainlineMetrics(24, undefined, "web", strict))).toHaveLength(1);
     expect((await storage.getMainlineMetrics(24, undefined, "web", all))).toHaveLength(2);
     expect((await storage.getMainlineMetrics(undefined, undefined, "web", strict))[0].responseLatencyMedian).toBe(100);
     expect((await storage.getMainlineMetrics(undefined, undefined, "web", all))[0].responseLatencyMedian).toBe(550);
     const window = { from: Date.now() - 3600000, to: Date.now() + 3600000 };
-    expect((await storage.getMetricsDetail("mainline", window, undefined, undefined, "web", filter)).metrics).toHaveLength(1);
-    expect((await storage.getMetricsDetail("mainline", window, undefined, undefined, "web", filter, "all")).metrics).toHaveLength(2);
+    expect((await storage.getMetricsDetail("mainline", window, undefined, undefined, "web", filter, "strict")).metrics).toHaveLength(1);
+    expect((await storage.getMetricsDetail("mainline", window, undefined, undefined, "web", filter)).metrics).toHaveLength(2);
     expect(await storage.getTierEvalResults("mainline", 100, strict)).toHaveLength(1);
     expect(await storage.getTierEvalResults("mainline", 100, all)).toHaveLength(2);
     expect(await storage.getAvailableRegions("mainline", 24, undefined, "web", strict)).toMatchObject({ baseIds: ["na-us-seattle"] });

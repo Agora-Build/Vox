@@ -65,6 +65,17 @@ describe("metrics detail storage", () => {
     expect(predicates[0].params).toContain("trusted");
   });
 
+  it("adds health predicates only when Strict is explicitly enabled", async () => {
+    const { predicates } = captureQueries([]);
+    await storage.getMetricsDetail("mainline", { from: FROM, to: FROM + DAY });
+    await storage.getMetricsDetail("mainline", { from: FROM, to: FROM + DAY }, undefined, undefined, "web", [], "strict");
+    expect(predicates[0].sql).not.toContain('"eval_jobs"."network_monitoring"');
+    expect(predicates[0].sql).not.toContain('"eval_jobs"."network_changed"');
+    expect(predicates[1].sql).toContain('"eval_jobs"."network_monitoring"');
+    expect(predicates[1].sql).toContain('"eval_jobs"."network_changed"');
+    expect(predicates[1].params).toContain("complete");
+  });
+
   it("keeps My Evals user-scoped and rejects unauthenticated storage calls", async () => {
     const { predicates } = captureQueries([]);
     await expect(storage.getMetricsDetail("myEvals", { from: FROM, to: FROM + DAY })).rejects.toThrow("requires a user");

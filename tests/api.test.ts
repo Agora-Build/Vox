@@ -1551,8 +1551,8 @@ describe('Vox API Tests', () => {
     it('completed result appears in the snapshot-based community tier', async () => {
       // Public evalFlow + public eval set + non-mainline → community. Proves the
       // rewritten tier query (reads eval_jobs.snapshot) returns real results.
-      // These completions have no network-monitoring report, so request All.
-      const query = new URLSearchParams({ tag: `fixture:${flowTag}`, network: 'all' });
+      // All is the default, including completions without a monitoring report.
+      const query = new URLSearchParams({ tag: `fixture:${flowTag}` });
       const response = await fetch(`${BASE_URL}/api/metrics/community?${query}`);
       expect(response.ok).toBe(true);
       const data = await response.json();
@@ -1567,14 +1567,12 @@ describe('Vox API Tests', () => {
       expect(job.networkMonitoring).toBe('incomplete');
 
       const query = new URLSearchParams({ tag: `fixture:${flowTag}` });
-      const all = await fetch(`${BASE_URL}/api/metrics/community?${query}&network=all`);
+      const all = await fetch(`${BASE_URL}/api/metrics/community?${query}`);
       expect(all.ok).toBe(true);
       expect((await all.json()).length).toBeGreaterThan(0);
-      for (const policy of ['', '&network=strict']) {
-        const strict = await fetch(`${BASE_URL}/api/metrics/community?${query}${policy}`);
-        expect(strict.ok).toBe(true);
-        expect(await strict.json()).toEqual([]);
-      }
+      const strict = await fetch(`${BASE_URL}/api/metrics/community?${query}&health=strict`);
+      expect(strict.ok).toBe(true);
+      expect(await strict.json()).toEqual([]);
     });
 
     it('job + result survive evalFlow and eval-set deletion (snapshot preserved)', async () => {
@@ -2795,11 +2793,14 @@ describe('Vox API Tests', () => {
     });
 
     it('should get realtime (mainline) metrics with time filter', async () => {
-      const response = await fetch(`${BASE_URL}/api/metrics/realtime?hours=1&limit=10`);
+      const response = await fetch(`${BASE_URL}/api/metrics/realtime?hours=1`);
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
-      expect(data.length).toBeLessThanOrEqual(10);
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      for (const row of data) {
+        if (row.timestamp) expect(new Date(row.timestamp).getTime()).toBeGreaterThanOrEqual(cutoff);
+      }
     });
   });
 
@@ -4265,7 +4266,7 @@ describe('Vox API Tests', () => {
 
   describe('Metrics API with P95', () => {
     it('should include p95 fields in realtime metrics', async () => {
-      const res = await fetch(`${BASE_URL}/api/metrics/realtime?limit=5`);
+      const res = await fetch(`${BASE_URL}/api/metrics/realtime`);
       expect(res.ok).toBe(true);
       const data = await res.json();
       if (data.length > 0) {

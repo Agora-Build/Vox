@@ -220,19 +220,19 @@ d("network event HTTP contract and benchmark policy", () => {
     const ours = (rows: any[]) => rows.filter((r) => (r.providerId ?? r.provider) === providerId);
     for (const mode of ["strict", "all", "strict"]) {
       const expected = mode === "strict" ? 1 : 2;
-      const overview = await request(app).get(`/api/metrics/realtime?hours=24&${filters}&network=${mode}`).expect(200);
+      const overview = await request(app).get(`/api/metrics/realtime?hours=24&${filters}&health=${mode}`).expect(200);
       expect(ours(overview.body)).toHaveLength(expected);
-      const detail = await request(app).get(`/api/metrics/realtime/detail?from=${Date.now() - 3600000}&to=${Date.now() + 3600000}&${filters}&network=${mode}`).expect(200);
+      const detail = await request(app).get(`/api/metrics/realtime/detail?from=${Date.now() - 3600000}&to=${Date.now() + 3600000}&${filters}&health=${mode}`).expect(200);
       expect(ours(detail.body.metrics)).toHaveLength(expected);
-      const board = await request(app).get(`/api/metrics/leaderboard?hours=24&${filters}&network=${mode}`).expect(200);
+      const board = await request(app).get(`/api/metrics/leaderboard?hours=24&${filters}&health=${mode}`).expect(200);
       expect(ours(board.body)[0].responseLatency).toBe(mode === "strict" ? 100 : 550);
-      const api = await request(app).get(`/api/v1/metrics/realtime?hours=24&${filters}&network=${mode}`).expect(200);
-      expect(ours(api.body.data)).toHaveLength(expected); expect(api.body.meta.network).toBe(mode);
-      const apiBoard = await request(app).get(`/api/v1/metrics/leaderboard?hours=24&${filters}&network=${mode}`).expect(200);
-      expect(apiBoard.body.meta.network).toBe(mode);
+      const api = await request(app).get(`/api/v1/metrics/realtime?hours=24&${filters}&health=${mode}`).expect(200);
+      expect(ours(api.body.data)).toHaveLength(expected); expect(api.body.meta.health).toBe(mode);
+      const apiBoard = await request(app).get(`/api/v1/metrics/leaderboard?hours=24&${filters}&health=${mode}`).expect(200);
+      expect(apiBoard.body.meta.health).toBe(mode);
     }
     expect(stable).toBeGreaterThan(0);
-    await request(app).get("/api/metrics/realtime?network=maybe").expect(400);
+    await request(app).get("/api/metrics/realtime?health=maybe").expect(400);
     const coverage = await request(app).get(`/api/metrics/network-coverage?tier=realtime&${filters}`).expect(200);
     expect(coverage.body.stable).toBeGreaterThanOrEqual(1); expect(coverage.body.unverified).toBeGreaterThanOrEqual(1);
   });
