@@ -12,6 +12,7 @@ import type { BrowserCommand, BrowserOperation } from "../shared/browser-assista
 import { jobMayUseCredentials } from "../server/credential-trials";
 import { setupOrganizationsDb, type OrgsHarness } from "./helpers/organizations-db";
 import { TEST_PLUGIN_DATABASE_URL } from "./helpers/plugin-test-db";
+import { MAX_MINT_TIMEOUT_SECONDS } from "../shared/mint-timeout";
 
 const d = process.env.DATABASE_URL ? describe : describe.skip;
 type Core = { origin: string; id: string; child: ChildProcess };
@@ -20,6 +21,7 @@ const routingSecret = "isolated-multi-core-routing-secret-32-characters";
 async function startCore(orgSchema: string): Promise<Core> {
   const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/helpers/browser-core-process.ts"], {
     cwd: process.cwd(), env: { ...process.env, VOX_CORE_ROUTING_SECRET: routingSecret,
+      WEB_SESSION_MINT_TIMEOUT_SECONDS: String(MAX_MINT_TIMEOUT_SECONDS),
       TEST_BROWSER_ORG_SCHEMA: orgSchema, TEST_PLUGIN_DATABASE_URL }, stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -336,7 +338,7 @@ d("real independent Core processes", () => {
     await pool.query("UPDATE eval_agent_tokens SET is_revoked = false WHERE id = $1", [tokenId]);
   });
 
-  it("broker registration owned by A remains available to B, including mint and the actual login browser", async () => {
+  it("broker registration owned by A remains available to B for a full-budget login mint and the actual browser", async () => {
     brokerServer = createServer(async (req, res) => {
       let body = ""; for await (const chunk of req) body += chunk;
       expect(req.headers.authorization).toBe("Bearer broker-private-key"); brokerCalls.push({ path: req.url, body: JSON.parse(body) });
@@ -349,7 +351,9 @@ d("real independent Core processes", () => {
     const brokerLease = randomUUID(); brokerId = (await storage.createBroker({ name: `multi-${stamp}`, tokenId: brokerTokenId, brokerType: "auth-session", url: brokerUrl, currentLeaseId: brokerLease, state: "busy", lastSeenAt: new Date() })).id;
     expect((await post(a, "/test/broker", { id: brokerId, leaseId: brokerLease, secret: "broker-private-key" })).status).toBe(200);
     expect(await (await fetch(`${b.origin}/test/broker/${brokerId}`)).json()).toEqual({ available: true });
-    expect((await post(b, `/test/broker/${brokerId}/mint`, { email: "fixture@example.com", password: "fixture-password" })).status).toBe(200);
+    const loginRequest = { platformId: "fixture", email: "fixture@example.com", password: "fixture-password" };
+    expect((await post(b, `/test/broker/${brokerId}/mint`, loginRequest)).status).toBe(200);
+    expect(brokerCalls.at(-1)).toEqual({ path: "/mint", body: { ...loginRequest, timeoutSeconds: MAX_MINT_TIMEOUT_SECONDS } });
     const need = { platformId: `multi-${stamp}`, emailSecret: "EMAIL", passwordSecret: "PASSWORD" };
     await storage.createOrUpdateSecret(userId, "EMAIL", encryptValue("fixture@example.com"), { brokerType: "auth-session" });
     await storage.createOrUpdateSecret(userId, "PASSWORD", encryptValue("fixture-password"), { brokerType: "auth-session" });

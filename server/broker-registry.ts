@@ -54,7 +54,7 @@ import type { Broker } from "@shared/schema";
 import { credentialForms, redactValues, reduceUrlsSafely } from "@shared/credentials";
 
 export { mintTimeoutSeconds } from "@shared/mint-timeout";
-import { mintTimeoutSeconds } from "@shared/mint-timeout";
+import { mintTimeoutSeconds, MAX_MINT_TIMEOUT_SECONDS } from "@shared/mint-timeout";
 import { z } from "zod";
 import { coreRouting } from "./core-routing-runtime";
 import type { CoreOwner } from "./core-routing";
@@ -96,7 +96,7 @@ export async function getBrokerTarget(broker: Pick<Broker, "id" | "url" | "curre
 
 const brokerCallSchema = z.object({
   path: z.enum(["/mint", "/execute", "/browser"]), body: z.string().max(200_000),
-  timeoutMs: z.number().int().positive().max(215_000),
+  timeoutMs: z.number().int().positive().max((MAX_MINT_TIMEOUT_SECONDS + 15) * 1000),
 }).strict();
 async function brokerRequest(owner: CoreOwner, input: z.infer<typeof brokerCallSchema>, fetchImpl: typeof fetch): Promise<Response> {
   const broker = await storage.getBroker(owner.resourceId);
