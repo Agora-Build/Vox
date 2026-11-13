@@ -78,7 +78,11 @@ Changed authority or execution invalidates that viewer. If it was the controller
 its control is released; capture stops when no authorized viewer remains. The
 owner also rechecks live grant authority during lifecycle cleanup, not just when
 the viewer sends requests. No frame is returned after a failed authorization check.
-Origin checks include scheme and host. Responses use `Cache-Control: no-store`;
+Origin checks include scheme and host. Across HTTP proxy hops behind HTTPS,
+browser-set `Sec-Fetch-Site: same-origin` plus an exact HTTPS Origin/Host match
+is accepted without trusting a rewritten forwarded scheme. Cross-site/same-site
+metadata alone does not authorize access; clients without this browser metadata
+still need the forwarded protocol to match. Responses use `Cache-Control: no-store`;
 browser paths and payloads are excluded from request logging. Browser command
 bodies are limited to 16 KiB and have a separate per-session production rate
 limit suitable for live polling. Anonymous requests retain the general limiter.
@@ -348,7 +352,7 @@ These counts describe the initial single-Core gate before the routing changes.
 - New-module/test lint and whitespace checks passed. No additional agent-side
   protocol change is required for the routing layer.
 
-The implementation remains on an isolated worktree branch. These checks do not
+The owner-routing gate ran on an isolated worktree branch. These checks do not
 constitute a production deployment, throughput qualification or real-provider/
 device qualification. The owner-routing counts above predate concurrent viewing;
 concurrency has its own validation gate.

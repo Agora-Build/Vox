@@ -14,6 +14,9 @@ admission and indexes target lookups. The owner-Core multiplexes up to 10 author
 viewers onto one capture with one exclusive controller; no new service is needed.
 Forward `/ws/eval-browser` upgrades through the public proxy. No
 inbound agent/browser port is required; broker `/browser` stays internal.
+Preserve the public Host and browser `Origin` / `Sec-Fetch-Site` headers. Browser
+same-origin metadata supports TLS termination across multiple HTTP proxy hops;
+clients without that metadata require the correct trusted forwarded protocol.
 
 Single-Core deployments require no new configuration: operations execute locally.
 For multiple replicas, set `VOX_CORE_INTERNAL_URL` to each replica's **own private

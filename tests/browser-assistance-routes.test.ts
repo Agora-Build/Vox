@@ -167,6 +167,20 @@ describe("browser credential authority", () => {
     expect((await request(app).post(`${base}/viewers/${id}/commands`).send(command())).status).toBe(410);
   });
 
+  it("accepts browser-proven HTTPS same-origin requests across HTTP proxy hops, without accepting cross-origin ones", async () => {
+    const headers = { Host: "vox.example", Origin: "https://vox.example" };
+    expect((await request(app).post(`${base}/viewers`).set(headers)).status).toBe(403);
+    expect((await request(app).post(`${base}/viewers`).set(headers).set("Sec-Fetch-Site", "cross-site")).status).toBe(403);
+    expect((await request(app).post(`${base}/viewers`).set(headers).set("Sec-Fetch-Site", "same-site")).status).toBe(403);
+    expect((await request(app).post(`${base}/viewers`).set(headers).set("Origin", "https://attacker.example").set("Sec-Fetch-Site", "same-origin")).status).toBe(403);
+    expect((await request(app).post(`${base}/viewers`).set(headers).set("Origin", "https://vox.example:444").set("Sec-Fetch-Site", "same-origin")).status).toBe(403);
+    const admitted = await request(app).post(`${base}/viewers`).set(headers).set("Sec-Fetch-Site", "same-origin");
+    expect(admitted.status).toBe(200); activeGrants.push(admitted.body.viewerId);
+    app.set("trust proxy", 1);
+    expect((await request(app).get(base).set(headers).set("X-Forwarded-Proto", "https")).status).toBe(200);
+    expect((await request(app).post(`${base}/viewers`).set(headers).set("Origin", "http://vox.example").set("X-Forwarded-Proto", "https")).status).toBe(403);
+  });
+
   it("fences a grant to the current execution and agent lease", async () => {
     const id = await grant();
     job.startedAt = new Date("2026-11-13T02:00:00Z");
@@ -253,6 +267,13 @@ describe("browser credential authority", () => {
       mocks.send.mockResolvedValueOnce(result);
       expect((await request(app).post(`${base}/cancel-job`)).body.cancellationDelivery).toBe("pending");
     }
+  });
+
+  it("does not cancel for a user disabled after session middleware ran", async () => {
+    mocks.user.value = { ...user(10), isEnabled: false };
+    expect((await request(app).post(`${base}/cancel-job`)).status).toBe(401);
+    expect(mocks.storage.cancelRunningEvalJob).not.toHaveBeenCalled();
+    expect(mocks.send).not.toHaveBeenCalled();
   });
 
   it("reports a pending stop when cancellation cannot reach the agent and does not refund paid active work", async () => {

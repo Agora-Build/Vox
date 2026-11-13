@@ -52,7 +52,13 @@ export function registerBrowserAssistanceRoutes(app: Express): void {
     res.setHeader("Cache-Control", "no-store");
     const origin = req.get("origin");
     if (origin) {
-      try { if (new URL(origin).origin !== `${req.protocol}://${req.get("host")}`) return res.status(403).json({ error: "Cross-origin browser access is forbidden" }); }
+      try {
+        const parsed = new URL(origin);
+        // Browser-set Fetch Metadata preserves HTTPS same-origin proof across TLS-terminating proxy hops.
+        const browserSameOrigin = req.get("sec-fetch-site") === "same-origin"
+          && parsed.protocol === "https:" && parsed.host === req.get("host");
+        if (parsed.origin !== `${req.protocol}://${req.get("host")}` && !browserSameOrigin) return res.status(403).json({ error: "Cross-origin browser access is forbidden" });
+      }
       catch { return res.status(403).json({ error: "Invalid origin" }); }
     }
     next();
@@ -140,6 +146,7 @@ export function registerBrowserAssistanceRoutes(app: Express): void {
       const user = await getCurrentUser(req);
       const job = await storage.getEvalJob(id);
       if (!user || !job) throw new BrowserAccessError(404, "Job not found");
+      if (!user.isEnabled) throw new BrowserAccessError(401, "Account is disabled");
       const flow = job.evalFlowId ? await storage.getEvalFlow(job.evalFlowId) : undefined;
       if (!canCancelJob(user, job, flow)) throw new BrowserAccessError(403, "Not authorized to cancel this job");
       if (job.kind !== "eval" || job.transport !== "web" || job.status !== "running" || !job.startedAt || !job.evalAgentId) throw new BrowserAccessError(409, "Job is no longer running");

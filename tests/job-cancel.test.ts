@@ -133,6 +133,11 @@ d("cancelling a pending job", () => {
       agentId: agent.id, leaseId: agent.leaseId, startedAt, results: { responseRate: 1, rawData: {} },
     });
     expect(late.status).toBe(200);
+    const lateFailure = await bearer(tok.token, "POST", `/api/eval-agent/jobs/${id}/complete`, {
+      agentId: agent.id, leaseId: agent.leaseId, startedAt, error: "Evaluation cancelled",
+    });
+    expect(lateFailure.status).toBe(200);
+    expect((await lateFailure.json()).message).toBe("Job already finalized");
     expect((await detail(me.cookie, id)).job).toMatchObject({ status: "failed", cancelledBy: me.id });
     expect((await pool.query("SELECT id FROM eval_results WHERE eval_job_id=$1", [id])).rows).toHaveLength(0);
     const staleHeartbeat = await bearer(tok.token, "POST", "/api/eval-agent/heartbeat", { agentId: agent.id, leaseId: agent.leaseId,
