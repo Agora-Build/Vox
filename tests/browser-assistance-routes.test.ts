@@ -9,7 +9,7 @@ import type { BrowserGrant } from "../server/browser-viewers";
 const mocks = vi.hoisted(() => ({
   storage: { getEvalJob: vi.fn(), getEvalAgent: vi.fn(), getEvalAgentToken: vi.fn(), getWebSession: vi.fn(), getBroker: vi.fn(), getBrokerRegistrationToken: vi.fn(), getEvalFlow: vi.fn(), cancelRunningEvalJob: vi.fn() },
   user: { value: undefined as unknown }, allowed: vi.fn(), send: vi.fn(), available: vi.fn(), classes: vi.fn(), settle: vi.fn(), secret: vi.fn(),
-  grants: new Map<string, BrowserGrant>(), brokerFetch: vi.fn(), capture: vi.fn(),
+  grants: new Map<string, BrowserGrant>(), brokerFetch: vi.fn(), capture: vi.fn(), membership: vi.fn(),
 }));
 vi.mock("../server/storage", () => ({ storage: mocks.storage }));
 vi.mock("../server/auth", () => ({
@@ -21,6 +21,7 @@ vi.mock("../server/auth-session", () => ({
   classifyReferencedSecrets: mocks.classes,
 }));
 vi.mock("../server/credential-trials", () => ({ jobMayUseCredentials: mocks.allowed }));
+vi.mock("../server/organizations", () => ({ getOrganizations: () => ({ getMembership: mocks.membership }) }));
 vi.mock("../server/broker-registry", () => ({ getBrokerTarget: mocks.secret, fetchViaBroker: mocks.brokerFetch }));
 vi.mock("../server/browser-captures", () => ({ requestBrowserCapture: mocks.capture }));
 vi.mock("../server/browser-viewers", () => ({ browserViewers: {
@@ -60,7 +61,8 @@ beforeEach(() => {
   mocks.storage.getEvalJob.mockImplementation(async () => job);
   mocks.storage.getEvalFlow.mockResolvedValue(owner);
   mocks.storage.getEvalAgent.mockResolvedValue({ id: 20, tokenId: 30, currentLeaseId: "lease", metadata: { browserAssistance: "1" } });
-  mocks.storage.getEvalAgentToken.mockResolvedValue({ id: 30, isRevoked: false });
+  mocks.storage.getEvalAgentToken.mockResolvedValue({ id: 30, isRevoked: false, createdBy: 10, dispatchTier: "public" });
+  mocks.membership.mockResolvedValue(null);
   mocks.storage.getBrokerRegistrationToken.mockResolvedValue({ isRevoked: false, expiresAt: null });
   mocks.available.mockResolvedValue({ generation: "agent-generation" }); mocks.allowed.mockResolvedValue(true);
   mocks.send.mockResolvedValue({ version: 1, type: "response", id: "status", ok: true, result: status });
@@ -127,12 +129,13 @@ describe("browser credential authority", () => {
     }
   });
 
-  it("revokes existing frames and input when a team manager becomes a member", async () => {
+  it("revokes commands and removes frame grants when a team manager becomes a member", async () => {
     job.snapshot!.evalFlow = { ...owner, organizationId: 8 };
     mocks.user.value = user(99, false, { organizationId: 8, role: "admin" });
     const frames = await grant(); const input = await grant();
     mocks.user.value = user(99, false, { organizationId: 8, role: "member" });
-    expect((await request(app).get(`${base}/viewers/${frames}/frame`)).status).toBe(403);
+    expect((await request(app).post(`${base}/viewers/${frames}/commands`).send(command())).status).toBe(403);
+    expect((await request(app).get(`${base}/viewers/${frames}/frame`)).status).toBe(410);
     expect((await request(app).post(`${base}/viewers/${input}/commands`).send(command())).status).toBe(403);
     expect(mocks.grants.has(frames)).toBe(false);
     expect(mocks.grants.has(input)).toBe(false);
@@ -161,13 +164,13 @@ describe("browser credential authority", () => {
     expect(response.status).toBe(403);
     expect(mocks.send.mock.calls).toHaveLength(1);
     expect(mocks.send.mock.calls[0][3]).toEqual({ action: "close", viewerId: id });
-    expect((await request(app).get(`${base}/viewers/${id}/frame`)).status).toBe(410);
+    expect((await request(app).post(`${base}/viewers/${id}/commands`).send(command())).status).toBe(410);
   });
 
   it("fences a grant to the current execution and agent lease", async () => {
     const id = await grant();
     job.startedAt = new Date("2026-11-13T02:00:00Z");
-    expect((await request(app).get(`${base}/viewers/${id}/frame`)).status).toBe(410);
+    expect((await request(app).post(`${base}/viewers/${id}/commands`).send(command())).status).toBe(410);
     expect(mocks.send.mock.calls.at(-1)?.[2]).toEqual({ jobId: 15, startedAt: "2026-11-13T01:00:00.000Z" });
     expect(mocks.send.mock.calls.at(-1)?.[3]).toEqual({ action: "close", viewerId: id });
   });
@@ -177,10 +180,37 @@ describe("browser credential authority", () => {
     expect((await request(app).post(`${base}/viewers/${id}/commands`).send({ ...command(), command: "Runtime.evaluate" })).status).toBe(400);
     expect(mocks.send).not.toHaveBeenCalled();
     mocks.storage.getEvalAgentToken.mockResolvedValue({ id: 30, isRevoked: true });
-    expect((await request(app).get(`${base}/viewers/${id}/frame`)).status).toBe(410);
+    expect((await request(app).post(`${base}/viewers/${id}/commands`).send(command())).status).toBe(410);
+  });
+
+  it("rejects third-party agent browsers even with shared-session consent, while allowing Mainline and own agents", async () => {
+    job.snapshot!.credentialConsent = true;
+    for (const dispatchTier of ["public", "private", "shared"]) {
+      mocks.storage.getEvalAgentToken.mockResolvedValue({ id: 30, isRevoked: false, createdBy: 10, dispatchTier });
+      expect((await request(app).get(base)).body.available).toBe(true);
+    }
+    mocks.send.mockClear();
+    for (const dispatchTier of ["private", "shared", "team"]) {
+      mocks.storage.getEvalAgentToken.mockResolvedValue({ id: 30, isRevoked: false, createdBy: 11, dispatchTier });
+      expect((await request(app).get(base)).body.available).toBe(false);
+      expect((await request(app).post(`${base}/viewers`)).status).toBe(503);
+    }
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.capture).not.toHaveBeenCalled();
+  });
+
+  it("allows Team-agent browsers only while the token operator belongs to the frozen organization", async () => {
+    job.snapshot!.evalFlow = { ...owner, organizationId: 8 };
+    mocks.user.value = user(99, false, { organizationId: 8, role: "admin" });
+    mocks.storage.getEvalAgentToken.mockResolvedValue({ id: 30, isRevoked: false, createdBy: 11, dispatchTier: "team" });
+    mocks.membership.mockResolvedValue({ organizationId: 8, role: "member" });
+    expect((await request(app).get(base)).body.available).toBe(true);
+    mocks.membership.mockResolvedValue({ organizationId: 9, role: "owner" });
+    expect((await request(app).get(base)).body.available).toBe(false);
   });
 
   it("routes brokered login viewing only to the broker's private operation, without credentials on the agent bridge", async () => {
+    mocks.storage.getEvalAgentToken.mockResolvedValue({ id: 30, isRevoked: false, createdBy: 11, dispatchTier: "shared" });
     job.snapshot!.sessionInjection = { platformId: "fixture", emailSecret: "EMAIL", passwordSecret: "PASSWORD" };
     mocks.classes.mockResolvedValue([{ present: true, brokerType: "auth-session" }]);
     const operation = randomUUID();
@@ -207,11 +237,34 @@ describe("browser credential authority", () => {
 
   it("cancels only the fenced web execution, and never sends global cancellation to a shared login mint", async () => {
     job.evalFlowId = 1; mocks.storage.cancelRunningEvalJob.mockResolvedValue({ ...job, status: "failed" });
-    expect((await request(app).post(`${base}/cancel-job`)).status).toBe(200);
+    mocks.send.mockResolvedValueOnce({ cancelled: true });
+    const response = await request(app).post(`${base}/cancel-job`);
+    expect(response.status).toBe(200); expect(response.body.cancellationDelivery).toBe("acknowledged");
     expect(mocks.storage.cancelRunningEvalJob).toHaveBeenCalledWith(15, 10, job.startedAt);
     expect(mocks.send.mock.calls.at(-1)?.[3]).toEqual({ action: "cancel" });
     expect(mocks.settle).toHaveBeenCalled();
     mocks.storage.cancelRunningEvalJob.mockResolvedValue(undefined);
     expect((await request(app).post(`${base}/cancel-job`)).status).toBe(409);
+  });
+
+  it("does not treat an unrelated or negative reply as an acknowledged stop", async () => {
+    mocks.storage.cancelRunningEvalJob.mockResolvedValue({ ...job, status: "failed" });
+    for (const result of [undefined, { cancelled: false }, { ok: true }]) {
+      mocks.send.mockResolvedValueOnce(result);
+      expect((await request(app).post(`${base}/cancel-job`)).body.cancellationDelivery).toBe("pending");
+    }
+  });
+
+  it("reports a pending stop when cancellation cannot reach the agent and does not refund paid active work", async () => {
+    mocks.storage.cancelRunningEvalJob.mockResolvedValue({ ...job, status: "failed" });
+    mocks.send.mockRejectedValue(new Error("owner offline"));
+    const response = await request(app).post(`${base}/cancel-job`);
+    expect(response.status).toBe(200); expect(response.body.cancellationDelivery).toBe("pending");
+    mocks.storage.cancelRunningEvalJob.mockClear(); mocks.settle.mockClear();
+    job.snapshot!.settlementContext = { hold: "paid" };
+    expect((await request(app).post(`${base}/cancel-job`)).status).toBe(409);
+    expect(mocks.storage.cancelRunningEvalJob).not.toHaveBeenCalled();
+    expect(mocks.settle).not.toHaveBeenCalled();
+    expect((await request(app).post("/api/eval-jobs/not-a-number/browser/cancel-job")).status).toBe(400);
   });
 });

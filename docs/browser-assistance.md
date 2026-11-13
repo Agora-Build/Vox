@@ -59,6 +59,14 @@ and control require a signed-in, enabled **browser-session user**:
   **not** browser authority. Missing personal launch identity fails closed.
 - API keys do not authorize these endpoints.
 
+Agent targets must also meet the existing **Runtime-credential trust policy**:
+Mainline agents, the personal owner's own Private/Shared agent, or a Team agent
+whose token operator currently belongs to the frozen organization. Third-party
+Shared agents cannot offer a live browser, even with brokered-session sharing
+consent: an operator could spoof a login frame and capture typed credentials.
+This gate does not block a broker's independently trusted login-mint browser.
+Agent-advertised capability alone is never sufficient.
+
 The same eligibility rule grants viewing and the ability to explicitly request
 control; there is no wider job-visible spectator role. All admitted views start
 read-only, and only one admitted viewer may hold control at a time. Existing job
@@ -115,6 +123,13 @@ viewer cannot consume a frame before the others see it. Shared tab/document stat
 and monotonic response revisions keep spectators aligned with controller navigation.
 Only the latest frame is retained, not a frame/event history. Uncertain mutations
 or an unconfirmed control release fail closed and may require everyone to reopen.
+
+Frame polling checks session/grant binding on the receiving Core and fresh
+user/job/credential/target authority at the owner, including cached-frame reads.
+A slow engine capture is checked again before its frame is returned. Authorization
+is never cached with pixels. This avoids duplicate full receiving-Core checks and
+controller reconciliation at frame rate; commands, heartbeats and one-second
+maintenance retain their own checks and controller lifecycle work.
 
 Input/navigation use unique opaque request IDs, ordered sequences, and page /
 document / browser-generation fences. Input queues are bounded; move/wheel
@@ -211,12 +226,14 @@ rate-limit counters or upload concurrency) distributed.
 
 ## Active Web Job Cancellation
 
-The job page separately offers confirmed cancellation for running web jobs on
-updated agents. Cancellation authority uses the existing job cancellation rule:
+The job page separately offers confirmed cancellation for **unpaid** running web
+jobs on updated agents. Active jobs carrying a marketplace settlement context are
+not cancellable through this path until a mid-run settlement policy is defined;
+their pending-job cancellation remains supported. Cancellation authority uses the existing job cancellation rule:
 the job creator, flow controller, or admin moderator. It grants no browser access.
 
-Core atomically changes only the current running claim to failed/cancelled and
-settles its hold. Completion and cancellation serialize on the job row: a late
+Core atomically changes only the current running claim to failed/cancelled.
+Completion and cancellation serialize on the job row: a late
 result cannot revive a cancelled execution. The reverse bridge requests process-
 group termination immediately; authenticated heartbeats repeat an execution-
 fenced cancellation directive if that channel is unavailable. The daemon also
@@ -224,9 +241,14 @@ checks cancellation while waiting for a broker session and between chunks.
 Termination escalates to SIGKILL with bounded cleanup; timers are cleared when
 the process settles so an old timer cannot kill a later run.
 
-Cancellation is not instantaneous during a network partition. It takes effect
-on the agent when a directive arrives, while Core already refuses the cancelled
-result. Cancelling one job does not cancel an account-shared broker mint used
+The response reports `cancellationDelivery: "acknowledged" | "pending"` after
+awaiting the reverse-channel request. Acknowledgement confirms receipt of the
+stop request, not that every browser process has exited. If delivery is pending,
+authenticated heartbeats continue retrying the directive. Cancellation is not
+instantaneous during a network partition: a disconnected agent may keep operating
+until reconnect or its existing run deadline, while Core already refuses its
+result. The confirmation and toast explicitly explain this distinction.
+Cancelling one job does not cancel an account-shared broker mint used
 by other jobs. Legacy pending-job cancellation endpoints remain unchanged.
 
 ## Measurements

@@ -82,11 +82,12 @@ export function registerBrowserAssistanceRoutes(app: Express): void {
     } catch (error) { reportError(res, error); }
   });
 
-  const withGrant = async (req: Request) => {
+  const withGrant = async (req: Request, checkAuthority = true) => {
     const id = req.params.viewerId;
     const grant = await browserViewers.get(id);
     const userId = req.session?.userId;
     if (!grant || grant.userId !== userId || grant.jobId !== Number(req.params.id)) throw new BrowserAccessError(410, "Viewer grant expired");
+    if (!checkAuthority) return { grant, id };
     try {
       const { job } = await authorizedJob(req);
       const current = await resolveTarget(job);
@@ -110,9 +111,15 @@ export function registerBrowserAssistanceRoutes(app: Express): void {
 
   app.get("/api/eval-jobs/:id/browser/viewers/:viewerId/frame", async (req, res) => {
     try {
-      const { grant } = await withGrant(req);
-      const frame = await requestBrowserCapture(grant, "frame");
-      await withGrant(req);
+      const { grant } = await withGrant(req, false);
+      let frame;
+      try { frame = await requestBrowserCapture(grant, "frame"); }
+      catch (error) {
+        if (!await browserViewers.get(grant.id)) throw new BrowserAccessError(410, "Viewer expired or authorization changed; reopen the view");
+        throw error;
+      }
+      // The owner checks fresh authority before returning cached pixels and again after a slow capture.
+      if (!await browserViewers.get(grant.id)) throw new BrowserAccessError(410, "Viewer grant expired");
       if (!frame) return res.status(204).end();
       res.json(frame);
     } catch (error) { reportError(res, error); }
@@ -128,21 +135,25 @@ export function registerBrowserAssistanceRoutes(app: Express): void {
 
   app.post("/api/eval-jobs/:id/browser/cancel-job", async (req, res) => {
     try {
+      const id = Number(req.params.id);
+      if (!Number.isSafeInteger(id) || id <= 0) throw new BrowserAccessError(400, "Invalid job ID");
       const user = await getCurrentUser(req);
-      const job = await storage.getEvalJob(Number(req.params.id));
+      const job = await storage.getEvalJob(id);
       if (!user || !job) throw new BrowserAccessError(404, "Job not found");
       const flow = job.evalFlowId ? await storage.getEvalFlow(job.evalFlowId) : undefined;
       if (!canCancelJob(user, job, flow)) throw new BrowserAccessError(403, "Not authorized to cancel this job");
       if (job.kind !== "eval" || job.transport !== "web" || job.status !== "running" || !job.startedAt || !job.evalAgentId) throw new BrowserAccessError(409, "Job is no longer running");
+      if (job.snapshot?.settlementContext !== undefined) throw new BrowserAccessError(409, "Active cancellation is unavailable for paid marketplace jobs; pending jobs can still be cancelled");
       const agent = await storage.getEvalAgent(job.evalAgentId);
       if (!agent?.currentLeaseId || !hasBrowserAssistance(agent.metadata)) throw new BrowserAccessError(409, "This agent does not support active cancellation");
       const cancelled = await storage.cancelRunningEvalJob(job.id, user.id, job.startedAt);
       if (!cancelled) throw new BrowserAccessError(409, "Job completed or changed before cancellation");
       for (const grant of await browserViewers.removeJob(job.id)) closeGrant(grant);
-      void browserAgents.request(agent.id, agent.currentLeaseId,
-        { jobId: job.id, startedAt: job.startedAt.toISOString() }, { action: "cancel" }).catch(() => undefined);
+      const acknowledged = await browserAgents.request(agent.id, agent.currentLeaseId,
+        { jobId: job.id, startedAt: job.startedAt.toISOString() }, { action: "cancel" })
+        .then((result) => !!result && typeof result === "object" && "cancelled" in result && result.cancelled === true, () => false);
       await settleEndedJobsNow([cancelled], "cancelled");
-      res.json({ cancelled: true });
+      res.json({ cancelled: true, cancellationDelivery: acknowledged ? "acknowledged" : "pending" });
     } catch (error) { reportError(res, error); }
   });
 }

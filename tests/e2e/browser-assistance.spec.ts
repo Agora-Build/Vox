@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import type { BrowserStatus, BrowserViewerState } from "../../shared/browser-assistance";
 
-async function viewerFixture(page: Page, options: { authorized?: boolean; delayGrant?: Promise<void> } = {}) {
+async function viewerFixture(page: Page, options: { authorized?: boolean; delayGrant?: Promise<void>; cancellationDelivery?: "pending" | "acknowledged" } = {}) {
   await page.request.post("/api/auth/login", { data: { email: "admin@vox.local", password: "admin123456" } });
   const base = "/api/eval-jobs/987654/browser";
   const viewerId = "8d57271e-9fae-4c4c-b82a-03604cf402bf";
@@ -14,9 +14,11 @@ async function viewerFixture(page: Page, options: { authorized?: boolean; delayG
   await page.route("**/api/eval-jobs/987654/detail", (route) => route.fulfill({ json: {
     job: { id: 987654, kind: "eval", transport: "web", status: "running", createdAt: new Date().toISOString(), config: {}, tags: [] },
     result: null, evalFlowName: "Browser fixture", creatorName: "Fixture", canAccessBrowser: options.authorized ?? true, canCancel: false,
+    canCancelRunning: !!options.cancellationDelivery,
   } }));
   await page.route(`**${base}**`, async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/cancel-job")) return route.fulfill({ json: { cancelled: true, cancellationDelivery: options.cancellationDelivery } });
     if (route.request().method() === "DELETE") { closed++; return route.fulfill({ json: { closed: true } }); }
     if (url.pathname === `${base}/viewers`) { if (options.delayGrant) await options.delayGrant; return route.fulfill({ json: { viewerId } }); }
     if (url.pathname.endsWith("/commands")) {
@@ -147,6 +149,23 @@ test("public/borrowed job viewers do not query or receive the live browser UI", 
   await expect(page.getByText("Browser fixture")).toBeVisible();
   await expect(page.getByTestId("button-open-browser")).toHaveCount(0); expect(fixture.commands).toHaveLength(0);
 });
+
+for (const cancellationDelivery of ["pending", "acknowledged"] as const) {
+  test(`active cancellation explains ${cancellationDelivery} delivery without claiming the browser has exited`, async ({ page }) => {
+    await viewerFixture(page, { cancellationDelivery });
+    await page.getByTestId("button-cancel-job").click();
+    const confirmation = page.getByRole("alertdialog");
+    await expect(confirmation).toContainText("A disconnected agent may keep operating");
+    await confirmation.getByRole("button", { name: "Cancel job", exact: true }).click();
+    if (cancellationDelivery === "pending") {
+      await expect(page.getByText("Job cancelled; agent stop pending", { exact: true })).toBeVisible();
+      await expect(page.getByLabel("Notifications (F8)").getByText(/Heartbeats will retry delivery/)).toBeVisible();
+    } else {
+      await expect(page.getByText("Job cancelled", { exact: true })).toBeVisible();
+      await expect(page.getByLabel("Notifications (F8)").getByText(/This confirms receipt, not that every browser process has exited/)).toBeVisible();
+    }
+  });
+}
 
 test("small-screen viewers can enter a verification code with a native text field", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

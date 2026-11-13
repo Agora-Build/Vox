@@ -197,6 +197,38 @@ d("real independent Core processes", () => {
     }
   });
 
+  it("revokes existing views across replicas when an agent becomes third-party Shared despite session consent", async () => {
+    const base = `/api/eval-jobs/${jobId}/browser`, store = new PgBrowserViewers(pool);
+    const viewerIds: string[] = [];
+    try {
+      for (const core of [a, b]) {
+        const created = await post(core, `${base}/viewers`, {}, cookie); expect(created.status).toBe(200);
+        const { viewerId } = await created.json(); viewerIds.push(viewerId);
+        expect(await (await post(core, `${base}/viewers/${viewerId}/commands`, command("viewer.open"), cookie)).json()).toMatchObject({ ok: true });
+      }
+      expect((await fetch(`${b.origin}${base}/viewers/${viewerIds[0]}/frame`, { headers: { cookie } })).status).toBe(200);
+      const frames = messages.filter((message) => message.operation.action === "frame").length;
+      const inputs = messages.filter((message) => message.operation.request?.command === "viewer.input").length;
+      await pool.query("UPDATE eval_jobs SET snapshot = $2 WHERE id = $1", [jobId, { ...snapshot(), credentialConsent: true }]);
+      await pool.query("UPDATE eval_agent_tokens SET created_by = $2, dispatch_tier = 'shared' WHERE id = $1", [tokenId, otherUserId]);
+      expect((await fetch(`${b.origin}${base}/viewers/${viewerIds[0]}/frame`, { headers: { cookie } })).status).toBe(410);
+      expect((await post(a, `${base}/viewers/${viewerIds[1]}/commands`, command("viewer.input", { sequence: 1, input: {} }), cookie)).status).toBe(410);
+      expect(await store.get(viewerIds[0])).toBeNull();
+      expect(await store.get(viewerIds[1])).toBeNull();
+      for (const core of [a, b]) {
+        expect(await (await fetch(`${core.origin}${base}`, { headers: { cookie } })).json()).toMatchObject({ available: false });
+        expect((await post(core, `${base}/viewers`, {}, cookie)).status).toBe(503);
+      }
+      expect(messages.filter((message) => message.operation.action === "frame")).toHaveLength(frames);
+      expect(messages.filter((message) => message.operation.request?.command === "viewer.input")).toHaveLength(inputs);
+    } finally {
+      for (const viewerId of viewerIds) await fetch(`${b.origin}${base}/viewers/${viewerId}`, { method: "DELETE", headers: { cookie } });
+      await store.removeJob(jobId);
+      await pool.query("UPDATE eval_jobs SET snapshot = $2 WHERE id = $1", [jobId, snapshot()]);
+      await pool.query("UPDATE eval_agent_tokens SET created_by = $2, dispatch_tier = 'private' WHERE id = $1", [tokenId, userId]);
+    }
+  });
+
   it("allows exact-org managers, denies the member launcher, and releases a demoted controller across replicas", async () => {
     const base = `/api/eval-jobs/${jobId}/browser`;
     const org = await orgs.provider.createOrganization({ name: `browser-${stamp}` }, { userId: otherUserId });
@@ -205,6 +237,7 @@ d("real independent Core processes", () => {
     const managerCookie = (await post(a, "/test/login", { userId: otherUserId })).headers.get("set-cookie")!.split(";")[0];
     const viewerIds: { id: string; cookie: string }[] = [];
     try {
+      await pool.query("UPDATE eval_agent_tokens SET dispatch_tier = 'team' WHERE id = $1", [tokenId]);
       await pool.query("UPDATE eval_jobs SET snapshot = $2 WHERE id = $1", [jobId, orgSnapshot]);
       expect((await fetch(`${b.origin}${base}`, { headers: { cookie } })).status).toBe(403);
       expect((await post(a, `${base}/viewers`, {}, cookie)).status).toBe(403);
@@ -243,6 +276,7 @@ d("real independent Core processes", () => {
     } finally {
       for (const viewer of viewerIds) await fetch(`${b.origin}${base}/viewers/${viewer.id}`, { method: "DELETE", headers: { cookie: viewer.cookie } });
       await pool.query("UPDATE eval_jobs SET snapshot = $2 WHERE id = $1", [jobId, snapshot()]);
+      await pool.query("UPDATE eval_agent_tokens SET dispatch_tier = 'private' WHERE id = $1", [tokenId]);
     }
   });
 

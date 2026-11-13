@@ -82,15 +82,23 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
 
   const cancelMutation = useMutation({
     mutationFn: async () => {
-      if (data?.job.status === "running") await apiRequest("POST", `/api/eval-jobs/${jobId}/browser/cancel-job`);
-      else await apiRequest("DELETE", `/api/eval-jobs/${jobId}`);
+      if (data?.job.status === "running") {
+        const response = await apiRequest("POST", `/api/eval-jobs/${jobId}/browser/cancel-job`);
+        return response.json() as Promise<{ cancellationDelivery: "acknowledged" | "pending" }>;
+      }
+      await apiRequest("DELETE", `/api/eval-jobs/${jobId}`);
+      return null;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       setCancelOpen(false);
       queryClient.invalidateQueries({ queryKey: [`/api/eval-jobs/${jobId}/detail`] });
       // Every eval-jobs list query (filters live in the key).
       queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith("/api/eval-jobs") });
-      toast({ title: "Job cancelled" });
+      toast({ title: result?.cancellationDelivery === "pending" ? "Job cancelled; agent stop pending" : "Job cancelled",
+        description: result ? result.cancellationDelivery === "pending"
+          ? "Results are blocked, but the agent has not acknowledged cancellation. Heartbeats will retry delivery. If disconnected, it may keep operating until reconnect or its run deadline."
+          : "The agent acknowledged the stop request. This confirms receipt, not that every browser process has exited."
+          : undefined });
     },
     onError: (error: Error) => {
       setCancelOpen(false);
@@ -275,7 +283,7 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
             <AlertDialogTitle>Cancel job #{job.id}?</AlertDialogTitle>
             <AlertDialogDescription>
               {job.status === "running"
-                ? "This stops the active evaluation. No result will be saved, and the agent will terminate its browser process when it receives the cancellation. "
+                ? "This blocks the result and requests the agent to stop. A disconnected agent may keep operating until it reconnects or its run deadline. Receipt does not prove its browser has exited. "
                 : "It hasn't started, so nothing runs and no agent is charged; a paid job's held credits go back right away. "}
               This can't be undone — run the Eval Flow again to queue a new job.
             </AlertDialogDescription>

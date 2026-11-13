@@ -3,15 +3,24 @@ import { credentialKeyFor, sessionScopeForEvalFlow, classifyReferencedSecrets } 
 import { fetchViaBroker, getBrokerTarget } from "./broker-registry";
 import { storage } from "./storage";
 import { canCreateEvalFlowSecrets, type AuthUser } from "./permissions";
+import { credentialAgentViolation } from "./credential-policy";
+import { getOrganizations } from "./organizations";
 import type { BrowserTarget } from "./browser-viewers";
 import type { BrowserOperation } from "@shared/browser-assistance";
-import type { EvalJob } from "@shared/schema";
+import type { EvalJob, EvalAgentToken } from "@shared/schema";
 
 export function canAccessJobBrowser(user: AuthUser, job: Pick<EvalJob, "createdBy" | "snapshot">): boolean {
   const flow = job.snapshot?.evalFlow;
   if (!flow || !canCreateEvalFlowSecrets(user, { ownerId: flow.ownerId, organizationId: flow.organizationId ?? null })) return false;
   // Personal browser access requires ownership AND launch authority; org managers act for their org.
   return flow.organizationId != null || job.createdBy === user.id;
+}
+export async function canUseAgentBrowser(job: Pick<EvalJob, "snapshot">, token: Pick<EvalAgentToken, "createdBy" | "dispatchTier">): Promise<boolean> {
+  const flow = job.snapshot?.evalFlow;
+  if (!flow) return false;
+  const membership = token.dispatchTier === "team" ? await getOrganizations()?.getMembership(token.createdBy) : null;
+  // Interactive text has Runtime-secret trust, not merely consent to share a brokered session.
+  return credentialAgentViolation(flow, { ...token, organizationId: membership?.organizationId ?? null }, true) === null;
 }
 export class BrowserAccessError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -51,7 +60,7 @@ export async function resolveBrowserTarget(job: EvalJob): Promise<BrowserTarget 
   const agent = await storage.getEvalAgent(job.evalAgentId);
   if (!agent?.currentLeaseId || !hasBrowserAssistance(agent.metadata)) return null;
   const token = await storage.getEvalAgentToken(agent.tokenId);
-  if (!token || token.isRevoked) return null;
+  if (!token || token.isRevoked || !await canUseAgentBrowser(job, token)) return null;
   const owner = await browserAgents.owner(agent.id, agent.currentLeaseId);
   if (!owner) return null;
   const execution = { jobId: job.id, startedAt: job.startedAt.toISOString() };

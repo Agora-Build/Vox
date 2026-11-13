@@ -38,6 +38,7 @@ import { createCredentialTrialJob, findCredentialTrialJob, getCredentialTrialAll
 import { registerCredentialTrialRoutes } from "./routes-credential-trials";
 import { registerBrowserAssistanceRoutes, canAccessJobBrowser } from "./routes-browser-assistance";
 import { hasBrowserAssistance } from "./browser-agent-bridge";
+import { BrowserAccessError, resolveBrowserTarget } from "./browser-target";
 import { flowTrialLimitsSchema } from "@shared/credential-trials";
 import { validateRegisterPayload, publishBrokerMintSecret, getBrokerTarget, routeToBroker, executeViaBroker, KNOWN_BROKER_TYPES, probeAndRecordBroker } from "./broker-registry";
 import { resolveRestfulTemplate } from "./restful-exec";
@@ -6210,6 +6211,11 @@ export async function registerRoutes(
       const creator = job.createdBy ? await storage.getUser(job.createdBy) : null;
       const browserEligible = job.kind === "eval" && job.transport === "web" && ["pending", "running"].includes(job.status);
       const runningAgent = browserEligible && job.evalAgentId ? await storage.getEvalAgent(job.evalAgentId) : undefined;
+      let canAccessBrowser = false;
+      if (browserEligible && canAccessJobBrowser(user, job)) {
+        try { canAccessBrowser = !!await resolveBrowserTarget(job); }
+        catch (error) { if (!(error instanceof BrowserAccessError)) throw error; }
+      }
 
       // Sign artifact URLs if available
       let signedArtifactUrl: string | null = null;
@@ -6249,8 +6255,8 @@ export async function registerRoutes(
         // Server-decided, so the page never offers a Cancel that would 403 (or
         // 400 on a job that isn't pending).
         canCancel: job.status === "pending" && canCancelJob(user, job, evalFlow),
-        canAccessBrowser: browserEligible && canAccessJobBrowser(user, job),
-        canCancelRunning: job.status === "running" && browserEligible && hasBrowserAssistance(runningAgent?.metadata) && canCancelJob(user, job, evalFlow),
+        canAccessBrowser,
+        canCancelRunning: job.status === "running" && browserEligible && job.snapshot?.settlementContext === undefined && hasBrowserAssistance(runningAgent?.metadata) && canCancelJob(user, job, evalFlow),
         cancelledByName: job.cancelledBy != null ? (await storage.getUser(job.cancelledBy))?.username ?? null : null,
       });
     } catch (error) {

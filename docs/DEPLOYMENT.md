@@ -46,6 +46,16 @@ control at a supported wait. The local hold is 60 seconds and does not extend ex
 included. See [Live Browser Assistance](browser-assistance.md) for the security
 contract, cancellation behavior, replica routing and verification steps.
 
+Eval-agent browser targets additionally require Runtime-credential trust:
+Mainline, the personal owner's own Private/Shared agent, or a Team agent operated
+by a current member of the frozen organization. Third-party Shared agents remain
+ineligible even with session-sharing consent; broker-side login viewing remains
+independent. Verify this denial after rollout, including existing viewer grants.
+Active web cancellation is supported only without a marketplace settlement
+context. Responses distinguish acknowledged stop requests from pending delivery;
+neither proves the browser has exited. Pending delivery is retried by heartbeat,
+and a disconnected agent may operate until reconnect or its existing deadline.
+
 ## Network-history rollout (schema 66)
 
 Deploy Core before updated `vox-eval-agentd` instances. Startup applies migration

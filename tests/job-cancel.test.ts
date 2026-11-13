@@ -124,7 +124,7 @@ d("cancelling a pending job", () => {
     const startedAt = new Date(Date.now() - 1000).toISOString();
     await pool.query("UPDATE eval_jobs SET status='running', started_at=$1, eval_agent_id=$2 WHERE id=$3", [startedAt, agent.id, id]);
     const before = await detail(me.cookie, id);
-    expect(before.canCancel).toBe(false); expect(before.canCancelRunning).toBe(true); expect(before.canAccessBrowser).toBe(true);
+    expect(before.canCancel).toBe(false); expect(before.canCancelRunning).toBe(true); expect(before.canAccessBrowser).toBe(false);
     expect((await call(me.cookie, "POST", `/api/eval-jobs/${id}/browser/cancel-job`)).status).toBe(200);
     const heartbeat = await bearer(tok.token, "POST", "/api/eval-agent/heartbeat", { agentId: agent.id, leaseId: agent.leaseId, state: "occupied", execution: { jobId: id, startedAt } });
     expect(heartbeat.status).toBe(200);

@@ -53,6 +53,39 @@ describe("owner-Core shared capture", () => {
     expect(operations("command")[0].viewerId).not.toBe(a.id);
   });
 
+  it("rechecks authority for cached pixels without reconciling every controller on every frame poll", async () => {
+    let allowed = true;
+    const authorize = vi.fn(async () => allowed);
+    captures = new BrowserCaptures(async () => grants, send, authorize);
+    await open(a); await take(a);
+    const read = () => captures.handle({ targetKey: target.key, viewerId: a.id, action: "frame" });
+    expect(await read()).toEqual(frame);
+    authorize.mockClear();
+    expect(await read()).toEqual(frame);
+    expect(authorize).toHaveBeenCalledTimes(1);
+    allowed = false;
+    await expect(read()).rejects.toThrow(/authorization/);
+    expect(operations("frame")).toHaveLength(1);
+  });
+
+  it.each(["authorization", "expiry"])("discards slow frames when %s changes during capture", async (change) => {
+    let allowed = true;
+    captures = new BrowserCaptures(async () => grants, send, async () => allowed);
+    await open(a);
+    let resume!: () => void, entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { resume = resolve; });
+    const pending = new Promise<void>((resolve) => { entered = resolve; });
+    send.mockImplementationOnce(async () => { entered(); await blocked; return frame; });
+    const read = captures.handle({ targetKey: target.key, viewerId: a.id, action: "frame" });
+    await pending;
+    if (change === "authorization") allowed = false;
+    else grants = [b];
+    const rejected = expect(read).rejects.toThrow(/expired|authorization/);
+    resume();
+    await rejected;
+    expect(operations("frame")).toHaveLength(1);
+  });
+
   it("admits one explicit controller even when acquisition races and rejects all spectator mutations", async () => {
     await Promise.all([open(a), open(b)]);
     const results = await Promise.all([take(a), take(b)]);

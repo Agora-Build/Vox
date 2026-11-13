@@ -114,7 +114,7 @@ export class BrowserCaptures {
     return this.serial(input.targetKey, async () => {
       const grants = await this.active(input.targetKey);
       let capture = this.captures.get(input.targetKey);
-      if (capture) await this.reconcile(capture, grants);
+      if (capture && input.action !== "frame") await this.reconcile(capture, grants);
       if (input.action === "leave") return { closed: true };
       const grant = grants.find((item) => item.id === input.viewerId);
       if (!grant || !await this.authorized(grant)) throw new Error("Viewer expired or authorization changed; reopen the viewer");
@@ -123,6 +123,9 @@ export class BrowserCaptures {
         if (!capture) return null;
         if (Date.now() - capture.frameAt >= 180) {
           const result = browserFrameSchema.safeParse(await this.send(capture.target, { action: "frame", viewerId: capture.upstreamId }));
+          // Recheck after slow capture, but never cache authorization with the shared frame.
+          const current = (await this.active(input.targetKey)).find((item) => item.id === grant.id);
+          if (!current || !await this.authorized(current)) throw new Error("Viewer expired or authorization changed");
           capture.frameAt = Date.now();
           if (result.success) {
             const frame = result.data;

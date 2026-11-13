@@ -2075,6 +2075,7 @@ export class DatabaseStorage {
   }
 
   async cancelRunningEvalJob(jobId: number, cancelledBy: number, startedAt: Date): Promise<EvalJob | undefined> {
+    // Caller must verify active-web capability and exclude paid settlement contexts before this claim-fenced write.
     const now = new Date();
     const [job] = await db.update(evalJobs).set({ status: "failed", error: "Cancelled by user",
       completedAt: now, updatedAt: now, cancelledAt: now, cancelledBy })

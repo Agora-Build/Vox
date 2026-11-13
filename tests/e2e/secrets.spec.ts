@@ -103,6 +103,12 @@ test.describe("Run dialog — untrusted eval set", () => {
       await page.keyboard.press("Enter");
     };
 
+    // Supply our own target instead of relying on public agents left by other suites.
+    const agentName = `e2e-untrusted-target-${stamp}`;
+    const targetResponse = await admin.post("/api/eval-agent-tokens", { data: { name: agentName, dispatchTier: "private" } });
+    expect(targetResponse.ok()).toBe(true);
+    const target = await targetResponse.json();
+
     try {
       await loginUI(page);
       await page.goto(`${BASE}/console/eval-flows/${flow.id}`);
@@ -113,7 +119,7 @@ test.describe("Run dialog — untrusted eval set", () => {
 
       await pick(evalSetPicker, page.getByRole("option", { name: setName }));
       await expect(evalSetPicker).toContainText(setName);
-      await pick(dialog.getByTestId("select-run-target"), page.getByRole("option", { name: /^Any (public agent|of my agents here)/ }));
+      await pick(dialog.getByTestId("select-run-target"), page.getByRole("option", { name: new RegExp(agentName) }));
 
       await expect(dialog.getByTestId("eval-set-problem")).toContainText("E2E_OWNER_KEY");
       await expect(dialog.getByTestId("eval-set-problem")).toContainText("may not use this eval flow's secrets");
@@ -122,9 +128,10 @@ test.describe("Run dialog — untrusted eval set", () => {
       // Control: the same author's clean eval set, same target — Run is enabled.
       await pick(evalSetPicker, page.getByRole("option", { name: cleanName }));
       await expect(dialog.getByTestId("eval-set-problem")).toHaveCount(0);
-      await pick(dialog.getByTestId("select-run-target"), page.getByRole("option", { name: /^Any (public agent|of my agents here)/ }));
+      await pick(dialog.getByTestId("select-run-target"), page.getByRole("option", { name: new RegExp(agentName) }));
       await expect(run).toBeEnabled();
     } finally {
+      await admin.delete(`/api/eval-agent-tokens/${target.id}`);
       await admin.delete(`/api/eval-flows/${flow.id}`);
       await other.delete(`/api/eval-sets/${set.id}`);
       await other.delete(`/api/eval-sets/${clean.id}`);
