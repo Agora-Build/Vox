@@ -17,6 +17,7 @@ import { EvalResultView } from "@/components/eval-result-view";
 import { formatTag, explainSystemReason, isSystemKey, type JobTag } from "@shared/tags";
 import { accessHint } from "@/lib/access-text";
 import { JobEvents } from "@/components/job-events";
+import { BrowserAssistance } from "@/components/browser-assistance";
 
 const TAG_SOURCE_TEXT: Record<JobTag["source"], { label: string; title: string }> = {
   flow: { label: "flow", title: "Set on the eval flow" },
@@ -46,6 +47,8 @@ interface JobDetailResponse {
   waiting?: { canTake: number; busy: number; message: string } | null;
   /** Server-decided: pending, and this user may cancel it. */
   canCancel?: boolean;
+  canAccessBrowser?: boolean;
+  canCancelRunning?: boolean;
   /** Who cancelled it, when it was cancelled while pending. */
   cancelledByName?: string | null;
 }
@@ -79,14 +82,23 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
 
   const cancelMutation = useMutation({
     mutationFn: async () => {
+      if (data?.job.status === "running") {
+        const response = await apiRequest("POST", `/api/eval-jobs/${jobId}/browser/cancel-job`);
+        return response.json() as Promise<{ cancellationDelivery: "acknowledged" | "pending" }>;
+      }
       await apiRequest("DELETE", `/api/eval-jobs/${jobId}`);
+      return null;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       setCancelOpen(false);
       queryClient.invalidateQueries({ queryKey: [`/api/eval-jobs/${jobId}/detail`] });
       // Every eval-jobs list query (filters live in the key).
       queryClient.invalidateQueries({ predicate: (q) => typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith("/api/eval-jobs") });
-      toast({ title: "Job cancelled" });
+      toast({ title: result?.cancellationDelivery === "pending" ? "Job cancelled; agent stop pending" : "Job cancelled",
+        description: result ? result.cancellationDelivery === "pending"
+          ? "Results are blocked, but the agent has not acknowledged cancellation. Heartbeats will retry delivery. If disconnected, it may keep operating until reconnect or its run deadline."
+          : "The agent acknowledged the stop request. This confirms receipt, not that every browser process has exited."
+          : undefined });
     },
     onError: (error: Error) => {
       setCancelOpen(false);
@@ -219,8 +231,9 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {job.status === "pending" && data.canCancel && (
+        <div className="flex flex-wrap items-center gap-2">
+          {data.canAccessBrowser && <BrowserAssistance jobId={jobId} />}
+          {(data.canCancel || data.canCancelRunning) && (
             <Button variant="outline" className="gap-2" onClick={() => setCancelOpen(true)} data-testid="button-cancel-job">
               <Ban className="h-4 w-4" /> Cancel job
             </Button>
@@ -269,7 +282,9 @@ export default function ConsoleEvalJobDetail({ jobId }: { jobId: number }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Cancel job #{job.id}?</AlertDialogTitle>
             <AlertDialogDescription>
-              It hasn't started, so nothing runs and no agent is charged; a paid job's held credits go back right away.
+              {job.status === "running"
+                ? "This blocks the result and requests the agent to stop. A disconnected agent may keep operating until it reconnects or its run deadline. Receipt does not prove its browser has exited. "
+                : "It hasn't started, so nothing runs and no agent is charged; a paid job's held credits go back right away. "}
               This can't be undone — run the Eval Flow again to queue a new job.
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -1377,6 +1377,10 @@ export class DatabaseStorage {
       .where(eq(brokerRegistrationTokens.tokenHash, hash));
     return row;
   }
+  async getBrokerRegistrationToken(id: number): Promise<BrokerRegistrationToken | undefined> {
+    const [row] = await db.select().from(brokerRegistrationTokens).where(eq(brokerRegistrationTokens.id, id));
+    return row;
+  }
   async getAllBrokerRegistrationTokens(): Promise<BrokerRegistrationToken[]> {
     return db.select().from(brokerRegistrationTokens).orderBy(desc(brokerRegistrationTokens.createdAt));
   }
@@ -2043,7 +2047,7 @@ export class DatabaseStorage {
 
   // Cancel a pending job
   /**
-   * Cancel a PENDING job (a running one can't be: its agent is mid-run). The
+   * Cancel a PENDING job. Active web cancellation uses a separate claim fence. The
    * status becomes 'failed' — every reaper, metric and settlement path already
    * knows that — and cancelled_by/at say it was a cancellation, for the
    * console. The status guard makes a claim that wins the race leave it alone.
@@ -2068,6 +2072,16 @@ export class DatabaseStorage {
       .returning();
 
     return result[0];
+  }
+
+  async cancelRunningEvalJob(jobId: number, cancelledBy: number, startedAt: Date): Promise<EvalJob | undefined> {
+    // Caller must verify active-web capability and exclude paid settlement contexts before this claim-fenced write.
+    const now = new Date();
+    const [job] = await db.update(evalJobs).set({ status: "failed", error: "Cancelled by user",
+      completedAt: now, updatedAt: now, cancelledAt: now, cancelledBy })
+      .where(and(eq(evalJobs.id, jobId), eq(evalJobs.status, "running"), eq(evalJobs.startedAt, startedAt)))
+      .returning();
+    return job;
   }
 
   // Get jobs that are running but agent is offline
@@ -3717,7 +3731,7 @@ export class DatabaseStorage {
   // timestamp columns explicitly so callers (notably the mint_started_at
   // fencing token) get real Date instances, matching db.select()'s behavior.
   private static readonly WEB_SESSION_DATE_FIELDS = [
-    "mintedAt", "expiresAt", "mintStartedAt", "createdAt", "updatedAt",
+    "mintedAt", "expiresAt", "mintStartedAt", "mintDeadlineAt", "createdAt", "updatedAt",
   ] as const;
 
   private rowToWebSession(row: Record<string, unknown>): WebSession {
@@ -3803,7 +3817,8 @@ export class DatabaseStorage {
     // Row exists: claim unless someone is live-minting or it's fresh-ready.
     const updated = await db.execute(sql`
       UPDATE web_sessions
-      SET status = 'minting', mint_started_at = ${nowMs}, updated_at = NOW()
+      SET status = 'minting', mint_started_at = ${nowMs}, updated_at = NOW(),
+          mint_broker_id = NULL, mint_operation_id = NULL, mint_deadline_at = NULL
       WHERE user_id IS NOT DISTINCT FROM ${userId}
         AND organization_id IS NOT DISTINCT FROM ${orgId}
         AND platform_id = ${platformId}
@@ -3842,6 +3857,13 @@ export class DatabaseStorage {
           last_error = NULL, updated_at = NOW()
       WHERE id = ${id} AND status = 'minting' AND mint_started_at = ${fence.toISOString()}`);
     return ((result as unknown as { rowCount: number }).rowCount || 0) > 0;
+  }
+
+  async setWebSessionBrowserTarget(id: number, fence: Date, brokerId: number, operationId: string, deadline: Date): Promise<boolean> {
+    const rows = await db.update(webSessions).set({ mintBrokerId: brokerId, mintOperationId: operationId, mintDeadlineAt: deadline })
+      .where(and(eq(webSessions.id, id), eq(webSessions.status, "minting"), eq(webSessions.mintStartedAt, fence)))
+      .returning({ id: webSessions.id });
+    return rows.length === 1;
   }
 
   /**

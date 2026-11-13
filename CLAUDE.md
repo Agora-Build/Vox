@@ -184,6 +184,43 @@ Region locations are admin-managed; site IDs are `<location-base>-<sequence>` (e
 - **My Evals** (`/api/metrics/my-evals`, auth): eval flow or eval set private, owned by requester
 
 ### Auth-Session Broker
+
+**Live browser assistance (aeval v0.4.4):** maintained contract in
+`docs/browser-assistance.md`; schema 69 persists fenced mint routing and schema
+70 adds Core connection ownership, replay nonces and shared viewer grants; schema
+71 permits concurrent target grants. The owner-Core's `BrowserCaptures` module
+multiplexes at most 10 viewers onto one engine capture with one explicit controller.
+Spectators cannot mutate browser state. Individual close/expiry does not close
+others; controller loss uses native release/resume and last-viewer loss closes
+capture. Heartbeats are coalesced independently of slow mutations/status, and
+never renew another viewer's grant. Browser
+access requires personal frozen flow/credential ownership AND launching the job;
+neither party can inspect a borrowed personal run. Organization access is exact-org
+owner/admin only, even when a plain member created the flow or launched the job.
+There is no wider job-visible spectator role and no global-admin, agent-operator,
+public-visibility or API-key bypass. `canAccessJobBrowser` applies the launch gate
+alongside `canCreateEvalFlowSecrets`; reuse it for UI capabilities, HTTP requests
+and owner-Core grant maintenance. Broker logins stay on the broker; daemon
+access uses outbound `/ws/eval-browser`, current agent lease + job claim identity.
+Agent browser targets also require Runtime-credential trust (Mainline, own personal
+Private/Shared, or exact-org Team operator membership), never third-party Shared
+session consent. Frame polling authorizes freshly at the owner, even for cached
+pixels, and rechecks after slow capture without duplicate full receiver checks.
+Read-only open, explicit control, navigation fences, bounded non-replayed input,
+immediate close and five-second engine leases are security requirements. Holds
+are 60 seconds within unchanged mint deadlines, not a ten-minute extension.
+Active unpaid web cancellation is a separate job right; marketplace settlement
+contexts are excluded until a mid-run settlement policy exists. Delivery is
+`acknowledged` or `pending`, not proof of process exit. Heartbeat fallback stops only
+the matching execution and late completion cannot restore it. Viewer grants and
+owner metadata are shared in PostgreSQL; WebSockets and broker mint keys stay
+on their owning Core. Single-Core calls execute locally. Multiple replicas need
+their own private `VOX_CORE_INTERNAL_URL` and shared `VOX_CORE_ROUTING_SECRET`;
+signed, non-replayed RPC reaches the owner. No sticky sessions, frame/credential
+persistence, or uncertain-input retries. Block `/internal/core-routing` publicly.
+`browser_observation.mode` is factual, not measurement validity and
+does not change Strict filtering. Recorder/LLM generation remains deferred.
+
 Some targets need an authenticated web login before an eval. Brokered secrets (`brokerType` non-null) are **Core-only** — structurally withheld from the job-secrets path at every dispatch tier; agents get a pre-minted session, never the credential. (`brokerType == null` = runtime/agent-exposed.)
 
 **Current credential policy:** `designs/agent-credentials-design.md` is the single
@@ -234,7 +271,7 @@ are documented in `docs/DEPLOYMENT.md#credential-policy-rollout-schema-67`.
 - `isOwnerOrOrgManager` (edit / run-private): owner/creator or org manager — **no admin bypass**; used by PATCH routes and `canRunEvalFlow` for private eval flows
 - `canEditResource` = `isAdmin || isOwnerOrOrgManager` — kept for **delete** routes only
 - `canRunEvalFlow` (**console only**): public → anyone; private → `isOwnerOrOrgManager`. This is flow-running permission, not permission to spend owner credentials; external credential use additionally requires the manual browser-trial admission above. **`/api/v1` run is stricter — the eval flow's `ownerId` only, not org managers** — and must stay that way (decision #200); don't "unify" the two.
-- `canViewJob` / `canCancelJob` (jobs): **one rule each, shared by the console and `/api/v1`** — they are separate handlers and drifted apart before. View: anyone who can view the job's eval flow (live visibility), or the runner once the flow is deleted. Cancel: the person who started the job, **or** whoever controls its eval flow (`isOwnerOrOrgManager` — secrets follow eval-flow ownership, so a run on your flow spends your credentials and you must be able to stop it); viewing is never enough. Admins may view and cancel anyone's. Cancel is **pending-only** (a running job's agent is mid-run): the job page's Cancel button follows the server's `canCancel`; a cancelled job stays `status: failed` with `cancelled_by`/`cancelled_at` set (migration 0056) and shows as Cancelled, and a paid one's hold is released at once (`server/settle-now.ts`, shared with token revoke). Job lists take `scope=mine` (default) | `visible` (the view rule, as SQL in `storage.evalJobConditions` — keep in step).
+- `canViewJob` / `canCancelJob` (jobs): **one rule each, shared by the console and `/api/v1`** — they are separate handlers and drifted apart before. View: anyone who can view the job's eval flow (live visibility), or the runner once the flow is deleted. Cancel: the person who started the job, **or** whoever controls its eval flow (`isOwnerOrOrgManager` — secrets follow eval-flow ownership, so a run on your flow spends your credentials and you must be able to stop it); viewing is never enough. Admins may view and cancel anyone's. The DELETE endpoints remain **pending-only**. The console additionally supports active **unpaid web** cancellation on capable agents through `/browser/cancel-job`, with claim fencing and acknowledged/pending stop delivery; paid settlement contexts remain excluded. The page follows the server's `canCancel` / `canCancelRunning`; a cancelled job stays `status: failed` with `cancelled_by`/`cancelled_at` set (migration 0056) and shows as Cancelled, and a pending paid one's hold is released at once (`server/settle-now.ts`, shared with token revoke). Job lists take `scope=mine` (default) | `visible` (the view rule, as SQL in `storage.evalJobConditions` — keep in step).
 - **API keys never carry admin rights** (`authenticateApiKey` sets `isAdmin: false` on `req.apiKeyUser`), even an admin's own key: every admin power — moderation, `requireAdmin` routes, the admin arms of the job rules — is browser-session only.
 - **The `/api/admin` prefix is exact for Core routes:** every admin-only route in `server/routes.ts` lives under it, and everything under it is exactly `requireAuth, requireAdmin` (session only) — enforced both ways by `tests/admin-routes.test.ts`, so it can be governed as a unit. Plugins keep their own admin routes under `/api/plugins/<id>` (e.g. credits). Reads others need stay outside (`GET /api/providers`, `GET /api/region-locations`); routes open to more than admins go elsewhere (`GET /api/clash/runners`: admin + principal/fellow); machine routes (`/api/brokers/register`) are not admin routes. "Owner **or** admin" moderation checks stay on the resource's own path.
 - `canScheduleEvalFlow` (schedule / run-now / enable / re-cron): **owner/creator only** — a recurring schedule is an indefinite commitment. The scheduler re-checks per tick and disables schedules whose creator lost the right. (Extend + run-once are looser: owner-or-org.)

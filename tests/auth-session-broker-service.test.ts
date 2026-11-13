@@ -507,6 +507,26 @@ describe("auth-session-broker HTTP service", () => {
     expect(body.error).toBeTruthy();
   });
 
+  it("browser inspection is private, validates envelopes, and cannot address an unknown mint", async () => {
+    const post = (body: unknown, authorization = "Bearer s3") => fetch(`${baseUrl}/browser`, {
+      method: "POST", headers: { "content-type": "application/json", authorization }, body: JSON.stringify(body),
+    });
+    expect((await post({}, "Bearer wrong")).status).toBe(401);
+    expect((await post(null)).status).toBe(400);
+    expect((await post({ operationId: "unknown", action: "command", viewerId: "invalid" })).status).toBe(400);
+    expect((await post({ operationId: "unknown", action: "status", viewerId: "8d57271e-9fae-4c4c-b82a-03604cf402bf" })).status).toBe(410);
+    expect((await post({ payload: "x".repeat(33000) })).status).toBe(413);
+  });
+
+  it("mint's separate body budget still admits valid large UTF-8 credentials", async () => {
+    mintImpl = async () => ({ cookies: [] });
+    const response = await fetch(`${baseUrl}/mint`, { method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer s3" },
+      body: JSON.stringify({ platformId: "vapi", email: "\u754c".repeat(5000) + "@fixture.invalid", password: "\u754c".repeat(10000) }),
+    });
+    expect(response.status).toBe(200);
+  });
+
   it("POST /mint with good auth and full body returns 200 with storageState, and mint receives exact request", async () => {
     received = [];
     mintImpl = async () => ({ cookies: [{ name: "session", value: "xyz" }] });

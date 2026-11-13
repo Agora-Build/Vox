@@ -73,10 +73,10 @@ WORKDIR /app
 # default and aeval resolves the card ID by reading it. The broker target
 # never does audio I/O (setup:account only) and needs none of this.
 ARG TARGETARCH
-ARG AEVAL_VERSION=v0.4.3
+ARG AEVAL_VERSION=v0.4.4
 # Override the matching checksum too when selecting a different release.
-ARG AEVAL_SHA256_X86_64=26f5eb8ba79a6503d623e5a661b21b3089e6c4171da1be79ef546a051cc16418
-ARG AEVAL_SHA256_ARM64=2a9764e54d10d92cb843c56ce9e2c0730a319a99768d0293a207e61575a54ec2
+ARG AEVAL_SHA256_X86_64=a4e1a1dd1b80bd4db6cb2569a99259da5b26860d833601c1be07a750d682a697
+ARG AEVAL_SHA256_ARM64=84921aeafc976cf7e079f7937c31bfa9e541d27306a0576135c2af60f4c26e64
 RUN case "${TARGETARCH}" in \
       arm64) ARCH=arm64; SHA256="${AEVAL_SHA256_ARM64}" ;; \
       amd64|"") ARCH=x86_64; SHA256="${AEVAL_SHA256_X86_64}" ;; \
@@ -127,22 +127,21 @@ FROM base AS broker
 WORKDIR /app
 
 COPY vox_eval_agentd/auth-session-broker.ts /app/
+COPY vox_eval_agentd/browser-control.ts /app/
+COPY shared/browser-assistance.ts /shared/browser-assistance.ts
 COPY vox_eval_agentd/aeval-output.ts /app/
 COPY shared/credentials.ts /shared/credentials.ts
 COPY shared/mint-timeout.ts /shared/mint-timeout.ts
 COPY vox_eval_agentd/package.json /app/
 
-# npm install only to obtain esbuild (a devDep). auth-session-broker.ts imports only
-# Node builtins plus ./aeval-output and the two shared/ modules COPYed above
-# (aeval-output itself imports ../shared/credentials — that COPY is load-bearing,
-# not incidental), so the bundle needs no node_modules at runtime.
+# Bundle shared protocol validation as well as the private socket client.
 # No --external for Node builtins: --platform=node already marks every builtin
 # external, which is why crypto/string_decoder resolve without being listed. A
 # partial enumeration reads as authoritative and invites someone to diagnose a
 # future missing builtin as a build break. @aws-sdk/client-s3 stays — it is NOT
 # a builtin, and the flag keeps a transitive import from pulling it in.
 RUN npm install \
-    && npx esbuild auth-session-broker.ts --bundle --platform=node --format=esm --outfile=auth-session-broker.js \
+    && NODE_PATH=/app/node_modules npx esbuild auth-session-broker.ts --bundle --platform=node --format=esm --outfile=auth-session-broker.js \
        --external:@aws-sdk/client-s3 \
     && rm -rf node_modules
 
@@ -183,6 +182,9 @@ COPY vox_eval_agentd/scenarios/ /app/scenarios/
 COPY vox_eval_agentd/analysis-presets/ /app/analysis-presets/
 COPY vox_eval_agentd/assets/ /app/assets/
 COPY vox_eval_agentd/vox-agentd.ts /app/
+COPY vox_eval_agentd/browser-control.ts /app/
+COPY vox_eval_agentd/browser-bridge.ts /app/
+COPY shared/browser-assistance.ts /shared/browser-assistance.ts
 COPY vox_eval_agentd/session-inject.ts /app/
 COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/aeval-output.ts /app/
@@ -216,8 +218,8 @@ RUN npm install
 # Compile daemon TS → JS
 # As in the broker stage: --platform=node externalizes every Node builtin, so
 # listing them was decorative. @aws-sdk/client-s3 is NOT a builtin and stays.
-RUN npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
-    --external:@aws-sdk/client-s3
+RUN NODE_PATH=/app/node_modules npx esbuild vox-agentd.ts --bundle --platform=node --format=esm --outfile=vox-agentd.js \
+    --external:@aws-sdk/client-s3 --external:ws
 
 # Daemon runtime env (overridden at runtime)
 ENV VOX_SERVER=http://localhost:5000

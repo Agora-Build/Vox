@@ -19,6 +19,7 @@ export function setupClashWebSocket(httpServer: Server): void {
 
   httpServer.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url || "", `http://${request.headers.host}`);
+    if (url.pathname === "/ws/eval-browser") return;
 
     const runnerMatch = url.pathname.match(/^\/ws\/clash-runner\/(\d+)$/);
     if (runnerMatch) {

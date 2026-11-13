@@ -185,6 +185,22 @@ job.config = {
 - Parses: response/interrupt latency (MED, SD, P95) from turn-level arrays
 - Fallback chain: `turn_level` → `summary.p50/p95` → `aggregated_summary.avg` → stdout timestamps
 
+### Live Browser Assistance
+
+The pinned aeval v0.4.4 release supports the existing live browser session through
+a private Unix socket. Updated daemons advertise `browserAssistance: "1"` and
+connect outbound to Core at `/ws/eval-browser`; no browser/debugging port is
+published. Core authorizes credential owners / exact-org secret managers before
+forwarding transient frames or explicit input. Brokered logins are viewed on the
+broker, never by sending their passwords to this daemon.
+
+Viewing is read-only until Take control at a supported wait. Viewer leases expire
+without user heartbeats; holds are absolute, at most 60 seconds here, and normal
+job deadlines still apply. Active web cancellation is claim-fenced and repeated
+through heartbeat if the reverse connection is unavailable. See
+[the integration contract](../docs/browser-assistance.md) for rollout, limitations,
+test commands and the distinction between observation and benchmark validity.
+
 ### Output Directory
 
 aeval writes to `/app/output` via a symlink:

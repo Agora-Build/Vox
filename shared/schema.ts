@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision, bigint, primaryKey, date } from "drizzle-orm/pg-core";
+import { pgTable, text, uuid, varchar, integer, real, timestamp, serial, boolean, pgEnum, jsonb, index, uniqueIndex, check, doublePrecision, bigint, primaryKey, date } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -23,6 +23,16 @@ export const clashEventStatusEnum = pgEnum("clash_event_status", ["upcoming", "l
 export const clashRunnerStateEnum = pgEnum("clash_runner_state", ["idle", "assigned", "running", "draining"]);
 export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
 export const brokerStateEnum = pgEnum("broker_state", ["idle", "offline", "busy"]);
+
+export const coreConnectionOwners = pgTable("core_connection_owners", {
+  kind: text("kind").notNull(), resourceId: integer("resource_id").notNull(),
+  coreId: uuid("core_id").notNull(), origin: text("origin"), generation: uuid("generation").notNull(),
+  leaseId: text("lease_id").notNull(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [primaryKey({ columns: [table.kind, table.resourceId] }), index("core_connection_owners_expiry_idx").on(table.expiresAt)]);
+
+export const coreRoutingNonces = pgTable("core_routing_nonces", {
+  nonce: uuid("nonce").primaryKey(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [index("core_routing_nonces_expiry_idx").on(table.expiresAt)]);
 export const webSessionStatusEnum = pgEnum("web_session_status", ["minting", "ready", "failed"]);
 
 // Location trust — varchar column, values enforced in code (spec: trust model).
@@ -1132,6 +1142,13 @@ export const insertBrokerRegistrationTokenSchema = createInsertSchema(brokerRegi
 export type InsertBrokerRegistrationToken = z.infer<typeof insertBrokerRegistrationTokenSchema>;
 export type BrokerRegistrationToken = typeof brokerRegistrationTokens.$inferSelect;
 
+export const browserViewerGrants = pgTable("browser_viewer_grants", {
+  id: uuid("id").primaryKey(), userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  jobId: integer("job_id").notNull().references(() => evalJobs.id, { onDelete: "cascade" }),
+  targetKey: text("target_key").notNull(), target: jsonb("target").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [index("browser_viewer_grants_expiry_idx").on(table.expiresAt), index("browser_viewer_grants_target_idx").on(table.targetKey)]);
+
 export const insertBrokerSchema = createInsertSchema(brokers).omit({
   id: true, createdAt: true, updatedAt: true,
 });
@@ -1168,6 +1185,9 @@ export const webSessions = pgTable("web_sessions", {
   lastError: text("last_error"),
   // Stale-mint recovery: a 'minting' row older than the mint timeout is reclaimable.
   mintStartedAt: timestamp("mint_started_at"),
+  mintBrokerId: integer("mint_broker_id"),
+  mintOperationId: text("mint_operation_id"),
+  mintDeadlineAt: timestamp("mint_deadline_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({

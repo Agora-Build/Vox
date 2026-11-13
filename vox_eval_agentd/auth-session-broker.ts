@@ -34,15 +34,18 @@ import { StringDecoder } from 'string_decoder';
 import { summarizeAevalFailure, hasAevalDiagnosis, hasLoguruDiagnosis, reduceUrlsSafely, createBoundedCapture, LINE_TERMINATORS } from './aeval-output';
 import { credentialForms, redactValues, fingerprintForLog, formatLastFailedHttpStatus } from '../shared/credentials';
 import { mintTimeoutSeconds } from '../shared/mint-timeout';
+import { LocalBrowserSessions } from './browser-control';
+import { browserOperationSchema, BROWSER_ASSISTANCE_SECONDS } from '../shared/browser-assistance';
 export { credentialForms } from '../shared/credentials';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
 
-export interface MintRequest { platformId: string; email: string; password: string }
+export interface MintRequest { platformId: string; email: string; password: string; browserOperationId?: string }
 export type MintFn = (req: MintRequest) => Promise<unknown>;
 
 const PLATFORM_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const browserMints = new Map<string, { browser: LocalBrowserSessions; deadline: number }>();
 
 /**
  * Constant-time bearer-secret check. A plain `!==` on the shared secret leaks
@@ -219,6 +222,8 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-mint-'));
   const storageFile = path.join(workDir, 'session.json');
   const scenarioFile = path.join(workDir, 'mint.yaml');
+  const browser = req.browserOperationId ? new LocalBrowserSessions(path.join(workDir, 'control.sock')) : null;
+  if (browser && req.browserOperationId) browserMints.set(req.browserOperationId, { browser, deadline: Date.now() + timeoutMs });
   // YAML built with JSON.stringify'd scalars — JSON strings are valid YAML
   // double-quoted scalars, so credential characters can't break the document.
   const scenario = [
@@ -250,7 +255,10 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
     await new Promise<void>((resolve, reject) => {
       // Own process group so the timeout can kill aeval AND its browser children
       // (same discipline as vox-agentd's runAeval).
-      const proc = spawn('aeval', ['run', scenarioFile], {
+      const args = ['run', scenarioFile];
+      if (browser) args.push('--browser-control-socket', path.join(workDir, 'control.sock'),
+        '--browser-assistance-timeout', String(Math.max(1, Math.min(BROWSER_ASSISTANCE_SECONDS, Math.floor(timeoutMs / 1000)))));
+      const proc = spawn('aeval', args, {
         cwd: AEVAL_DATA_PATH,
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -363,6 +371,8 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       throw new Error('login completed but the saved storage state is not valid JSON');
     }
   } finally {
+    browser?.destroy();
+    if (req.browserOperationId) browserMints.delete(req.browserOperationId);
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
@@ -375,19 +385,39 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
     };
     try {
       if (req.method === 'GET' && req.url === '/health') return json(200, { status: 'ok' });
-      if (req.method !== 'POST' || req.url !== '/mint') return json(404, { error: 'not found' });
+      if (req.method !== 'POST' || !['/mint', '/browser'].includes(req.url ?? '')) return json(404, { error: 'not found' });
       const authz = req.headers.authorization;
       const presented = authz && authz.startsWith('Bearer ') ? authz.slice(7) : undefined;
       const secret = deps.getSecret();
       if (!secret) return json(401, { error: 'unauthorized' });
       if (!secretMatches(presented, secret)) return json(401, { error: 'unauthorized' });
       const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
+      let bytes = 0;
+      for await (const c of req) {
+        bytes += c.length;
+        const limit = req.url === '/browser' ? 32 * 1024 : 128 * 1024;
+        if (bytes > limit) return json(413, { error: 'request too large' });
+        chunks.push(c as Buffer);
+      }
+      if (req.url === '/browser') {
+        let incoming: Record<string, unknown>;
+        try { incoming = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return json(400, { error: 'invalid request' }); }
+        if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return json(400, { error: 'invalid request' });
+        const { operationId, ...rawOperation } = incoming;
+        const operation = browserOperationSchema.safeParse(rawOperation);
+        if (typeof operationId !== 'string' || !operation.success) return json(400, { error: 'invalid request' });
+        const active = browserMints.get(operationId);
+        if (!active || active.deadline <= Date.now()) return json(410, { error: 'browser unavailable' });
+        try { return json(200, { result: await active.browser.handle(operation.data) }); }
+        catch { return json(503, { error: 'browser unavailable; command outcome may be unknown' }); }
+      }
       let body: Partial<MintRequest>;
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return json(400, { error: 'invalid JSON body' }); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(400, { error: 'invalid request' });
       if (typeof body.platformId !== 'string' || !PLATFORM_ID_RE.test(body.platformId)) return json(400, { error: 'platformId is required' });
       if (typeof body.email !== 'string' || !body.email) return json(400, { error: 'email is required' });
       if (typeof body.password !== 'string' || !body.password) return json(400, { error: 'password is required' });
+      if (body.browserOperationId !== undefined && (typeof body.browserOperationId !== 'string' || !/^[0-9a-f-]{36}$/.test(body.browserOperationId))) return json(400, { error: 'invalid browser operation' });
       // Fingerprint, never the values: lengths plus a hash of the IDENTIFIER
       // only. See fingerprintForLog for why the secret gets its length alone.
       // Logged on the REQUEST rather than only on failure, so a mint that hangs

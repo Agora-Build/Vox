@@ -2,6 +2,63 @@
 
 This guide covers deploying Vox to production using Coolify (what vox.agora.build runs on), or any Docker-based hosting platform (Railway, Render, CapRover, etc.).
 
+## Live browser assistance rollout (schema 71)
+
+Deploy Core first, then the auth-session broker and eval-agent daemon built with
+aeval v0.4.4. Migration `0068_browser_assistance_mints.sql` adds nullable,
+claim-fenced broker operation routing; no credentials or browser frames are
+backfilled. Schema 70 (`0069_core_connection_routing.sql`) adds shared connection
+ownership, replay nonces and browser-viewer grants, without credentials/frames.
+Schema 71 (`0070_concurrent_browser_viewers.sql`) removes exclusive-target grant
+admission and indexes target lookups. The owner-Core multiplexes up to 10 authorized
+viewers onto one capture with one exclusive controller; no new service is needed.
+Forward `/ws/eval-browser` upgrades through the public proxy. No
+inbound agent/browser port is required; broker `/browser` stays internal.
+Preserve the public Host and browser `Origin` / `Sec-Fetch-Site` headers. Browser
+same-origin metadata supports TLS termination across multiple HTTP proxy hops;
+clients without that metadata require the correct trusted forwarded protocol.
+
+Single-Core deployments require no new configuration: operations execute locally.
+For multiple replicas, set `VOX_CORE_INTERNAL_URL` to each replica's **own private
+origin**, e.g. `http://core-a:5000` / `http://core-b:5000` (never a load-balanced
+service alias), and set the same `VOX_CORE_ROUTING_SECRET` on every replica
+(`openssl rand -hex 32`, minimum 32 characters). Keep database, session signing,
+credential encryption and plugin configuration consistent. Any replica can accept
+viewer traffic, agent connections, broker registrations and broker heartbeats;
+signed internal requests reach the recorded connection/key owner. No sticky
+sessions or agent changes are required. Permit `/internal/core-routing` only
+between Cores; deny that path at the public proxy. Use a trusted isolated service
+network or verified HTTPS: HMAC authenticates requests but does not encrypt HTTP.
+Owners expire after 30 seconds without renewal. A dead Core's agents reconnect;
+viewers reopen read-only. Broker keys stay only on their owner, so a broker whose
+Core died must re-register on heartbeat; an in-flight mint may fail, not migrate.
+Uncertain inputs are never retried. This is not distributed support for unrelated
+Clash streams, rate-limit counters or upload-concurrency limits.
+Old agents keep running but do not gain live inspection or active cancellation.
+
+Personal browser access requires the same user to be the frozen flow/credential
+owner **and** job launcher. Borrowed personal runs grant neither party browser
+access. Organization browser access requires an owner/admin role in that exact
+organization; flow ownership or launching as an ordinary member is insufficient.
+Public job visibility and global-admin moderation grant no bypass. The same
+eligibility applies to viewing and control. Views start read-only; control is
+explicit and bounded. Closing one view does not close the others. Controller
+release/expiry resumes automation; the next controller must explicitly acquire
+control at a supported wait. The local hold is 60 seconds and does not extend existing
+180/200-second broker mint deadlines. Recording and LLM flow generation are not
+included. See [Live Browser Assistance](browser-assistance.md) for the security
+contract, cancellation behavior, replica routing and verification steps.
+
+Eval-agent browser targets additionally require Runtime-credential trust:
+Mainline, the personal owner's own Private/Shared agent, or a Team agent operated
+by a current member of the frozen organization. Third-party Shared agents remain
+ineligible even with session-sharing consent; broker-side login viewing remains
+independent. Verify this denial after rollout, including existing viewer grants.
+Active web cancellation is supported only without a marketplace settlement
+context. Responses distinguish acknowledged stop requests from pending delivery;
+neither proves the browser has exited. Pending delivery is retried by heartbeat,
+and a disconnected agent may operate until reconnect or its existing deadline.
+
 ## Network-history rollout (schema 66)
 
 Deploy Core before updated `vox-eval-agentd` instances. Startup applies migration

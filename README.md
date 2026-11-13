@@ -193,6 +193,13 @@ Open `http://localhost:5000`.
 
 See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: environment variables, `VOX_PLUGINS`, Coolify and other platforms, migrations, the brokers, and a post-deploy checklist.
 
+Live web evaluations can expose their existing browser to the personal
+flow/credential owner who launched the job, or an owner/admin of the flow's
+organization: read-only viewing, explicit bounded control,
+and same-context verification links. Brokered logins remain broker-side. See
+[Live Browser Assistance](docs/browser-assistance.md) for setup, security and
+current limits; recording and LLM-generated eval flows are not included.
+
 ---
 
 ## Environment Variables

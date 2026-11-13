@@ -7,7 +7,7 @@
  * time. Login-class secrets NEVER leave Core; agents only ever see the
  * storageState. Broker addressing/routing lives in `./broker-registry`.
  */
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { collectSecretRefs, isAuthFieldName, untrustedEvalSetSecretsMessage } from "@shared/secrets";
 import yaml from "js-yaml";
 import { fillJobPlaceholders, jobConfigVars, withinBounds, TOO_COMPLEX_MESSAGE, type JobParts } from "@shared/placeholders";
@@ -251,7 +251,11 @@ export async function ensureSession(
       }
       const target = await routeToBroker("auth-session");
       if (!target) throw new Error("no auth-session broker available");
-      const mintResult = (await mintViaBroker(target, { platformId: need.platformId, email, password }, fetchImpl)) as
+      const browserOperationId = randomUUID();
+      const retained = await storage.setWebSessionBrowserTarget(claimed.id, claimed.mintStartedAt!, target.id,
+        browserOperationId, new Date(Date.now() + mintTimeoutSeconds() * 1000));
+      if (!retained) return;
+      const mintResult = (await mintViaBroker(target, { platformId: need.platformId, email, password, browserOperationId }, fetchImpl)) as
         | { storageState?: unknown }
         | undefined;
       const storageState = mintResult?.storageState;

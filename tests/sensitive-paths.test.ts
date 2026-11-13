@@ -66,4 +66,10 @@ describe("response-body redaction list", () => {
       expect(isSensitiveResponsePath(p)).toBe(false);
     }
   });
+
+  it("never logs browser frames, command responses, or verification-link outcomes", () => {
+    for (const suffix of ["", "/viewers", "/viewers/private-grant/frame", "/viewers/private-grant/commands", "/cancel-job"]) {
+      expect(isSensitiveResponsePath(`/api/eval-jobs/42/browser${suffix}`)).toBe(true);
+    }
+  });
 });

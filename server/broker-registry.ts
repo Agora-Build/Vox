@@ -55,8 +55,12 @@ import { credentialForms, redactValues, reduceUrlsSafely } from "@shared/credent
 
 export { mintTimeoutSeconds } from "@shared/mint-timeout";
 import { mintTimeoutSeconds } from "@shared/mint-timeout";
+import { z } from "zod";
+import { coreRouting } from "./core-routing-runtime";
+import type { CoreOwner } from "./core-routing";
 
 const mintSecretCache = new Map<number, string>();
+const brokerOwners = new Map<number, CoreOwner>();
 export function cacheBrokerMintSecret(id: number, secret: string): void { mintSecretCache.set(id, secret); }
 export function getCachedBrokerMintSecret(id: number): string | undefined { return mintSecretCache.get(id); }
 export function hasBrokerMintSecret(id: number): boolean { return mintSecretCache.has(id); }
@@ -66,10 +70,72 @@ export function hasBrokerMintSecret(id: number): boolean { return mintSecretCach
  * "retry in a minute" the refusal message promises actually holds (#227
  * review), even when Core holds a stale secret while heartbeats succeed.
  */
-export function evictBrokerMintSecret(id: number): void { mintSecretCache.delete(id); }
-export function clearBrokerMintSecret(id: number): void { mintSecretCache.delete(id); }
+export function evictBrokerMintSecret(id: number, expected?: BrokerTarget): void {
+  const owner = brokerOwners.get(id);
+  if (expected && (expected.owner ? owner?.generation !== expected.owner.generation : mintSecretCache.get(id) !== expected.mintSecret)) return;
+  mintSecretCache.delete(id); brokerOwners.delete(id);
+  if (owner) void coreRouting.release(owner).catch(() => undefined);
+}
+export function clearBrokerMintSecret(id: number): void { evictBrokerMintSecret(id); }
 
-export interface BrokerTarget { id: number; url: string; mintSecret: string; }
+export async function publishBrokerMintSecret(id: number, leaseId: string, secret: string): Promise<void> {
+  let claimed: CoreOwner | undefined;
+  claimed = await coreRouting.claim("broker", id, leaseId, () => {
+    if (brokerOwners.get(id)?.generation === claimed?.generation) { mintSecretCache.delete(id); brokerOwners.delete(id); }
+  });
+  mintSecretCache.set(id, secret); brokerOwners.set(id, claimed);
+}
+
+export interface BrokerTarget { id: number; url: string; mintSecret: string; owner?: CoreOwner; }
+
+export async function getBrokerTarget(broker: Pick<Broker, "id" | "url" | "currentLeaseId">): Promise<BrokerTarget | null> {
+  const owner = await coreRouting.find("broker", broker.id);
+  if (!owner || !broker.currentLeaseId || owner.leaseId !== broker.currentLeaseId) return null;
+  return { id: broker.id, url: broker.url, mintSecret: "", owner };
+}
+
+const brokerCallSchema = z.object({
+  path: z.enum(["/mint", "/execute", "/browser"]), body: z.string().max(200_000),
+  timeoutMs: z.number().int().positive().max(215_000),
+}).strict();
+async function brokerRequest(owner: CoreOwner, input: z.infer<typeof brokerCallSchema>, fetchImpl: typeof fetch): Promise<Response> {
+  const broker = await storage.getBroker(owner.resourceId);
+  const token = broker && await storage.getBrokerRegistrationToken(broker.tokenId);
+  const secret = mintSecretCache.get(owner.resourceId);
+  if (!broker || !token || token.isRevoked || (token.expiresAt && token.expiresAt < new Date()) || broker.currentLeaseId !== owner.leaseId
+    || brokerOwners.get(owner.resourceId)?.generation !== owner.generation || !secret || !isInternalBrokerUrl(broker.url)) throw new Error("Broker lease changed");
+  const response = await fetchImpl(`${broker.url}${input.path}`, {
+    method: "POST", redirect: "manual", signal: AbortSignal.timeout(input.timeoutMs),
+    headers: { "content-type": "application/json", authorization: `Bearer ${secret}` }, body: input.body,
+  });
+  if (response.status === 401 || response.status === 403) evictBrokerMintSecret(broker.id, { id: broker.id, url: broker.url, mintSecret: "", owner });
+  return response;
+}
+coreRouting.handle("broker", async (payload, owner) => {
+  const response = await brokerRequest(owner, brokerCallSchema.parse(payload), fetch);
+  const reader = response.body?.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+  try {
+    while (reader) {
+      const { done, value } = await reader.read(); if (done) break;
+      size += value.length;
+      if (size > 2_500_000) throw new Error("Broker response exceeds routing limit");
+      chunks.push(value);
+    }
+  } catch (error) { await reader?.cancel().catch(() => undefined); throw error; }
+  return { status: response.status, body: Buffer.concat(chunks).toString("utf8") };
+});
+
+export async function fetchViaBroker(target: BrokerTarget, path: "/mint" | "/execute" | "/browser", body: string, timeoutMs: number, fetchImpl: typeof fetch = fetch): Promise<Response> {
+  if (!target.owner) return fetchImpl(`${target.url}${path}`, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
+    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` }, body });
+  if (target.owner.coreId === coreRouting.id) {
+    const current = await coreRouting.find("broker", target.id);
+    if (current?.generation !== target.owner.generation) throw new Error("Broker owner changed");
+    return brokerRequest(target.owner, { path, body, timeoutMs }, fetchImpl);
+  }
+  const result = await coreRouting.request(target.owner, { path, body, timeoutMs }, timeoutMs + 1000) as { status: number; body: string };
+  return new Response([204, 205, 304].includes(result.status) ? null : result.body, { status: result.status, headers: { "content-type": "application/json" } });
+}
 
 // Testable core: caller supplies the routable-broker lister (already freshness/state filtered).
 export async function routeToBrokerWith(
@@ -84,8 +150,12 @@ export async function routeToBrokerWith(
   return null;
 }
 
-export function routeToBroker(brokerType: BrokerType): Promise<BrokerTarget | null> {
-  return routeToBrokerWith(brokerType, (t, thr) => storage.getRoutableBrokers(t, thr));
+export async function routeToBroker(brokerType: BrokerType): Promise<BrokerTarget | null> {
+  for (const broker of await storage.getRoutableBrokers(brokerType, BROKER_OFFLINE_THRESHOLD_SECONDS)) {
+    const target = await getBrokerTarget(broker);
+    if (target) return target;
+  }
+  return null;
 }
 
 export async function brokerAvailable(brokerType: BrokerType): Promise<boolean> {
@@ -118,15 +188,10 @@ export async function executeViaBroker(
   fetchImpl: typeof fetch = fetch,
 ): Promise<RestExecResult> {
   const abortMs = (req.timeoutMs ?? REST_EXEC_DEFAULT_TIMEOUT_MS) + 15_000;
-  const res = await callBroker("REST", `${target.url}/execute`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
-    body: JSON.stringify(req),
-    signal: AbortSignal.timeout(abortMs),
-  }, fetchImpl);
+  const res = await callBroker("REST", () => fetchViaBroker(target, "/execute", JSON.stringify(req), abortMs, fetchImpl));
   if (res.status === 401 || res.status === 403) {
     // As for mints: the broker restarted and hasn't re-registered yet.
-    evictBrokerMintSecret(target.id);
+    evictBrokerMintSecret(target.id, target);
     throw new Error(`the REST broker refused Core (HTTP ${res.status}); it re-registers within a minute — retry then`);
   }
   const needles = credentialForms(redactNeedles.filter(Boolean));
@@ -235,20 +300,20 @@ export async function probeAndRecordBroker(
 }
 
 /** Fetch to a broker, turning a transport failure into a stated cause. */
-async function callBroker(what: string, url: string, init: RequestInit, fetchImpl: typeof fetch): Promise<Response> {
+async function callBroker(what: string, call: () => Promise<Response>): Promise<Response> {
   try {
     // Not followed: the advertised URL is the validated one (a 3xx is then
     // just a failed call, reported with its status).
-    return await fetchImpl(url, { ...init, redirect: "manual" });
+    return await call();
   } catch (err) {
-    console.warn(`[Broker] ${what} broker call to ${url} failed: ${describeFetchFailure(err, { detail: true })}`);
+    console.warn(`[Broker] ${what} broker call failed: ${describeFetchFailure(err, { detail: true })}`);
     throw new Error(`Core couldn't reach the ${what} broker: ${describeFetchFailure(err)}`);
   }
 }
 
 export async function mintViaBroker(
   target: BrokerTarget,
-  req: { platformId: string; email: string; password: string },
+  req: { platformId: string; email: string; password: string; browserOperationId?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
   // Bound the call. auth-session.ts's staleMintThresholdSeconds() is derived
@@ -257,16 +322,11 @@ export async function mintViaBroker(
   // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
   // never fired.
   const abortMs = (mintTimeoutSeconds() + 15) * 1000;
-  const res = await callBroker("session", `${target.url}/mint`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` },
-    body: JSON.stringify(req),
-    signal: AbortSignal.timeout(abortMs),
-  }, fetchImpl);
+  const res = await callBroker("session", () => fetchViaBroker(target, "/mint", JSON.stringify(req), abortMs, fetchImpl));
   if (res.status === 401 || res.status === 403) {
     // The broker doesn't know Core's mint secret: it restarted and hasn't
     // re-registered yet (it does on its next heartbeat). Not a login failure.
-    evictBrokerMintSecret(target.id);
+    evictBrokerMintSecret(target.id, target);
     throw new Error(`the session broker refused Core (HTTP ${res.status}); it re-registers within a minute — retry then`);
   }
   if (!res.ok) {

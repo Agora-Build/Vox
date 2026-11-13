@@ -9,6 +9,7 @@ import { EvalRecordingPlayer } from "@/components/eval-recording-player";
 import { isRecordingArtifact } from "@/lib/recording-transcript";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Badge } from "@/components/ui/badge";
 
 // One eval result, as the eval job page shows it: call details, the metric
 // cards, per-case results, recordings, screenshots, turn-level tables and
@@ -27,6 +28,7 @@ export function EvalResultView({ result, beforeScreenshots }: { result: EvalResu
   const [recordingName, setRecordingName] = useState("");
   const artifactFiles = (result.artifactFiles ?? []) as ArtifactFile[];
   const rawData = (result.rawData ?? {}) as Record<string, unknown>;
+  const observation = (rawData.browser_observation as { mode?: unknown } | undefined)?.mode;
 
   // Extract turn-level data from rawData
   const responseMetrics = rawData?.response_metrics as Record<string, unknown> | undefined;
@@ -79,6 +81,11 @@ export function EvalResultView({ result, beforeScreenshots }: { result: EvalResu
 
   return (
     <>
+    {(observation === "read_only" || observation === "interactive") && <div>
+      <Badge variant="outline" title="Browser assistance was used somewhere in this trial, possibly during setup. This does not establish an effect on measurements or change Strict filtering." data-testid="browser-observation">
+        {observation === "interactive" ? "Browser control used" : "Browser viewed"}
+      </Badge>
+    </div>}
     {/* Metrics */}
     {result.callMetadata != null && (() => {
       const cm = result.callMetadata as {

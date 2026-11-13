@@ -50,6 +50,9 @@ import { NetworkEventBuffer } from './network-events';
 import { NetworkObserver } from './network-observer';
 import { HostResourceObserver } from './host-resource-observer';
 import { HostResourceMonitor } from './host-resource-monitor';
+import { LocalBrowserSessions } from './browser-control';
+import { ReverseBrowserBridge } from './browser-bridge';
+import { supportsBrowserAssistance, BROWSER_ASSISTANCE_SECONDS } from '../shared/browser-assistance';
 import { Readable } from 'stream';
 import {
   CHUNK_SIZE,
@@ -250,6 +253,11 @@ class VoxEvalAgentDaemon {
   private startTime = Date.now();
   private currentJobId: number | null = null;
   private claimedJob: EvalJob | null = null;
+  private browserSessions: LocalBrowserSessions | null = null;
+  private browserBridge: ReverseBrowserBridge | null = null;
+  private cancelRun: (() => void) | null = null;
+  private executionCancelled = false;
+  private browserObservation: "read_only" | "interactive" | null = null;
   private networkEvents = new NetworkEventBuffer();
   private networkObserver = new NetworkObserver();
   private networkTimer: NodeJS.Timeout | null = null;
@@ -380,6 +388,7 @@ class VoxEvalAgentDaemon {
       buildDate: process.env.BUILD_DATE || 'unknown',
     };
     metadata.sessionInjection = "1";
+    if (supportsBrowserAssistance(this.aevalVersion)) metadata.browserAssistance = "1";
     if (this.aevalVersion !== "unknown") {
       metadata.frameworkVersion = this.aevalVersion;
     }
@@ -473,6 +482,22 @@ class VoxEvalAgentDaemon {
       this.siteId = agent.siteId;
       this.leaseId = agent.leaseId ?? null;
       this.hostEventsSupported = agent.eventReportVersion === 2;
+      if (supportsBrowserAssistance(this.aevalVersion)) {
+        this.browserBridge?.stop();
+        this.browserBridge = new ReverseBrowserBridge({
+          serverUrl: this.config.serverUrl, token: this.config.token, leaseId: () => this.leaseId,
+          handle: async (execution, operation) => {
+            if (this.currentJobId !== execution.jobId || this.claimedJob?.startedAt !== execution.startedAt) throw new Error('Stale browser execution');
+            if (operation.action === 'cancel') {
+              this.executionCancelled = true; this.cancelRun?.();
+              return { cancelled: true };
+            }
+            if (!this.browserSessions) throw new Error('Browser unavailable');
+            return this.browserSessions.handle(operation);
+          },
+        });
+        this.browserBridge.connect();
+      }
 
       console.log(`[Daemon] Registered successfully!`);
       console.log(`  - Agent ID: ${agent.id}`);
@@ -536,6 +561,7 @@ class VoxEvalAgentDaemon {
           metadata: this.buildMetadata(),
           capabilities: await this.currentCapabilities(),
           networkReport,
+          execution: this.currentJobId && this.claimedJob?.startedAt ? { jobId: this.currentJobId, startedAt: this.claimedJob.startedAt } : undefined,
         }, this.currentLinkType()), await this.currentNetSignals()), this.currentSim())),
       });
 
@@ -544,6 +570,9 @@ class VoxEvalAgentDaemon {
         const body = await response.json();
         this.networkEvents.acknowledge(body.networkAck, networkReport);
         this.networkEvents.recover(body.networkReportStatus, networkReport);
+        if (body.cancelExecution?.jobId === this.currentJobId && body.cancelExecution?.startedAt === this.claimedJob?.startedAt) {
+          this.executionCancelled = true; this.cancelRun?.();
+        }
         console.log(`[Daemon] Heartbeat sent (state: ${this.isRunningJob ? 'occupied' : 'idle'})`);
       } else {
         console.error(`[Daemon] Heartbeat rejected by Vox: ${await describeHttpFailure(response)}`);
@@ -696,7 +725,9 @@ class VoxEvalAgentDaemon {
     // MAX_MINT_TIMEOUT_SECONDS means raising this too.
     const deadline = Date.now() + 240_000;
     for (;;) {
+      if (this.executionCancelled) throw new Error('Evaluation cancelled');
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/session?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
+      if (this.executionCancelled) throw new Error('Evaluation cancelled');
       if (response.status === 404) return null; // older Core without the endpoint
       const body = await response.json().catch(() => ({}));
       if (response.ok && body.required === false) return null;
@@ -911,8 +942,15 @@ class VoxEvalAgentDaemon {
   }
 
   private runAeval(scenarioConfig: string): Promise<EvalResult> {
-    return new Promise((resolve, reject) => {
+    if (this.executionCancelled) return Promise.reject(new Error('Evaluation cancelled'));
+    let browserDir: string | null = null;
+    if (supportsBrowserAssistance(this.aevalVersion)) {
+      browserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-browser-'));
+      this.browserSessions = new LocalBrowserSessions(path.join(browserDir, 'control.sock'));
+    }
+    return new Promise<EvalResult>((resolve, reject) => {
       const args = ['run', scenarioConfig];
+      if (browserDir) args.push('--browser-control-socket', path.join(browserDir, 'control.sock'), '--browser-assistance-timeout', String(BROWSER_ASSISTANCE_SECONDS));
 
       if (!this.config.headless) {
         args.push('--headful');
@@ -952,7 +990,6 @@ class VoxEvalAgentDaemon {
         } catch { /* group send failed — fall through to a direct kill */ }
         try { proc.kill(signal); } catch { /* already gone */ }
       };
-
       // Settle exactly once. The forced-deadline timer below can reject even if
       // 'close' never fires (a surviving descendant holding the stdio pipes),
       // so the agent is guaranteed to free up.
@@ -969,6 +1006,18 @@ class VoxEvalAgentDaemon {
       };
       const fail = (err: Error) => {
         if (settled) return; settled = true; clearTimers(); reject(err);
+      };
+      this.cancelRun = () => {
+        if (settled || sigkillTimer) return;
+        clearTimeout(killTimer);
+        killTree('SIGTERM');
+        sigkillTimer = setTimeout(() => {
+          killTree('SIGKILL');
+          forceTimer = setTimeout(() => {
+            proc.stdout?.destroy(); proc.stderr?.destroy();
+            fail(new Error('Evaluation cancelled'));
+          }, 5000);
+        }, 5000);
       };
 
       // Kill a run that overruns the ceiling so it can't pin the agent forever.
@@ -1109,6 +1158,10 @@ class VoxEvalAgentDaemon {
       proc.on('error', (error) => {
         fail(error);
       });
+    }).finally(() => {
+      if (this.browserSessions?.observation === 'interactive' || (this.browserSessions?.observation && !this.browserObservation)) this.browserObservation = this.browserSessions.observation;
+      this.browserSessions?.destroy(); this.browserSessions = null; this.cancelRun = null;
+      if (browserDir) fs.rmSync(browserDir, { recursive: true, force: true });
     });
   }
 
@@ -2351,11 +2404,15 @@ class VoxEvalAgentDaemon {
 
     this.isRunningJob = true;
     this.currentJobId = job.id;
+    this.executionCancelled = false;
+    this.browserObservation = null;
     this.lastOutputDir = null;
     this.jobOutputDirs = [];
     this.lastCallMetadata = null;
     try {
       const results = await this.executeJob(job);
+      if (this.executionCancelled) throw new Error('Evaluation cancelled');
+      if (this.browserObservation) results.rawData = { ...results.rawData, browser_observation: { mode: this.browserObservation } };
       await this.completeJob(job.id, results);
     } catch (error: unknown) {
       // The one redaction point for job errors, web and phone: whatever raised
@@ -2467,6 +2524,10 @@ class VoxEvalAgentDaemon {
   }
 
   stop(): void {
+    this.executionCancelled = true;
+    this.browserBridge?.stop();
+    this.browserSessions?.destroy();
+    this.cancelRun?.();
     console.log(`[Daemon] Stopping...`);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.jobPollTimer) clearInterval(this.jobPollTimer);
