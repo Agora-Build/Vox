@@ -47,6 +47,12 @@ release/expiry resumes automation; the next controller must explicitly acquire
 control at a supported wait. The local hold defaults to 120 seconds, configurable
 but capped by the login budget (default/max 600 seconds). Upgrade older agents
 before extending login past 200 seconds; they still stop waiting at 240 seconds.
+For a mixed-version rollout, explicitly keep
+`WEB_SESSION_MINT_TIMEOUT_SECONDS=200` on Core and broker until those agents are
+upgraded, including when upgrading Core without changing its environment: the
+new unset default is 600 seconds. A stuck login can now retain its job/credit
+hold until the longer deadline; abandoned mint claims are reclaimable after
+the login budget plus 30 seconds (630 seconds at the default).
 Recording and LLM flow generation are not
 included. See [Live Browser Assistance](browser-assistance.md) for the security
 contract, cancellation behavior, replica routing and verification steps.

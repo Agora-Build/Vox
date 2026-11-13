@@ -158,6 +158,8 @@ remains login budget +15 seconds; stale reclaim remains +30 seconds. Updated
 agents wait up to 640 seconds (the supported ceiling +40), independently of
 their local configuration. The earliest job, login, or assistance deadline
 always wins; increasing assistance does not extend an existing deadline.
+Internal broker and cross-Core HTTP calls use their explicit abort deadlines,
+not Node's shorter default five-minute response-header timeout.
 
 For `vox-manager.sh`, put these in the selected `.env`, then run the manager:
 
@@ -176,7 +178,9 @@ on Core as well when overriding the default.
 
 **Rollout:** upgrade agents before extending login past 200 seconds; older
 agents still stop waiting after 240 seconds. Upgrade the broker to honor Core's
-per-request budget. Existing running processes retain their original budgets;
+per-request budget. Until all agents are upgraded, explicitly set the login
+budget to 200 seconds or less on Core and broker; upgrading Core with the variable
+unset also enables the new 600-second default. Existing running processes retain their original budgets;
 new settings apply to new processes/runs. The daemon's normal evaluation
 timeout (20 minutes per aeval invocation by default) is unchanged.
 

@@ -6,6 +6,7 @@ import { browserAssistanceTimeoutSeconds } from "../shared/browser-assistance-ti
 import { DEFAULT_MINT_TIMEOUT_SECONDS, MAX_MINT_TIMEOUT_SECONDS, SESSION_MINT_POLL_TIMEOUT_SECONDS, mintTimeoutSeconds } from "../shared/mint-timeout";
 import { mintWithAeval } from "../vox_eval_agentd/auth-session-broker";
 import { mintViaBroker } from "../server/broker-registry";
+import { load } from "js-yaml";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
@@ -15,6 +16,18 @@ function configure(login = "", assistance = "") {
 }
 
 describe("coordinated login and browser assistance budgets", () => {
+  it("forwards consistent timeout settings to Core and broker in Compose", () => {
+    const compose = load(readFileSync("docker-compose.yml", "utf8")) as {
+      services: Record<string, { environment: Record<string, unknown> }>;
+    };
+    for (const service of ["vox-service", "auth-session-broker"]) {
+      expect(compose.services[service].environment.WEB_SESSION_MINT_TIMEOUT_SECONDS)
+        .toBe("${WEB_SESSION_MINT_TIMEOUT_SECONDS:-600}");
+    }
+    expect(compose.services["auth-session-broker"].environment.VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS)
+      .toBe("${VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS:-120}");
+  });
+
   it("defaults to ten minutes for login and two minutes for assistance", () => {
     configure();
     expect(DEFAULT_MINT_TIMEOUT_SECONDS).toBe(600);

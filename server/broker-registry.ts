@@ -58,6 +58,7 @@ import { mintTimeoutSeconds, MAX_MINT_TIMEOUT_SECONDS } from "@shared/mint-timeo
 import { z } from "zod";
 import { coreRouting } from "./core-routing-runtime";
 import type { CoreOwner } from "./core-routing";
+import { internalFetch } from "./internal-fetch";
 
 const mintSecretCache = new Map<number, string>();
 const brokerOwners = new Map<number, CoreOwner>();
@@ -104,10 +105,10 @@ async function brokerRequest(owner: CoreOwner, input: z.infer<typeof brokerCallS
   const secret = mintSecretCache.get(owner.resourceId);
   if (!broker || !token || token.isRevoked || (token.expiresAt && token.expiresAt < new Date()) || broker.currentLeaseId !== owner.leaseId
     || brokerOwners.get(owner.resourceId)?.generation !== owner.generation || !secret || !isInternalBrokerUrl(broker.url)) throw new Error("Broker lease changed");
-  const response = await fetchImpl(`${broker.url}${input.path}`, {
-    method: "POST", redirect: "manual", signal: AbortSignal.timeout(input.timeoutMs),
+  const response = await internalFetch(`${broker.url}${input.path}`, {
+    method: "POST", redirect: "manual",
     headers: { "content-type": "application/json", authorization: `Bearer ${secret}` }, body: input.body,
-  });
+  }, input.timeoutMs, fetchImpl);
   if (response.status === 401 || response.status === 403) evictBrokerMintSecret(broker.id, { id: broker.id, url: broker.url, mintSecret: "", owner });
   return response;
 }
@@ -126,8 +127,8 @@ coreRouting.handle("broker", async (payload, owner) => {
 });
 
 export async function fetchViaBroker(target: BrokerTarget, path: "/mint" | "/execute" | "/browser", body: string, timeoutMs: number, fetchImpl: typeof fetch = fetch): Promise<Response> {
-  if (!target.owner) return fetchImpl(`${target.url}${path}`, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
-    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` }, body });
+  if (!target.owner) return internalFetch(`${target.url}${path}`, { method: "POST", redirect: "manual",
+    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` }, body }, timeoutMs, fetchImpl);
   if (target.owner.coreId === coreRouting.id) {
     const current = await coreRouting.find("broker", target.id);
     if (current?.generation !== target.owner.generation) throw new Error("Broker owner changed");
