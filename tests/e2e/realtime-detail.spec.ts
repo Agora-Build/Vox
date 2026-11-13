@@ -139,7 +139,7 @@ test("an in-flight detail response cannot bleed across transport filters", async
   expect(requests.at(-1)?.searchParams.get("transport")).toBe("phone");
 });
 
-test("an in-flight detail response cannot bleed across strict/all network policy", async ({ page }) => {
+test("an in-flight detail response cannot bleed across Strict and default All health policy", async ({ page }) => {
   const requests: URL[] = [];
   await mockDashboard(page, requests);
   await page.goto("/realtime");
@@ -152,13 +152,17 @@ test("an in-flight detail response cannot bleed across strict/all network policy
   await expect(status).toHaveText("Daily averages");
   await pinch(chart, -60, 8);
   await expect(status).toHaveText("Loading detail...");
+  expect(requests.at(-1)?.searchParams.get("health")).toBe("strict");
+  expect(requests.at(-1)?.searchParams.has("network")).toBe(false);
   await page.getByRole("switch", { name: "Strict", exact: true }).click();
   await expect(status).toHaveText("Daily averages");
   await page.waitForTimeout(450);
   await expect(status).toHaveText("Daily averages");
   await pinch(chart, -60, 8);
   await expect(status).toHaveText("Hourly averages");
-  expect(requests.at(-1)?.searchParams.get("network")).toBe("all");
+  for (const key of ["health", "network", "strict"]) {
+    expect(requests.at(-1)?.searchParams.has(key)).toBe(false);
+  }
 });
 
 test("an incomplete detail response keeps the complete cached overview", async ({ page }) => {

@@ -8,7 +8,7 @@ import { compareVersions } from "./aeval-seed";
 import { effectiveDispatchIdentity, agentListFilter, explainWaiting, type WaitAgent } from "./job-wait";
 import { STALE_THRESHOLD_MINUTES } from "./scheduler"; // the online window the reapers use
 import { settleEndedJobsNow } from "./settle-now";
-import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTags, tagsCacheKey, groupValue, emptyGroupValue, accessColumn, wantsAccessColumns } from "./metrics-params";
+import { leaderboardGroupKey, parseMetricsWindow, parseMetricsTransport, parseMetricsTags, validateMetricsQuery, tagsCacheKey, groupValue, emptyGroupValue, accessColumn, wantsAccessColumns } from "./metrics-params";
 import { clientIp } from "./client-ip"; // the real caller behind Cloudflare/Traefik
 import { SECRET_NAME_PATTERN, collectSecretRefs, secretValueError } from "@shared/secrets";
 import { parseTags, LINK_VALUES, effectiveTags, publicLineLookup, type TagBoard } from "@shared/tags";
@@ -6429,6 +6429,8 @@ export async function registerRoutes(
 
   app.get("/api/metrics/realtime", async (req, res) => {
     try {
+      const invalid = validateMetricsQuery(req.originalUrl, "overview");
+      if (invalid) return res.status(400).json(invalid);
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
@@ -6453,6 +6455,8 @@ export async function registerRoutes(
 
   app.get("/api/metrics/community", async (req, res) => {
     try {
+      const invalid = validateMetricsQuery(req.originalUrl, "overview");
+      if (invalid) return res.status(400).json(invalid);
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
@@ -6481,6 +6485,8 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
+      const invalid = validateMetricsQuery(req.originalUrl, "overview");
+      if (invalid) return res.status(400).json(invalid);
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
@@ -6522,6 +6528,8 @@ export async function registerRoutes(
         if (!user || !user.isEnabled) return res.status(401).json({ error: "Not authenticated or account disabled" });
         userId = user.id;
       }
+      const invalid = validateMetricsQuery(req.originalUrl, "detail");
+      if (invalid) return res.status(400).json(invalid);
       const window = parseMetricsDetailWindow(req.query.from, req.query.to);
       if ("error" in window) return res.status(400).json({ error: window.error });
       const regionScope = await parseRegionQueryScope(req.query);
@@ -6529,12 +6537,12 @@ export async function registerRoutes(
       const tp = parseMetricsTransport(req.query.transport);
       if ("error" in tp) return res.status(400).json({ error: tp.error });
       // Tag filters only (no groupBy): a filtered chart's zoom must stay filtered.
-      const tf = parseMetricsTags({ tag: req.query.tag, network: req.query.network });
+      const tf = parseMetricsTags(req.query);
       if ("error" in tf) return res.status(400).json({ error: tf.error });
       const key = `detail:${tier}:${userId ?? ""}:${window.from}:${window.to}:${regionScope.cacheKey}:${tp.transport}:${tagsCacheKey(tf)}`;
       const cached = getCached(key);
       if (cached) return res.json(cached);
-      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport, tf.tagFilters, tf.network);
+      const result = await storage.getMetricsDetail(tier, window, userId, regionScope.scope, tp.transport, tf.tagFilters, tf.health);
       const data = { ...result, metrics: await formatMetricsResults(result.metrics, tier) };
       setCache(key, data);
       res.json(data);
@@ -6551,6 +6559,8 @@ export async function registerRoutes(
   // recorded in the plan ledger) so existing clients/tests are unaffected.
   app.get("/api/metrics/available-regions", async (req, res) => {
     try {
+      const invalid = validateMetricsQuery(req.originalUrl, "availability");
+      if (invalid) return res.status(400).json(invalid);
       const tierParam = String(req.query.tier ?? "");
       const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
       const tier = tierMap[tierParam];
@@ -6582,6 +6592,8 @@ export async function registerRoutes(
 
   app.get("/api/metrics/network-coverage", async (req, res) => {
     try {
+      const invalid = validateMetricsQuery(req.originalUrl, "coverage");
+      if (invalid) return res.status(400).json(invalid);
       const tierMap: Record<string, MetricTier> = { realtime: "mainline", community: "community", "my-evals": "myEvals" };
       const tier = Object.hasOwn(tierMap, String(req.query.tier)) ? tierMap[String(req.query.tier)] : undefined;
       if (!tier) return res.status(400).json({ error: "Invalid tier" });
@@ -6613,6 +6625,8 @@ export async function registerRoutes(
 
   app.get("/api/metrics/leaderboard", async (req, res) => {
     try {
+      const invalid = validateMetricsQuery(req.originalUrl, "overview");
+      if (invalid) return res.status(400).json(invalid);
       const win = parseMetricsWindow(req.query.hours);
       if ("error" in win) return res.status(400).json({ error: win.error });
       const regionScope = await parseRegionQueryScope(req.query);
@@ -6627,7 +6641,7 @@ export async function registerRoutes(
       if (cached) return res.json(cached);
 
       const results = await storage.getTierEvalResults("mainline", 1000, {
-        hoursBack: win.hoursBack, scope: regionScope.scope, transport: tp.transport, tagFilters: tags.tagFilters, network: tags.network,
+        hoursBack: win.hoursBack, scope: regionScope.scope, transport: tp.transport, tagFilters: tags.tagFilters, health: tags.health,
       });
       const locations = await storage.getAllRegionLocations();
 

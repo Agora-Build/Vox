@@ -1,6 +1,7 @@
 import * as yaml from "js-yaml";
 import { collectSecretRefs } from "@shared/secrets";
 import type { NetworkAck, NetworkReportStatus } from "@shared/network-events";
+import type { HealthMode } from "@shared/metrics";
 import { metricsResolution, metricsDetailResolution, METRICS_DAY_MS, METRICS_RETENTION_DAYS, type MetricsWindow, type MetricsResolution } from "@shared/metrics-window";
 import {
   PHONE_NUMBER_RE, illegalPhoneStepType, illegalWebStepType, illegalWebVocabInPhone,
@@ -170,8 +171,8 @@ export type MetricSourceRow = Pick<EvalResult,
   // analysis's region) for groupBy=region.
   & { jobTags?: JobTag[] | null; tagValue?: string | null; recordingRegion?: string | null };
 
-/** The network-tag knobs of a metrics query: AND-ed filters, and an optional groupBy key. */
-export type MetricsTagQuery = { tagFilters?: Tag[]; groupBy?: string; network?: "strict" | "all" };
+/** Agent health and network tags for a metrics query, with an optional grouping key. */
+export type MetricsTagQuery = { tagFilters?: Tag[]; groupBy?: string; health?: HealthMode };
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -2542,14 +2543,14 @@ export class DatabaseStorage {
   private joinCommunity(q: any): any { return this.joinTier(q); }
   private joinMyEvals(q: any): any { return this.joinTier(q); }
 
-  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = [], network: "strict" | "all" = "strict") {
+  private tierConditions(tier: MetricTier, hoursBack?: number, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = [], health: HealthMode = "all") {
     const conditions = tier === "mainline" ? this.mainlineConditions(hoursBack, scope)
       : tier === "community" ? this.communityConditions(hoursBack, scope)
       : this.myEvalConditions(userId!, hoursBack, scope);
     // Transport is a hard partition, never mixed (design 2026-09-21 §11): every
     // tier view is scoped to exactly one transport; default web.
     conditions.push(eq(evalJobs.transport, transport));
-    if (network === "strict") conditions.push(or(eq(evalJobs.kind, "analyze"),
+    if (health === "strict") conditions.push(or(eq(evalJobs.kind, "analyze"),
       and(eq(evalJobs.networkMonitoring, "complete"), eq(evalJobs.networkChanged, false))));
     // Network-tag filters, AND-ed, on the job's effective value for this tier's
     // board (the tier names are the board names). In SQL, so they apply before
@@ -2600,7 +2601,7 @@ export class DatabaseStorage {
       ...(tagValue ? { tagValue: sql<string>`${tagValue}` } : {}),
     }).from(evalResults);
     const rows = await this.applyTierJoins(tier, base)
-      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport, tags.tagFilters, tags.network), ...(window ? [
+      .where(and(...this.tierConditions(tier, hoursBack, userId, scope, transport, tags.tagFilters, tags.health), ...(window ? [
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)),
       ] : [])))
@@ -2623,7 +2624,7 @@ export class DatabaseStorage {
     }
 
     const rows = await this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport, tags.tagFilters, tags.network)))
+      .where(and(...this.tierConditions(tier, effectiveHoursBack, userId, scope, transport, tags.tagFilters, tags.health)))
       .orderBy(desc(evalResults.createdAt))
       .limit(METRICS_ROW_CEILING);
     // evalJobs is already inner-joined (joinTier) for tiering, so its snapshot +
@@ -2649,12 +2650,12 @@ export class DatabaseStorage {
     return this.tierMetrics("myEvals", hoursBack, userId, scope, transport, tags);
   }
 
-  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = [], network: "strict" | "all" = "strict"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
+  async getMetricsDetail(tier: MetricTier, window: MetricsWindow, userId?: number, scope?: RegionQueryScope, transport: "web" | "phone" = "web", tagFilters: Tag[] = [], health: HealthMode = "all"): Promise<MetricsWindow & { metrics: MetricSourceRow[]; resolution: MetricsResolution; truncated: boolean }> {
     if (tier === "myEvals" && userId == null) throw new Error("My Evals detail requires a user");
     let resolution: MetricsResolution = metricsDetailResolution(window.to - window.from);
     const retentionHours = METRICS_RETENTION_DAYS * 24;
     if (resolution === "raw") {
-      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport, tagFilters, network),
+      const conditions = and(...this.tierConditions(tier, retentionHours, userId, scope, transport, tagFilters, health),
         gte(evalResults.createdAt, new Date(window.from)),
         lt(evalResults.createdAt, new Date(window.to)));
       // Probe only IDs so dense windows skip transferring raw chart rows entirely.
@@ -2701,11 +2702,11 @@ export class DatabaseStorage {
       return { from: Math.floor(window.from / unit) * unit, to: Math.ceil(window.to / unit) * unit };
     };
     let actualWindow = align(resolution);
-    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters, network });
+    let rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters, health });
     if (rows.length > METRICS_ROW_CEILING && resolution === "hour") {
       resolution = "day";
       actualWindow = align(resolution);
-      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters, network });
+      rows = await this.tierBucketed(tier, resolution, retentionHours, userId, scope, transport, actualWindow, { tagFilters, health });
     }
     return { ...actualWindow, metrics: rows.slice(0, METRICS_ROW_CEILING), resolution, truncated: rows.length > METRICS_ROW_CEILING };
   }
@@ -2718,7 +2719,7 @@ export class DatabaseStorage {
   // hasUnverified rather than mixed into baseIds.
   async getAvailableRegions(tier: MetricTier, hoursBack?: number, userId?: number, transport: "web" | "phone" = "web", tags: MetricsTagQuery = {}): Promise<{ baseIds: string[]; hasUnverified: boolean }> {
     const effectiveHoursBack = hoursBack ?? METRICS_ALL_MAX_DAYS * 24;
-    const conditions = this.tierConditions(tier, effectiveHoursBack, userId, undefined, transport, tags.tagFilters, tags.network);
+    const conditions = this.tierConditions(tier, effectiveHoursBack, userId, undefined, transport, tags.tagFilters, tags.health);
     // A result's region: where it was measured (its site), or, for an analyzed
     // recording, where its uploader said it was made (recording_region).
     const region = sql<string | null>`${resultRegionSql(evalResults.siteId, evalResults.recordingRegion)}`;
@@ -2743,12 +2744,12 @@ export class DatabaseStorage {
   async getTierEvalResults(
     tier: MetricTier,
     limit: number,
-    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone"; tagFilters?: Tag[]; network?: "strict" | "all" } = {},
+    opts: { hoursBack?: number; userId?: number; scope?: RegionQueryScope; transport?: "web" | "phone"; tagFilters?: Tag[]; health?: HealthMode } = {},
   ): Promise<Array<EvalResult & { jobTags: JobTag[] | null }>> {
     // "My evals" without a user would compare owner = NULL and silently match nothing.
     if (tier === "myEvals" && opts.userId == null) throw new Error("getTierEvalResults: myEvals needs a userId");
     return this.applyTierJoins(tier, db.select().from(evalResults))
-      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web", opts.tagFilters, opts.network)))
+      .where(and(...this.tierConditions(tier, opts.hoursBack, opts.userId, opts.scope, opts.transport ?? "web", opts.tagFilters, opts.health)))
       .orderBy(desc(evalResults.createdAt))
       .limit(limit)
       // The job's frozen tags ride along (eval_jobs is joined for tiering anyway)

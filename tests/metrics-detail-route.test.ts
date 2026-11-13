@@ -57,7 +57,81 @@ describe("metrics detail routes", () => {
       await request(app).get(`/api/metrics/realtime/detail?from=${FROM + offset}&to=${FROM + 3600000 - offset}`).expect(200);
     }
     expect(storage.getMetricsDetail).toHaveBeenCalledTimes(1);
-    expect(storage.getMetricsDetail).toHaveBeenCalledWith("mainline", { from: FROM, to: FROM + 3600000 }, undefined, undefined, "web", [], "strict");
+    expect(storage.getMetricsDetail).toHaveBeenCalledWith("mainline", { from: FROM, to: FROM + 3600000 }, undefined, undefined, "web", [], "all");
+  });
+
+  it("defaults to All and partitions Strict from overview and chart-detail caches", async () => {
+    const overview = vi.spyOn(storage, "getMainlineMetrics").mockResolvedValue([]);
+    vi.spyOn(storage, "getProvider").mockResolvedValue({ id: "health-test", name: "Health test" } as never);
+    const leaderboard = vi.spyOn(storage, "getTierEvalResults").mockResolvedValue([
+      { id: 1, providerId: "health-test", siteId: null, responseLatencyMedian: 100, jobTags: [] } as never,
+    ]);
+    for (const path of ["/api/metrics/realtime", "/api/metrics/leaderboard", `/api/metrics/realtime/detail?${windowQuery}`]) {
+      const join = path.includes("?") ? "&" : "?";
+      for (const filter of ["", `${join}health=all`, `${join}health=strict`]) {
+        await request(app).get(`${path}${filter}`).expect(200);
+      }
+      await request(app).get(`${path}${join}network=strict`).expect(400);
+      await request(app).get(`${path}${join}extra=ignored`).expect(400);
+    }
+    expect(overview).toHaveBeenCalledTimes(2);
+    expect(overview.mock.calls.map((call) => call[3]?.health)).toEqual(["all", "strict"]);
+    expect(leaderboard).toHaveBeenCalledTimes(2);
+    expect(leaderboard.mock.calls.map((call) => call[2]?.health)).toEqual(["all", "strict"]);
+    expect(storage.getMetricsDetail).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(storage.getMetricsDetail).mock.calls.map((call) => call[6])).toEqual(["all", "strict"]);
+  });
+
+  it.each(["health=other", "health=strict&health=all"])("rejects invalid or repeated health selectors %s", async (filter) => {
+    const overview = vi.spyOn(storage, "getMainlineMetrics").mockResolvedValue([]);
+    const leaderboard = vi.spyOn(storage, "getTierEvalResults").mockResolvedValue([]);
+    for (const path of ["/api/metrics/realtime", "/api/metrics/leaderboard", `/api/metrics/realtime/detail?${windowQuery}`,
+      "/api/v1/metrics/realtime", "/api/v1/metrics/leaderboard"]) {
+      await request(app).get(`${path}${path.includes("?") ? "&" : "?"}${filter}`).expect(400);
+    }
+    expect(overview).not.toHaveBeenCalled();
+    expect(leaderboard).not.toHaveBeenCalled();
+    expect(storage.getMetricsDetail).not.toHaveBeenCalled();
+  });
+
+  it.each(["network=all", "network=strict", "health=strict&network=all", "strict=all", "helath=strict", "extra=value", "__proto__=all", "toString=all"])("rejects unsupported query parameters %s across all metrics endpoints", async (filter) => {
+    vi.spyOn(storage, "getUser").mockResolvedValue({ id: 1, isEnabled: true } as never);
+    const overview = vi.spyOn(storage, "getMainlineMetrics").mockResolvedValue([]);
+    const leaderboard = vi.spyOn(storage, "getTierEvalResults").mockResolvedValue([]);
+    const coverage = vi.spyOn(storage, "getNetworkCoverage").mockResolvedValue({ stable: 0, changed: 0, unverified: 0 });
+    const available = vi.spyOn(storage, "getAvailableRegions").mockResolvedValue({ baseIds: [], hasUnverified: false });
+    for (const path of ["/api/metrics/realtime", "/api/metrics/community", "/api/metrics/my-evals", "/api/metrics/leaderboard",
+      `/api/metrics/realtime/detail?${windowQuery}`, `/api/metrics/community/detail?${windowQuery}`, `/api/metrics/my-evals/detail?${windowQuery}`,
+      "/api/metrics/available-regions?tier=realtime", "/api/metrics/network-coverage?tier=realtime",
+      "/api/v1/metrics/realtime", "/api/v1/metrics/leaderboard"]) {
+      const res = await request(app).get(`${path}${path.includes("?") ? "&" : "?"}${filter}`).set("x-test-user", "1").expect(400);
+      expect(res.body.error).toContain("Unsupported query parameter(s):");
+      expect(res.body.error).toContain("Supported parameters:");
+    }
+    expect(overview).not.toHaveBeenCalled();
+    expect(leaderboard).not.toHaveBeenCalled();
+    expect(coverage).not.toHaveBeenCalled();
+    expect(available).not.toHaveBeenCalled();
+    expect(storage.getMetricsDetail).not.toHaveBeenCalled();
+  });
+
+  it.each(["realtime", "leaderboard"])("v1 %s defaults to All, accepts opt-in Strict, and exposes canonical health metadata", async (endpoint) => {
+    const results = vi.spyOn(storage, "getTierEvalResults").mockResolvedValue([]);
+    for (const [query, mode] of [["", "all"], ["?health=all", "all"], ["?health=strict", "strict"]]) {
+      const res = await request(app).get(`/api/v1/metrics/${endpoint}${query}`).expect(200);
+      expect(res.body.meta).toMatchObject({ health: mode });
+      expect(res.body.meta).not.toHaveProperty("network");
+      expect(results.mock.lastCall?.[2]?.health).toBe(mode);
+    }
+  });
+
+  it("region availability defaults to All and keeps Strict opt-in", async () => {
+    const available = vi.spyOn(storage, "getAvailableRegions").mockResolvedValue({ baseIds: [], hasUnverified: false });
+    for (const filter of ["", "&health=all", "&health=strict"]) {
+      await request(app).get(`/api/metrics/available-regions?tier=realtime${filter}`).expect(200);
+    }
+    expect(available).toHaveBeenCalledTimes(2);
+    expect(available.mock.calls.map((call) => call[4]?.health)).toEqual(["all", "strict"]);
   });
 
   it("rejects unsupported tiers, transports, and overly broad detail windows", async () => {

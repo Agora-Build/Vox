@@ -225,8 +225,8 @@ d("phone transport — callMetadata + metrics transport filter", () => {
   });
 
   it("getMyEvalMetrics filters by transport; default is web", async () => {
-    const web = await storage.getMyEvalMetrics(creatorId, undefined, undefined, "web", { network: "all" });
-    const phone = await storage.getMyEvalMetrics(creatorId, undefined, undefined, "phone", { network: "all" });
+    const web = await storage.getMyEvalMetrics(creatorId, undefined, undefined, "web", { health: "all" });
+    const phone = await storage.getMyEvalMetrics(creatorId, undefined, undefined, "phone", { health: "all" });
     const webJobs = web.map((r: any) => r.id);
     expect(phone.some((r: any) => (r as any).transport === "phone")).toBe(true);
     expect(phone.every((r: any) => (r as any).transport === "phone")).toBe(true);

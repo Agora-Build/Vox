@@ -84,20 +84,20 @@ export default function Leaderboard() {
   const [timeRange, setTimeRange] = useState<string>("168"); // 7 days default
   const [selectedEntry, setSelectedEntry] = useState<LeaderboardEntry | null>(null);
   const { data: regionLocations } = useRegionLocations();
-  const { tagFilters, setTagFilters, groupBy, setGroupBy, network, setNetwork } = useMetricsTagState();
+  const { tagFilters, setTagFilters, groupBy, setGroupBy, health, setHealth } = useMetricsTagState();
 
   const regionScopeKey = [...regionScopes].sort().join(",");
   // All (no access filter): each row also shows its last-mile / datacenter split.
   const showAccess = showAccessSplit(tagFilters);
   const { data: leaderboardData, isLoading } = useQuery<LeaderboardEntry[]>({
-    queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey, tagParamsKey(tagFilters, groupBy, network)],
+    queryKey: ['/api/metrics/leaderboard', timeRange, regionScopeKey, tagParamsKey(tagFilters, groupBy, health)],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (timeRange !== "all") {
         params.set("hours", timeRange);
       }
       appendRegionScopes(params, regionScopes);
-      appendTagParams(params, tagFilters, groupBy, network);
+      appendTagParams(params, tagFilters, groupBy, health);
       const res = await fetch(`/api/metrics/leaderboard?${params}`);
       if (!res.ok) throw new Error("Failed to fetch leaderboard");
       return res.json();
@@ -200,8 +200,8 @@ export default function Leaderboard() {
           onTagFiltersChange={setTagFilters}
           groupBy={groupBy}
           onGroupByChange={setGroupBy}
-          network={network}
-          onNetworkChange={setNetwork}
+          health={health}
+          onHealthChange={setHealth}
           customKeys={customTagKeys(undefined, [...tagFilters.map((t) => t.key), groupBy])}
         >
           <Select value={timeRange} onValueChange={setTimeRange}>

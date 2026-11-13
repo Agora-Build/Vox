@@ -25,13 +25,18 @@ describe("docs/openapi.yaml", () => {
     expect(spec.paths).not.toBeNull();
   });
 
-  it("documents strict/all policy on both v1 metrics endpoints", () => {
+  it("documents All by default and opt-in Strict using health on both v1 metrics endpoints", () => {
     const spec = yaml.load(specContent) as any;
-    expect(spec.components.parameters.NetworkPolicy.schema).toMatchObject({ default: "strict", enum: ["strict", "all"] });
+    expect(spec.components.parameters.HealthPolicy).toMatchObject({ name: "health", schema: { default: "all", enum: ["strict", "all"] } });
+    expect(spec.components.parameters).not.toHaveProperty("NetworkPolicy");
     for (const route of ["/metrics/realtime", "/metrics/leaderboard"]) {
-      expect(spec.paths[route].get.parameters).toContainEqual({ $ref: "#/components/parameters/NetworkPolicy" });
+      expect(spec.paths[route].get.parameters).toContainEqual({ $ref: "#/components/parameters/HealthPolicy" });
+      expect(spec.paths[route].get.parameters).not.toContainEqual({ $ref: "#/components/parameters/NetworkPolicy" });
       expect(spec.paths[route].get.description).toContain("strict network coverage");
-      expect(spec.paths[route].get.description).toContain("network=all");
+      expect(spec.paths[route].get.description).toContain("health=strict");
+      expect(spec.paths[route].get.description).toContain("health=all");
+      expect(spec.paths[route].get.responses["200"].content["application/json"].schema.properties.meta.properties.health).toMatchObject({ enum: ["strict", "all"] });
+      expect(spec.paths[route].get.responses["400"].description).toContain("unsupported query parameter");
     }
   });
 });

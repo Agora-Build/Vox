@@ -4,7 +4,6 @@ import { MAX_NETWORK_EVENT_BATCH, MAX_NETWORK_EVENTS_PER_RUN } from "./network-e
 import { HOST_RESOURCE_RULES, type HostResourceSummary } from "./host-resources";
 export { NETWORK_EVENT_RETENTION_MS, MAX_NETWORK_EVENT_BATCH, MAX_NETWORK_EVENTS_PER_RUN } from "./network-event-protocol";
 
-export type NetworkMode = "strict" | "all";
 export type NetworkMonitoring = "unknown" | "monitoring" | "complete" | "incomplete";
 export type NetworkEventTags = Record<string, string | null>;
 

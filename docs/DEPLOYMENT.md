@@ -67,12 +67,32 @@ state and safe job-level network/coverage flags. There is no backfill claiming
 historical runs were stable. The migration takes the normal short DDL locks;
 schedule it with the usual database migration precautions.
 
-Leaderboard and metrics APIs, including public v1, default to strict network
-coverage. Old agents remain compatible but unverified;
-historical/unsupported/incomplete runs are visible with `network=all`.
+Leaderboard and metrics APIs, including public v1, default to **All agent-health
+states**, matching the pages. Old agents remain compatible but unverified;
+historical/unsupported/incomplete runs are included by default. Opt in to Strict
+with `health=strict`; omission or `health=all` includes all otherwise eligible
+runs. Strict currently checks complete network monitoring with no detected
+network change, not CPU/memory pressure. Other filters and visibility rules
+still apply. `health` is the only selector and response metadata field for this
+policy; there is no compatibility alias. Unsupported query parameters, including
+`network`, `strict` and misspellings, return 400. Invalid or repeated health
+values also return 400. Each metrics endpoint accepts only its supported
+parameters: chart detail takes `from`/`to` rather than `hours` or `groupBy`;
+`limit` is supported only by public v1 real-time metrics. The separate network
+coverage report always counts all health states, so it accepts no health policy.
 
-The Real-time and Leaderboard UIs deliberately default to **All networks**, sending
-`network=all` in API requests (including Real-time Mainline, Community and My Evals).
+**Breaking metrics API change (2026-11-13):** clients that relied on the old
+Strict default must now send `health=strict`. Remove `network=all` when requesting
+All, replace `network=strict` with `health=strict`, and read v1 `meta.health`
+instead of `meta.network`. Remove unsupported parameters rather than expecting
+them to be ignored. Deploy the matching UI and Core together; users with an old
+dashboard bundle open must reload it to stop sending the retired selector.
+This change needs no additional database migration or eval-agent upgrade.
+
+The Real-time and Leaderboard UIs default to **All networks**, omitting the health
+selector from default API requests (including Mainline, Community and My Evals).
+Turning Strict on sends `health=strict` for overview, chart detail and region
+availability requests; turning it off removes the selector.
 Advanced network controls and the **Strict**
 switch are hidden, with Strict off. Click the selected **All** button to reveal
 Last mile, Datacenter, tag filters, grouping and Strict; select All again to clear
@@ -85,11 +105,10 @@ explains coverage and the frozen baseline used for grouping; no coverage summary
 or counts are displayed or polled.
 Network policy, tag filters and grouping are temporary page selections, not URL
 state. Refreshing either page resets to All with Strict off and controls hidden.
-Legacy `network`, `tag` and `groupBy` URL parameters are ignored and removed;
+Saved `health`, `network`, `strict`, `tag` and `groupBy` URL parameters are ignored and removed;
 unrelated parameters such as Real-time's active tab remain intact. To inspect a
 strict benchmark, reveal the controls and enable Strict for the current page.
-Use `network=all` when comparing API results with either default UI; API defaults
-remain strict.
+API and page defaults now match without an explicit health selector.
 
 Leaderboard uses the same compact controls: information icon, Strict label and
 switch before the time range, and extended network filters on the next row.

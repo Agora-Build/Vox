@@ -785,29 +785,40 @@ handoff or an egress-only change between heartbeats can always be detected.
 
 ### Strict dashboards and rollout
 
-Server-side metrics overview/hour/day buckets, zoom detail, region availability
-and public v1 default to `network=strict`: only complete, unchanged runs qualify.
-The Real-time and Leaderboard UIs instead default to All, as described below.
+**Updated 2026-11-13:** server-side metrics overview/hour/day buckets, zoom detail,
+region availability and public v1 default to All, matching Real-time and
+Leaderboard. Omit the health selector or use `health=all` for all otherwise
+eligible data. Strict is opt-in with `health=strict`: only complete, unchanged
+runs qualify. The only policy parameter and v1 metadata name is `health`; no
+compatibility alias remains. Every metrics endpoint rejects unsupported query
+parameters with 400, including `network`, `strict` and misspellings. Invalid or
+repeated health values also return 400. Endpoint-specific allowlists retain
+meaningful parameters: detail uses `from`/`to` without `hours` or `groupBy`,
+availability accepts no region filter/grouping, coverage always counts all
+health states and accepts no health selector, and only public v1 real-time
+metrics accepts `limit`. Validation occurs before cache lookup and checks raw
+query names so parser-discarded keys cannot silently bypass it.
 Uploaded Analyze recordings are exempt because the analyzing machine's network
 does not describe the recording; they remain visible in My Evals and are not
 counted as unstable or unverified network runs.
-Legacy, unsupported and incomplete runs are excluded, even when their change
-flag is false. `network=all` explicitly includes them without altering baseline
+In Strict, legacy, unsupported and incomplete runs are excluded even when their
+change flag is false. The default All includes them without altering baseline
 grouping. All cache/query keys include policy. The console exposes a positive
 Strict switch, a scoped coverage API, and authorized job timelines.
 Normal job/result history is not filtered away.
 
 **Real-time UI follow-up (2026-11-05):** Real-time deliberately defaults to All
-networks, explicitly passing `network=all` for overview, zoom detail and region
-availability. The All button starts selected with advanced filters and Strict
+networks, now omitting health from default overview, zoom detail and region
+availability requests. Strict on sends `health=strict`. The All button starts
+selected with advanced filters and Strict
 hidden/off; clicking it reveals the controls, and reselecting it resets network
 tags/grouping and Strict without changing primary selections. Extended controls
 sit immediately below the header selectors. The information icon, Strict label and switch precede the
 time range. Desktop tabs remain anchored beneath the status line when the second
 filter row opens. The UI no longer displays or polls coverage counts.
-API defaults remain strict. Network policy, tags and grouping are local page state
+API defaults match the UI. Agent health, tags and grouping are local page state
 and reset to All on refresh; they are never written to the page URL. Legacy
-`network`, `tag` and `groupBy` URL parameters are ignored and removed without
+`health`, `network`, `strict`, `tag` and `groupBy` URL parameters are ignored and removed without
 discarding unrelated URL state. Strict benchmarks are selected via the UI switch.
 
 The shared Strict information popover uses the heading "Strict agent health
@@ -815,14 +826,15 @@ checks". It explicitly states that checks currently cover network monitoring and
 detected network changes only; CPU and memory checks are not implemented. Turning
 Strict off includes otherwise eligible runs with issues or missing monitoring,
 but does not bypass other filters. Grouping still uses the frozen initial network
-tags. This terminology change does not add health measurements or change API
-parameters or filtering behavior.
+tags. Strict still does not exclude CPU/memory pressure directly; this API naming
+and default change does not introduce new health checks or change Strict's
+eligibility predicate.
 
 **Leaderboard UI follow-up (2026-11-05):** Leaderboard shares the compact Strict
 placement, extended-filter row and All reset/collapse behavior with Real-time.
 It also defaults to All networks with controls collapsed and Strict off. Filter
 selections are temporary and reset on refresh, just like Real-time. Ranking
-calculations and server defaults are unchanged.
+calculations are unchanged; the server now matches this All-by-default policy.
 
 Both pages compose `client/src/components/metrics-filter-bar.tsx`. It owns the
 two-row layout, initial expansion and All reset behavior, and renders the shared

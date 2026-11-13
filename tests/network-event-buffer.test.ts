@@ -137,13 +137,15 @@ describe("network protocol validation and policy", () => {
     const r = good(); r.events[0].seq = 999; expect(networkReportSchema.safeParse(r).success).toBe(false);
     const oversizedId = good(); oversizedId.jobId = 2147483648; expect(networkReportSchema.safeParse(oversizedId).success).toBe(false);
   });
-  it("defaults to strict and rejects ambiguous values", () => {
-    expect(parseMetricsTags({})).toMatchObject({ network: "strict" });
-    expect(parseMetricsTags({ network: "all" })).toMatchObject({ network: "all" });
-    expect(parseMetricsTags({ network: ["strict", "all"] })).toHaveProperty("error");
+  it("defaults to All and accepts Strict only when explicitly requested", () => {
+    expect(parseMetricsTags({})).toMatchObject({ health: "all" });
+    expect(parseMetricsTags({ health: "all" })).toMatchObject({ health: "all" });
+    expect(parseMetricsTags({ health: "strict" })).toMatchObject({ health: "strict" });
+    expect(parseMetricsTags({ health: ["strict", "all"] })).toHaveProperty("error");
   });
   it("partitions caches by policy", () => {
-    expect(tagsCacheKey({ tagFilters: [], network: "all" })).not.toBe(tagsCacheKey({ tagFilters: [] }));
+    expect(tagsCacheKey({ tagFilters: [], health: "strict" })).not.toBe(tagsCacheKey({ tagFilters: [] }));
+    expect(tagsCacheKey({ tagFilters: [], health: "all" })).toBe(tagsCacheKey({ tagFilters: [] }));
   });
   it("event maps prefer detected values while preserving other baseline dimensions", () => {
     expect(networkEventTags([{ key: "isp", value: "manual", source: "agent" }, { key: "isp", value: "att", source: "detected" }, { key: "line", value: "twilio", source: "flow" }])).toEqual({ isp: "att", line: "twilio" });

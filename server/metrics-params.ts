@@ -1,10 +1,35 @@
 import type { MetricTier } from "./storage";
 import { parseTagFilter, parseGroupBy, formatTag, effectiveTags, UNTAGGED_VALUE, REGION_GROUP_KEY, type Tag, type JobTag, type TagBoard } from "@shared/tags";
 import { resultRegion } from "@shared/regions";
+import type { HealthMode } from "@shared/metrics";
 
 // The client-supplied knobs of a metrics view, shared by the console routes
 // (/api/metrics/*) and the public v1 API (/api/v1/metrics/*) so the two can't
 // disagree about what a window, a transport or a tier means.
+
+const REGION_PARAMS = ["siteId", "location", "country", "macroRegion", "regionScope"];
+const FILTER_PARAMS = ["tag", "health", "transport"];
+const TAG_PARAMS = [...FILTER_PARAMS, "groupBy"];
+const METRICS_QUERY_PARAMS = {
+  overview: [...TAG_PARAMS, ...REGION_PARAMS, "hours"],
+  detail: [...FILTER_PARAMS, ...REGION_PARAMS, "from", "to"],
+  availability: [...FILTER_PARAMS, "tier", "hours"],
+  coverage: ["tag", "transport", ...REGION_PARAMS, "tier", "hours"],
+  v1Realtime: [...TAG_PARAMS, ...REGION_PARAMS, "tier", "hours", "limit"],
+  v1Leaderboard: [...TAG_PARAMS, ...REGION_PARAMS, "tier", "hours"],
+} as const;
+
+/** Reject unsupported selectors before a cache lookup can hide a query mistake. */
+export function validateMetricsQuery(requestUrl: string, view: keyof typeof METRICS_QUERY_PARAMS): { error: string } | undefined {
+  const allowed: readonly string[] = METRICS_QUERY_PARAMS[view];
+  // Inspect original names: the Express parser may discard prototype-like keys.
+  const queryStart = requestUrl.indexOf("?");
+  const query = new URLSearchParams(queryStart < 0 ? "" : requestUrl.slice(queryStart + 1));
+  const unsupported = Array.from(new Set(query.keys())).filter((key) => !allowed.includes(key)).sort();
+  if (unsupported.length) {
+    return { error: `Unsupported query parameter(s): ${unsupported.join(", ")}. Supported parameters: ${allowed.join(", ")}` };
+  }
+}
 
 /** Longest window accepted: ~114 years — anything larger can't make a valid Date. */
 export const MAX_METRICS_HOURS = 1_000_000;
@@ -48,25 +73,26 @@ export function parseMetricsTier(raw: unknown): { tier: ApiMetricsTier; storageT
 }
 
 /**
- * Network-tag knobs of a metrics view (designs/2026-10-22-network-tags-design.md
+ * Agent-health and network-tag knobs (designs/2026-10-22-network-tags-design.md
  * "Analysis"): `tag=key:value` — repeatable, every one must match the job's
  * effective value on the view's board — and `groupBy=key`, which splits rows
  * by that key's effective value. Both go through shared/tags.ts's parsers, so
- * a bad value is a 400 with the same message as everywhere else.
+ * a bad value is a 400 with the same message as everywhere else. Health defaults
+ * to All; Strict is opt-in.
  */
-export function parseMetricsTags(query: { tag?: unknown; groupBy?: unknown; network?: unknown }): { tagFilters: Tag[]; groupBy?: string; network: "strict" | "all" } | { error: string } {
+export function parseMetricsTags(query: { tag?: unknown; groupBy?: unknown; health?: unknown }): { tagFilters: Tag[]; groupBy?: string; health: HealthMode } | { error: string } {
   const tf = parseTagFilter(query.tag);
   if ("error" in tf) return { error: tf.error };
   const gb = parseGroupBy(query.groupBy);
   if ("error" in gb) return { error: gb.error };
-  const network = query.network ?? "strict";
-  if (network !== "strict" && network !== "all") return { error: "network must be strict or all" };
-  return { tagFilters: tf.filters, groupBy: gb.groupBy, network };
+  const health = query.health === undefined ? "all" : query.health;
+  if (health !== "strict" && health !== "all") return { error: "health must be strict or all" };
+  return { tagFilters: tf.filters, groupBy: gb.groupBy, health };
 }
 
 /** Cache-key part for the tag knobs. Filters are sorted: AND doesn't care about order. */
-export function tagsCacheKey(v: { tagFilters: Tag[]; groupBy?: string; network?: "strict" | "all" }): string {
-  return `tags=${v.tagFilters.map(formatTag).sort().join(",")}:groupBy=${v.groupBy ?? ""}:network=${v.network ?? "strict"}`;
+export function tagsCacheKey(v: { tagFilters: Tag[]; groupBy?: string; health?: HealthMode }): string {
+  return `tags=${v.tagFilters.map(formatTag).sort().join(",")}:groupBy=${v.groupBy ?? ""}:health=${v.health ?? "all"}`;
 }
 
 /**

@@ -92,8 +92,11 @@ Deploy Core's schema-66 migration before rolling out this daemon. Old agents
 continue to run, but do not qualify for Strict benchmarks. Real-time and
 Leaderboard default to All networks with Strict off, so they include older data;
 click All to reveal the Strict switch and advanced filters. These selections
-reset to All on refresh and are not saved in the page URL. Metrics APIs still
-default to Strict; use `network=all` to include older data.
+reset to All on refresh and are not saved in the page URL. Metrics APIs also
+default to All without a filter; use `health=strict` to opt in to Strict checks.
+`health=all` explicitly selects the default. `health` is the only policy selector;
+unsupported parameters return 400 with no legacy alias. Other filters and
+visibility rules still apply.
 Timestamp-less old daemons can complete a job's first execution, but cannot
 complete a retried/reclaimed job: Core cannot distinguish their delayed result
 from a successor on the same lease. Upgrade to echo the claim `startedAt`.
