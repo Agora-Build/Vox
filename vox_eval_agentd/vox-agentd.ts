@@ -52,7 +52,9 @@ import { HostResourceObserver } from './host-resource-observer';
 import { HostResourceMonitor } from './host-resource-monitor';
 import { LocalBrowserSessions } from './browser-control';
 import { ReverseBrowserBridge } from './browser-bridge';
-import { supportsBrowserAssistance, BROWSER_ASSISTANCE_SECONDS } from '../shared/browser-assistance';
+import { supportsBrowserAssistance } from '../shared/browser-assistance';
+import { browserAssistanceTimeoutSeconds } from '../shared/browser-assistance-timeout';
+import { SESSION_MINT_POLL_TIMEOUT_SECONDS } from '../shared/mint-timeout';
 import { Readable } from 'stream';
 import {
   CHUNK_SIZE,
@@ -712,18 +714,14 @@ class VoxEvalAgentDaemon {
 
   /**
    * Fetch the Core-minted session bundle for a session-injected job.
-   * Polls while Core is minting (5s interval, 240s deadline).
+   * Polls while Core is minting (5s interval, shared login ceiling + 40s).
    * Returns: null (no session needed), a bundle, or throws (job must fail —
    * running a login-gated target unauthenticated would produce garbage metrics).
    */
   async fetchSession(jobId: number): Promise<{ storageState: unknown; platformId: string } | null> {
-    // 240s, deliberately the LONGEST link in the mint chain: the broker's child
-    // timeout is clamped to 200 (shared/mint-timeout.ts), Core aborts at +15 and
-    // reclaims a stale claim at +30. The agent must outlast all three, or it
-    // fails the job with a generic "timed out waiting for session mint" while
-    // Core is still working and the real diagnosis never lands. Raising
-    // MAX_MINT_TIMEOUT_SECONDS means raising this too.
-    const deadline = Date.now() + 240_000;
+    // Outlast Core abort (+15s) and stale reclaim (+30s), even when this
+    // host's configured login timeout is shorter than Core's.
+    const deadline = Date.now() + SESSION_MINT_POLL_TIMEOUT_SECONDS * 1000;
     for (;;) {
       if (this.executionCancelled) throw new Error('Evaluation cancelled');
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/session?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
@@ -950,7 +948,7 @@ class VoxEvalAgentDaemon {
     }
     return new Promise<EvalResult>((resolve, reject) => {
       const args = ['run', scenarioConfig];
-      if (browserDir) args.push('--browser-control-socket', path.join(browserDir, 'control.sock'), '--browser-assistance-timeout', String(BROWSER_ASSISTANCE_SECONDS));
+      if (browserDir) args.push('--browser-control-socket', path.join(browserDir, 'control.sock'), '--browser-assistance-timeout', String(browserAssistanceTimeoutSeconds()));
 
       if (!this.config.headless) {
         args.push('--headful');

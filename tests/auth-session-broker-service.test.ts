@@ -518,6 +518,29 @@ describe("auth-session-broker HTTP service", () => {
     expect((await post({ payload: "x".repeat(33000) })).status).toBe(413);
   });
 
+  it.each([0, -1, 1.5, 601, "120", null])("rejects an invalid Core login budget %j without minting", async (timeoutSeconds) => {
+    received = [];
+    const res = await fetch(`${baseUrl}/mint`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer s3" },
+      body: JSON.stringify({ platformId: "vapi", email: "a@b.com", password: "pw", timeoutSeconds }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid login timeout" });
+    expect(received).toEqual([]);
+  });
+
+  it("forwards a valid Core login budget alongside the existing mint request", async () => {
+    received = [];
+    mintImpl = async () => ({ cookies: [] });
+    const reqBody = { platformId: "vapi", email: "a@b.com", password: "pw", timeoutSeconds: 420 };
+    const res = await fetch(`${baseUrl}/mint`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer s3" },
+      body: JSON.stringify(reqBody),
+    });
+    expect(res.status).toBe(200);
+    expect(received).toEqual([reqBody]);
+  });
+
   it("mint's separate body budget still admits valid large UTF-8 credentials", async () => {
     mintImpl = async () => ({ cookies: [] });
     const response = await fetch(`${baseUrl}/mint`, { method: "POST",

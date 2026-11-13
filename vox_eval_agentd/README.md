@@ -198,7 +198,15 @@ forwarding transient frames or explicit input. Brokered logins are viewed on the
 broker, never by sending their passwords to this daemon.
 
 Viewing is read-only until Take control at a supported wait. Viewer leases expire
-without user heartbeats; holds are absolute, at most 60 seconds here, and normal
+without user heartbeats; holds are absolute, default to 120 seconds per supported
+wait, and are configurable with `VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS`.
+Assistance never exceeds `WEB_SESSION_MINT_TIMEOUT_SECONDS` (login default and
+ceiling: 600 seconds), or the broker's actual shorter child budget. The updated
+daemon waits up to 640 seconds for a brokered session; older agents still stop
+after 240 seconds and must be upgraded before extending login past 200 seconds.
+Both settings can be placed in the manager's `.env`; run `vox-manager.sh` to
+apply them, including when the image is unchanged. A separately deployed broker
+needs its own environment configured; Core also reads the login timeout. Normal
 job deadlines still apply. Active web cancellation is claim-fenced and repeated
 through heartbeat if the reverse connection is unavailable. See
 [the integration contract](../docs/browser-assistance.md) for rollout, limitations,
@@ -278,6 +286,8 @@ chmod +x /usr/local/bin/aeval
 | `VOX_AGENT_NAME` | `eval-agent-<timestamp>` | Agent display name |
 | `EVAL_FRAMEWORK` | `aeval` | Default eval framework — the extensibility seam; `aeval` is currently the only implementation. Jobs may override via `job.config.framework`; unsupported values fail loudly. |
 | `HEADLESS` | `true` | Run browser in headless mode |
+| `WEB_SESSION_MINT_TIMEOUT_SECONDS` | `600` | Login budget in seconds, capped at 600; also limits browser assistance. Configure Core/broker consistently. |
+| `VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS` | `120` | Browser assistance per supported wait, capped at the login budget. |
 - **S3 config is fetched from the Vox server per job** — no S3 env vars needed on the daemon. Just upgrade to the latest version and it works. If the server has no S3 config, artifacts stay on local disk.
 - **Artifact upload never impacts eval jobs** — uploads only happen when the daemon is idle (no pending jobs).
 - **Crash-safe** — all upload operations are wrapped in try/catch. Network failures, S3 errors, zip timeouts, and bad configs are logged but never crash the daemon or block job execution.

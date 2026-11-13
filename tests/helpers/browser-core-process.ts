@@ -19,7 +19,7 @@ async function main() {
   const { coreRouting } = await import("../../server/core-routing-runtime");
   const { setupBrowserAgentBridge } = await import("../../server/browser-agent-bridge");
   const { registerBrowserAssistanceRoutes } = await import("../../server/routes-browser-assistance");
-  const { publishBrokerMintSecret, getBrokerTarget, fetchViaBroker } = await import("../../server/broker-registry");
+  const { publishBrokerMintSecret, getBrokerTarget, mintViaBroker } = await import("../../server/broker-registry");
   const { storage } = await import("../../server/storage");
   coreRouting.register(app);
   app.use(express.json());
@@ -39,8 +39,7 @@ async function main() {
     const broker = await storage.getBroker(Number(req.params.id));
     const target = broker && await getBrokerTarget(broker);
     if (!target) return res.sendStatus(503);
-    const response = await fetchViaBroker(target, "/mint", JSON.stringify(req.body), 5000);
-    res.status(response.status).type("json").send(await response.text());
+    res.json({ storageState: await mintViaBroker(target, req.body) });
   });
   registerBrowserAssistanceRoutes(app); setupBrowserAgentBridge(server); coreRouting.start();
   const stop = async () => { await coreRouting.stop(); server.closeAllConnections(); server.close(); await pool.end(); await orgPool?.end(); process.exit(0); };

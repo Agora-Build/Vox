@@ -3,7 +3,6 @@ import { z } from "zod";
 export const BROWSER_PROTOCOL_VERSION = 1;
 export const BROWSER_REQUEST_LIMIT = 16 * 1024;
 export const BROWSER_RESPONSE_LIMIT = 4 * 1024 * 1024;
-export const BROWSER_ASSISTANCE_SECONDS = 60;
 
 export const browserCommandSchema = z.object({
   version: z.literal(1),

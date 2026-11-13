@@ -129,6 +129,7 @@ WORKDIR /app
 COPY vox_eval_agentd/auth-session-broker.ts /app/
 COPY vox_eval_agentd/browser-control.ts /app/
 COPY shared/browser-assistance.ts /shared/browser-assistance.ts
+COPY shared/browser-assistance-timeout.ts /shared/browser-assistance-timeout.ts
 COPY vox_eval_agentd/aeval-output.ts /app/
 COPY shared/credentials.ts /shared/credentials.ts
 COPY shared/mint-timeout.ts /shared/mint-timeout.ts
@@ -185,6 +186,8 @@ COPY vox_eval_agentd/vox-agentd.ts /app/
 COPY vox_eval_agentd/browser-control.ts /app/
 COPY vox_eval_agentd/browser-bridge.ts /app/
 COPY shared/browser-assistance.ts /shared/browser-assistance.ts
+COPY shared/browser-assistance-timeout.ts /shared/browser-assistance-timeout.ts
+COPY shared/mint-timeout.ts /shared/mint-timeout.ts
 COPY vox_eval_agentd/session-inject.ts /app/
 COPY vox_eval_agentd/chunking.ts /app/
 COPY vox_eval_agentd/aeval-output.ts /app/

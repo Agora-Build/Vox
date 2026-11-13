@@ -93,11 +93,11 @@ describe("#139 the mint-timeout clamp is said out loud", () => {
   it("warns once when the configured value is over the ceiling, and uses the ceiling", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { mintTimeoutSeconds, MAX_MINT_TIMEOUT_SECONDS } = await import("../shared/mint-timeout");
-    process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = "600";
+    process.env.WEB_SESSION_MINT_TIMEOUT_SECONDS = "900";
     expect(mintTimeoutSeconds()).toBe(MAX_MINT_TIMEOUT_SECONDS);
     expect(mintTimeoutSeconds()).toBe(MAX_MINT_TIMEOUT_SECONDS);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toMatch(/600.*ceiling.*using 200s/);
+    expect(warn.mock.calls[0][0]).toMatch(/900.*ceiling.*using 600s/);
   });
 
   it("a value that isn't a whole positive number warns and uses the default — parseInt's leniency doesn't sneak it through", async () => {

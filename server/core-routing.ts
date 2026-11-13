@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Express } from "express";
 import express from "express";
 import { z } from "zod";
+import { internalFetch } from "./internal-fetch";
 
 export type CoreResourceKind = "agent" | "broker";
 export type CoreOwner = {
@@ -116,10 +117,10 @@ export class CoreRouting {
     if (Buffer.byteLength(body) > REQUEST_LIMIT) throw new Error("Internal command exceeds routing limit");
     const time = String(Date.now()), nonce = randomUUID();
     // Never retry: the remote action may have executed before a transport failure.
-    const response = await this.fetchImpl(`${origin}${CORE_RPC_PATH}`, {
-      method: "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
+    const response = await internalFetch(`${origin}${CORE_RPC_PATH}`, {
+      method: "POST", redirect: "manual",
       headers: { "content-type": "application/json", "x-vox-core-time": time, "x-vox-core-nonce": nonce, "x-vox-core-signature": this.signature(time, nonce, body) }, body,
-    });
+    }, timeoutMs, this.fetchImpl);
     if (!response.ok || !response.body) throw new Error("Core owner unavailable; command outcome may be unknown");
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
     try {

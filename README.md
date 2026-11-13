@@ -231,7 +231,8 @@ current limits; recording and LLM-generated eval flows are not included.
 | `APP_URL` | `http://localhost:5000` | Public base URL, used for billing return links |
 | `AGORA_APP_ID` / `AGORA_APP_CERTIFICATE` / `AGORA_CONVOAI_CONFIG` | - | Agora RTC and the Clash live moderator |
 | `WEB_SESSION_TTL_HOURS` | `1` | How long a minted login session stays fresh |
-| `WEB_SESSION_MINT_TIMEOUT_SECONDS` | `180` | Upper bound on minting one login session |
+| `WEB_SESSION_MINT_TIMEOUT_SECONDS` | `600` | Login-mint budget, capped at 600 seconds. Configure Core and broker; upgrade old agents before extending beyond 200 seconds. |
+| `VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS` | `120` | Assistance hold per supported wait on the daemon/broker, capped by the login budget. Forwarded to eval agents by `vox-manager.sh`. |
 | `GEOIP_DB_DIR` | `./geoip` | GeoIP databases for eval-agent region detection |
 | `MAXMIND_LICENSE_KEY` | - | Fallback only; the key is normally set in Console → Regions. Without one, the free DB-IP Lite database is used |
 | `VOX_CONTACT_EMAIL` | `vox@agora.build` | Footer contact link |

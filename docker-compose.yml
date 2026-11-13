@@ -35,6 +35,7 @@ services:
       RATE_LIMIT_DISABLED: "true"
       VOX_PLUGINS: ${VOX_PLUGINS:-credits,shared-agents,organizations,oauth}
       PORT: 5000
+      WEB_SESSION_MINT_TIMEOUT_SECONDS: ${WEB_SESSION_MINT_TIMEOUT_SECONDS:-600}
       # AES-256-GCM key for secret encryption. Compose only injects what is
       # listed here, so without this line the Docker server runs WITHOUT a key
       # and the secrets/session feature is dead. Must match the value used by
@@ -70,7 +71,8 @@ services:
       BROKER_ADVERTISE_URL: ${BROKER_ADVERTISE_URL:-http://auth-session-broker:8200}
       BROKER_PORT: 8200
       HEADLESS: "true"
-      WEB_SESSION_MINT_TIMEOUT_SECONDS: ${WEB_SESSION_MINT_TIMEOUT_SECONDS:-180}
+      WEB_SESSION_MINT_TIMEOUT_SECONDS: ${WEB_SESSION_MINT_TIMEOUT_SECONDS:-600}
+      VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS: ${VOX_BROWSER_ASSISTANCE_TIMEOUT_SECONDS:-120}
 
   # eval-agent:
   #   build:

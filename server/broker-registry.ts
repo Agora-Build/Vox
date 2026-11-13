@@ -54,10 +54,11 @@ import type { Broker } from "@shared/schema";
 import { credentialForms, redactValues, reduceUrlsSafely } from "@shared/credentials";
 
 export { mintTimeoutSeconds } from "@shared/mint-timeout";
-import { mintTimeoutSeconds } from "@shared/mint-timeout";
+import { mintTimeoutSeconds, MAX_MINT_TIMEOUT_SECONDS } from "@shared/mint-timeout";
 import { z } from "zod";
 import { coreRouting } from "./core-routing-runtime";
 import type { CoreOwner } from "./core-routing";
+import { internalFetch } from "./internal-fetch";
 
 const mintSecretCache = new Map<number, string>();
 const brokerOwners = new Map<number, CoreOwner>();
@@ -96,7 +97,7 @@ export async function getBrokerTarget(broker: Pick<Broker, "id" | "url" | "curre
 
 const brokerCallSchema = z.object({
   path: z.enum(["/mint", "/execute", "/browser"]), body: z.string().max(200_000),
-  timeoutMs: z.number().int().positive().max(215_000),
+  timeoutMs: z.number().int().positive().max((MAX_MINT_TIMEOUT_SECONDS + 15) * 1000),
 }).strict();
 async function brokerRequest(owner: CoreOwner, input: z.infer<typeof brokerCallSchema>, fetchImpl: typeof fetch): Promise<Response> {
   const broker = await storage.getBroker(owner.resourceId);
@@ -104,10 +105,10 @@ async function brokerRequest(owner: CoreOwner, input: z.infer<typeof brokerCallS
   const secret = mintSecretCache.get(owner.resourceId);
   if (!broker || !token || token.isRevoked || (token.expiresAt && token.expiresAt < new Date()) || broker.currentLeaseId !== owner.leaseId
     || brokerOwners.get(owner.resourceId)?.generation !== owner.generation || !secret || !isInternalBrokerUrl(broker.url)) throw new Error("Broker lease changed");
-  const response = await fetchImpl(`${broker.url}${input.path}`, {
-    method: "POST", redirect: "manual", signal: AbortSignal.timeout(input.timeoutMs),
+  const response = await internalFetch(`${broker.url}${input.path}`, {
+    method: "POST", redirect: "manual",
     headers: { "content-type": "application/json", authorization: `Bearer ${secret}` }, body: input.body,
-  });
+  }, input.timeoutMs, fetchImpl);
   if (response.status === 401 || response.status === 403) evictBrokerMintSecret(broker.id, { id: broker.id, url: broker.url, mintSecret: "", owner });
   return response;
 }
@@ -126,8 +127,8 @@ coreRouting.handle("broker", async (payload, owner) => {
 });
 
 export async function fetchViaBroker(target: BrokerTarget, path: "/mint" | "/execute" | "/browser", body: string, timeoutMs: number, fetchImpl: typeof fetch = fetch): Promise<Response> {
-  if (!target.owner) return fetchImpl(`${target.url}${path}`, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
-    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` }, body });
+  if (!target.owner) return internalFetch(`${target.url}${path}`, { method: "POST", redirect: "manual",
+    headers: { "content-type": "application/json", authorization: `Bearer ${target.mintSecret}` }, body }, timeoutMs, fetchImpl);
   if (target.owner.coreId === coreRouting.id) {
     const current = await coreRouting.find("broker", target.id);
     if (current?.generation !== target.owner.generation) throw new Error("Broker owner changed");
@@ -321,8 +322,10 @@ export async function mintViaBroker(
   // signal did not exist, so a hung broker left this promise pending forever,
   // the row stuck in 'minting' until stale-reclaim, and ensureSession's catch
   // never fired.
-  const abortMs = (mintTimeoutSeconds() + 15) * 1000;
-  const res = await callBroker("session", () => fetchViaBroker(target, "/mint", JSON.stringify(req), abortMs, fetchImpl));
+  const timeoutSeconds = mintTimeoutSeconds();
+  const abortMs = (timeoutSeconds + 15) * 1000;
+  const body = JSON.stringify({ ...req, timeoutSeconds });
+  const res = await callBroker("session", () => fetchViaBroker(target, "/mint", body, abortMs, fetchImpl));
   if (res.status === 401 || res.status === 403) {
     // The broker doesn't know Core's mint secret: it restarted and hasn't
     // re-registered yet (it does on its next heartbeat). Not a login failure.
