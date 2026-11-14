@@ -59,6 +59,23 @@ describe("owner-Core shared capture", () => {
     expect(response.viewer?.controller).toBe("other");
   });
 
+  it("sanitizes readiness metadata before returning status to the viewer", async () => {
+    await open(a);
+    const wait = { wait_id: waitId, kind: "authentication", state: "checking", page_id: "page", remaining_seconds: 20 };
+    send.mockImplementationOnce(async (_target, operation: BrowserOperation) => ({
+      version: 1, type: "response", id: operation.request!.id, ok: true,
+      result: { session_id: "session", browser_generation: "browser", capabilities: [], viewing: true, controlling: false,
+        pages: [{ page_id: "page", document_epoch: 1, origin: null }], next_sequence: 1,
+        assistance: { ...wait, reason: "https://provider.example/verify?token=secret-token", last_check_reason: "password=secret-password" },
+        last_assistance: { ...wait, state: "future_state" }, debug: "secret-debug" },
+    }));
+    const response = await run(a, "session.status");
+    expect(response.result?.assistance).toMatchObject({ reason: null, last_check_reason: null });
+    expect(response.result?.last_assistance).toBeNull();
+    expect(response.result).not.toHaveProperty("debug");
+    expect(JSON.stringify(response)).not.toContain("secret-");
+  });
+
   it("opens one upstream viewer and fans the same frame out without consuming it per viewer", async () => {
     const [first, second] = await Promise.all([open(a), open(b)]);
     expect(first.viewer).toMatchObject({ count: 2, controller: null }); expect(second.result?.lease_id).toBe(first.result?.lease_id);

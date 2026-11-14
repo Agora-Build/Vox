@@ -1976,7 +1976,10 @@ describe("summarizeAevalFailure", () => {
       "Step 1 failed: platform.setup - ASSISTANCE_EXPIRED",
       "Test 1 failed: Step 1 (platform.setup) failed: ASSISTANCE_EXPIRED",
       "Stage 'events' failed: Configured events extraction found no parseable events in console.log.",
-      "Configured analysis failed: <no recording>",
+      "[1/1] Failed: <no recording>",
+      "Error: Stage 'events' failed: Configured events extraction found no parseable events in console.log.",
+      "Analysis completed with failures: 0/1 recording(s) succeeded, 1 failed",
+      "Configured analysis failed: Configured analysis failed for one or more inputs: <no recording>: Stage 'events' failed: Configured events extraction found no parseable events in console.log.",
       "Session completed with post-run errors: session-id",
       "Session failed: Configured analysis failed for <no recording>",
     ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
@@ -2021,6 +2024,22 @@ describe("summarizeAevalFailure", () => {
     ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
     const summary = summarizeAevalFailure(log, "");
     expect(summary).toContain(analysis);
+    expect(summary).not.toContain("recovered transient retry");
+  });
+
+  it.each([
+    "Configured analysis failed: provider rate limit",
+    "Analysis completed with failures: provider rate limit",
+    "Session failed: Configured analysis failed: provider rate limit",
+  ])("preserves an independent wrapper diagnostic after empty-run fallout: %s", (independent) => {
+    const log = [
+      "Step 1 failed: recovered transient retry",
+      "Configured analysis failed: <no recording>", independent,
+      "Session completed with post-run errors: session-id",
+      "Session failed: Configured analysis failed",
+    ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
+    const summary = summarizeAevalFailure(log, "");
+    expect(summary).toContain(independent);
     expect(summary).not.toContain("recovered transient retry");
   });
 

@@ -55,8 +55,9 @@ preview. Readiness remains pinned to the original evaluation tab and its URL,
 required element and stability checks; selecting another tab only changes the
 shared view. The UI displays the engine's current reason and final
 `last_assistance` outcome instead of leaving a static "Checking..." message.
-Unknown reason values are not displayed; no verification URLs, credentials or
-browser storage are included in readiness feedback. Unrecognized past-outcome
+Core forwards the validated status rather than raw engine extensions. Unknown
+reason values become null before reaching the viewer; no verification URLs,
+credentials or browser storage are included in readiness feedback. Unrecognized past-outcome
 metadata is discarded without breaking the viewer; active states remain strictly
 validated because they determine whether control can be requested.
 
@@ -491,7 +492,7 @@ multi-viewer throughput/audio-latency benchmark is implied by these results.
 - Binary and runtime data are pinned to aeval v0.4.5, with Linux x86_64 and
   ARM64 release checksums. Production build, isolated schema-71 migration,
   Core/client and daemon type checks, focused lint and whitespace checks passed.
-- Full unit/integration suite: **3,970 passed, 84 skipped**. All **12
+- Full unit/integration suite: **3,974 passed, 84 skipped**. All **12
   browser-assistance UI tests passed**, including live retry feedback, expiry,
   evaluation-versus-verification tabs and no automatic command replay.
 - Four credential-free fixtures passed against the packaged Linux x86_64

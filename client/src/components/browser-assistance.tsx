@@ -301,7 +301,7 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
             : <Button size="sm" onClick={() => void takeControl()} disabled={busy || sharing?.controller === "other" || !canTakeControl || !view.current} data-testid="button-take-browser-control"><MousePointer2 className="mr-1 h-4 w-4" />{sharing?.controller === "other" ? "Another viewer has control" : "Take control"}</Button>}
           <Button size="sm" variant="outline" onClick={() => void continueRun()} disabled={busy || !interactive || !status?.assistance || !view.current}><Play className="mr-1 h-4 w-4" /> Check &amp; continue</Button>
           {status?.assistance?.remaining_seconds != null && <span className="text-xs text-muted-foreground">Hold: {Math.ceil(status.assistance.remaining_seconds)}s remaining</span>}
-          {evaluationTab >= 0 && <span className="text-xs text-muted-foreground" data-testid="browser-evaluation-tab">Evaluation checks Tab {evaluationTab + 1}{view.current?.pageId !== evaluationPageId ? "; you are viewing another tab" : ""}</span>}
+          {evaluationTab >= 0 && <span className="text-xs text-muted-foreground" data-testid="browser-evaluation-tab">Evaluation checks Tab {evaluationTab + 1}{view.current && view.current.pageId !== evaluationPageId ? "; you are viewing another tab" : ""}</span>}
         </div>
         <div ref={surface} tabIndex={0} role="group" aria-label="Remote browser viewport" style={{ touchAction: interactive ? "none" : "auto" }} className="min-h-40 max-h-[60vh] overflow-auto bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-primary"
           onKeyDown={(event) => {

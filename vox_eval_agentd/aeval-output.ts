@@ -167,13 +167,13 @@ export function summarizeAevalFailure(
     const failedStep = errors.filter((line) => /^Step \d+ failed:/i.test(line)).at(-1);
     const following = failedStep ? errors.slice(errors.lastIndexOf(failedStep) + 1) : [];
     const emptyRun = /<no recording>|no parseable events\b/i;
-    const analysisWrapper = /^(?:Configured analysis failed|Analysis completed with failures|Session failed: Configured analysis failed|Session completed with post-run errors:)/i;
-    const analysisDetail = /^(?:(?:Error:\s*)?Stage ['"][^'"]+['"] failed:|\[\d+\/\d+\] Failed:)/i;
+    const analysisDiagnostic = /^(?:(?:Session failed:\s*)?Configured analysis failed|(?:Error:\s*)?Stage ['"][^'"]+['"] failed:|\[\d+\/\d+\] Failed:)/i;
+    const emptyAnalysis = (line: string) => analysisDiagnostic.test(line) && emptyRun.test(line);
+    const summaryWrapper = /^(?:Analysis completed with failures(?:: \d+\/\d+ recording\(s\) succeeded, \d+ failed)?|Session completed with post-run errors: \S+|(?:Session failed: )?Configured analysis failed)$/i;
     // Promote only known empty-run fallout; unrelated fatal/stage errors retain the normal tail priority.
     const secondaryAnalysis = failedStep
-      && following.some((line) => (analysisWrapper.test(line) || analysisDetail.test(line)) && emptyRun.test(line))
-      && following.every((line) => analysisWrapper.test(line)
-        || (analysisDetail.test(line) && emptyRun.test(line))
+      && following.some(emptyAnalysis)
+      && following.every((line) => summaryWrapper.test(line) || emptyAnalysis(line)
         || /^Test \d+ failed: Step \d+ \([^)]+\) failed:/i.test(line));
     const selected = secondaryAnalysis ? [failedStep, ...errors.slice(-2)] : errors.slice(-3);
     return scrub([...new Set(selected)].join(' | ')).slice(0, 500);
