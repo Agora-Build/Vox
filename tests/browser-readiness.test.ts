@@ -13,6 +13,17 @@ describe("browser readiness feedback", () => {
     expect(browserStatusSchema.parse(status)).toEqual(status);
   });
 
+  it("ignores unknown past outcomes without losing the active wait or viewer status", () => {
+    const parsed = browserStatusSchema.parse({ ...status, last_assistance: { ...status.assistance, state: "future_state" } });
+    expect(parsed.last_assistance).toBeNull();
+    expect(parsed.assistance).toEqual(status.assistance);
+    expect(browserReadinessMessage(parsed)).toContain("Evaluation paused");
+  });
+
+  it("still rejects unknown active states instead of weakening control validation", () => {
+    expect(browserStatusSchema.safeParse({ ...status, assistance: { ...status.assistance, state: "future_state" } }).success).toBe(false);
+  });
+
   it("retains the engine's active and final readiness reasons", () => {
     const checking = { ...status.assistance!, state: "checking" as const, reason: "selector_absent" as const, last_check_reason: "selector_absent" as const };
     const parsed = browserStatusSchema.parse({ ...status, assistance: checking, last_assistance: { ...checking, state: "expired", reason: "assistance_expired" } });

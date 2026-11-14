@@ -51,7 +51,7 @@ export const browserStatusSchema = z.object({
   pages: z.array(z.object({ page_id: z.string(), document_epoch: z.number().int().nonnegative(), origin: z.string().nullable() })),
   viewing: z.boolean(), controlling: z.boolean(), next_sequence: z.number().int().positive(),
   assistance: browserAssistanceStatusSchema.nullable(),
-  last_assistance: browserAssistanceStatusSchema.nullable().optional(),
+  last_assistance: browserAssistanceStatusSchema.nullable().optional().catch(null),
 });
 export type BrowserStatus = z.infer<typeof browserStatusSchema>;
 export const browserFrameSchema: z.ZodType<BrowserFrame> = z.object({

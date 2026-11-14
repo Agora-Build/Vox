@@ -56,7 +56,9 @@ required element and stability checks; selecting another tab only changes the
 shared view. The UI displays the engine's current reason and final
 `last_assistance` outcome instead of leaving a static "Checking..." message.
 Unknown reason values are not displayed; no verification URLs, credentials or
-browser storage are included in readiness feedback.
+browser storage are included in readiness feedback. Unrecognized past-outcome
+metadata is discarded without breaking the viewer; active states remain strictly
+validated because they determine whether control can be requested.
 
 Deploy both the daemon and broker with v0.4.5 to receive bounded readiness
 retries. Core's new optional status fields still accept v0.4.4 agents during
@@ -65,9 +67,10 @@ Absolute assistance/login/job deadlines and explicit controller ownership are
 unchanged. A new controller interrupts pending readiness checks; automation
 does not run while someone controls the browser.
 
-If setup fails and post-run analysis then fails because no audio/events were
-produced, the daemon keeps the failed step first in its redacted error summary.
-The analysis error remains secondary; it is not proof that login was rejected.
+If setup fails and only known empty-run analysis errors follow (such as
+`<no recording>` or no parseable events), the daemon keeps the failed step first
+in its redacted error summary. Unrelated fatal or analysis-stage errors retain
+normal tail priority. An empty-run analysis error is not proof that login was rejected.
 
 ## Authority Is Stronger Than Job Visibility
 
@@ -488,7 +491,7 @@ multi-viewer throughput/audio-latency benchmark is implied by these results.
 - Binary and runtime data are pinned to aeval v0.4.5, with Linux x86_64 and
   ARM64 release checksums. Production build, isolated schema-71 migration,
   Core/client and daemon type checks, focused lint and whitespace checks passed.
-- Full unit/integration suite: **3,965 passed, 84 skipped**. All **12
+- Full unit/integration suite: **3,970 passed, 84 skipped**. All **12
   browser-assistance UI tests passed**, including live retry feedback, expiry,
   evaluation-versus-verification tabs and no automatic command replay.
 - Four credential-free fixtures passed against the packaged Linux x86_64
@@ -497,6 +500,7 @@ multi-viewer throughput/audio-latency benchmark is implied by these results.
   two-second stability check, and a permanently missing ready element.
   Delayed readiness resumes; missing readiness expires on the original deadline.
   Both cases check one target reload and no repeated login/verification submission.
-- These checks do not cover a real ElevenLabs account, ARM64 execution, a new
-  daemon/broker Docker build, or production deployment. Core, daemon and broker
-  must be deployed together to receive both engine and UI changes.
+- These local fixtures do not cover a real ElevenLabs account, ARM64 execution
+  or production deployment. CI separately builds and smoke-tests the images.
+  Core, daemon and broker must be deployed together to receive both engine and
+  UI changes.

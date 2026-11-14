@@ -2009,6 +2009,21 @@ describe("summarizeAevalFailure", () => {
     expect(summarizeAevalFailure(log, "")).not.toContain("transient retry");
   });
 
+  it.each([
+    ["Stage 'transcript' failed: provider rate limit", "Configured analysis failed: provider rate limit"],
+    ["fatal: disk full", "Configured analysis failed: <no recording>"],
+    ["Stage 'transcript' failed: provider rate limit", "Configured analysis failed: <no recording>"],
+  ])("does not promote a recovered step over %s", (fatal, analysis) => {
+    const log = [
+      "Step 1 failed: recovered transient retry", fatal, analysis,
+      "Session completed with post-run errors: session-id",
+      "Session failed: Configured analysis failed",
+    ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
+    const summary = summarizeAevalFailure(log, "");
+    expect(summary).toContain(analysis);
+    expect(summary).not.toContain("recovered transient retry");
+  });
+
   it("caps length so one bad run can't bloat the job's error column", () => {
     const flood = Array.from({ length: 200 }, (_, i) => `2026-01-01 00:00:00 | ERROR    | line ${i}`).join("\n");
     expect(summarizeAevalFailure(flood, "").length).toBeLessThanOrEqual(500);
