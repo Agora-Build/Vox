@@ -3,11 +3,18 @@
 Implementation and maintained operating contract:
 [Live Browser Assistance](../docs/browser-assistance.md).
 
-The implementation integrates the aeval v0.4.4 protocol-v1 inspection/assistance
+The implementation integrates the aeval v0.4.5 protocol-v1 inspection/assistance
 milestone reviewed in the November 10-11 cross-project design. It resolves the
 Vox review's authority, broker placement, bounded-deadline, cancellation and
 ordered-input requirements. Viewer access follows credential ownership or the
 exact organization's secret-management authority, never mere job visibility.
+
+The November 14 update pins binary and runtime data to v0.4.5, adds safe live
+readiness feedback and final outcomes, and labels the original evaluation tab.
+The engine restores that target once and retries delayed rendering within the
+original assistance deadline; a successful command acknowledgment is not a
+successful readiness check. Setup failures remain primary when empty-run
+analysis also fails. See the maintained contract for rollout and regression tests.
 
 The recorder/LLM milestone remains explicitly deferred. Browser action schemas
 alone would not secure generated flows: any future work must separately resolve

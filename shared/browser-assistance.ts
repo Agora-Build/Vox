@@ -35,21 +35,25 @@ export type BrowserFrame = {
   metadata: Record<string, number>;
 };
 export type BrowserPage = { page_id: string; document_epoch: number; origin: string | null };
-export type BrowserStatus = {
-  session_id: string; browser_generation: string | null; capabilities: string[];
-  pages: BrowserPage[]; viewing: boolean; controlling: boolean; next_sequence: number;
-  assistance: null | {
-    wait_id: string; kind: "authentication" | "element" | "url";
-    state: "waiting" | "held" | "checking"; page_id: string; remaining_seconds: number | null;
-  };
-};
-export const browserStatusSchema: z.ZodType<BrowserStatus> = z.object({
+const readinessReasonSchema = z.enum([
+  "checking", "ready", "still_on_login", "wrong_target", "selector_absent", "condition_not_met",
+  "navigation_timeout", "check_timeout", "check_failed", "assistance_expired", "assistance_cancelled", "browser_unavailable",
+]).nullable().optional().catch(null);
+export const browserAssistanceStatusSchema = z.object({
+  wait_id: z.string(), kind: z.enum(["authentication", "element", "url"]),
+  state: z.enum(["waiting", "held", "checking", "ready", "expired", "cancelled", "failed"]),
+  page_id: z.string(), remaining_seconds: z.number().nullable(),
+  reason: readinessReasonSchema, last_check_reason: readinessReasonSchema,
+});
+export type BrowserAssistanceStatus = z.infer<typeof browserAssistanceStatusSchema>;
+export const browserStatusSchema = z.object({
   session_id: z.string(), browser_generation: z.string().nullable(), capabilities: z.array(z.string()),
   pages: z.array(z.object({ page_id: z.string(), document_epoch: z.number().int().nonnegative(), origin: z.string().nullable() })),
   viewing: z.boolean(), controlling: z.boolean(), next_sequence: z.number().int().positive(),
-  assistance: z.object({ wait_id: z.string(), kind: z.enum(["authentication", "element", "url"]),
-    state: z.enum(["waiting", "held", "checking"]), page_id: z.string(), remaining_seconds: z.number().nullable() }).nullable(),
+  assistance: browserAssistanceStatusSchema.nullable(),
+  last_assistance: browserAssistanceStatusSchema.nullable().optional(),
 });
+export type BrowserStatus = z.infer<typeof browserStatusSchema>;
 export const browserFrameSchema: z.ZodType<BrowserFrame> = z.object({
   version: z.literal(1), type: z.literal("event"), event: z.literal("viewer.frame"),
   session_id: z.string(), browser_generation: z.string(), page_id: z.string(), document_epoch: z.number().int().nonnegative(),

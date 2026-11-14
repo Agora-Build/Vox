@@ -14,6 +14,9 @@ import { browserStatusSchema, type BrowserCommand, type BrowserStatus } from "..
 const work = await fs.mkdtemp(path.join(os.tmpdir(), "vox-runtime-test-"));
 let loginPosts = 0;
 let verificationPosts = 0;
+let protectedLoads = 0;
+const delayedReady = process.env.BROWSER_TEST_DELAYED_READY === "1";
+const neverReady = process.env.BROWSER_TEST_EXPIRE === "1";
 const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/login") {
     loginPosts++; res.writeHead(303, { Location: "/verify", "Set-Cookie": "fixture-login=1; Path=/; HttpOnly" }); return res.end();
@@ -26,7 +29,9 @@ const server = http.createServer(async (req, res) => {
   }
   res.setHeader("Content-Type", "text/html");
   if (req.url === "/protected") {
+    protectedLoads++;
     if (!req.headers.cookie?.includes("fixture-verified=1")) { res.writeHead(302, { Location: "/login" }); return res.end(); }
+    if (delayedReady || neverReady) return res.end(`<body>Loading protected page<script>${neverReady ? "" : "setTimeout(() => { const ready = document.createElement('main'); ready.id = 'ready'; ready.textContent = 'Verified fixture'; document.body.append(ready); }, 6500);"}</script></body>`);
     return res.end('<body style="background:#d7f5d8"><main id="ready">Verified fixture</main></body>');
   }
   if (req.url === "/verify") return res.end(`<body style="margin:0;background:#fff5df"><input id="code" style="position:absolute;left:40px;top:60px;width:300px;height:40px"><button id="verify" style="position:absolute;left:40px;top:130px;width:200px;height:40px" onclick="fetch('/verify',{method:'POST',body:document.querySelector('#code').value}).then(r=>{if(r.ok)document.body.dataset.verified='true'})">Verify</button></body>`);
@@ -44,7 +49,7 @@ steps:
   - type: browser.ensure_authenticated
     target_url: ${origin}/protected
     authenticated_selector: '#ready'
-    authenticated_stability_ms: 100
+    authenticated_stability_ms: ${delayedReady ? 2000 : 100}
     login_url_pattern: '**/login'
     login_selector: '#email'
     email_selector: '#email'
@@ -154,8 +159,32 @@ async function exercise() { try {
   await input({ type: "mouse", action: "down", x: 80, y: 150, button: "left", click_count: 1 });
   await input({ type: "mouse", action: "up", x: 80, y: 150, button: "left", click_count: 1 });
   await until(async () => verificationPosts === 1);
+  const loadsBeforeContinue = protectedLoads;
+  assert.notEqual(selected.page_id, status.assistance!.page_id, "Verification must use a different tab from the original evaluation");
   await request(viewer, "assistance.continue", status, { ...identity(), wait_id: status.assistance!.wait_id });
+  if (delayedReady || neverReady) {
+    const checking = await until(async () => {
+      const current = browserStatusSchema.parse(await request(inspector, "session.status"));
+      return current.assistance?.last_check_reason === "selector_absent" ? current : false;
+    });
+    assert.equal(checking.assistance!.state, "checking");
+    assert.equal(checking.assistance!.page_id, status.assistance!.page_id, "Readiness stays pinned to the evaluation tab");
+    assert.equal(checking.controlling, false);
+  }
+  if (neverReady) {
+    assert.equal(await Promise.race([ended, new Promise((_, reject) => setTimeout(() => reject(new Error("Assistance deadline was not enforced")), 30000).unref())]), 1, output);
+    assert.match(output, /Browser assistance ended: state=expired, reason=assistance_expired, last_check_reason=selector_absent/);
+    assert.match(output, /Step 1 failed: browser.ensure_authenticated - ASSISTANCE_EXPIRED/);
+    assert.equal(protectedLoads, loadsBeforeContinue + 1, "Readiness retries must not repeatedly reload the target");
+    assert.equal(loginPosts, 1); assert.equal(verificationPosts, 1);
+    process.stdout.write("PASS: real Chromium: missing readiness expires on its original deadline, retains the safe reason, and never resubmits or repeatedly reloads\n");
+    return;
+  }
   assert.equal(await Promise.race([ended, new Promise((_, reject) => setTimeout(() => reject(new Error("Engine did not finish")), 30000).unref())]), 0, output);
+  if (delayedReady) {
+    assert.equal(protectedLoads, loadsBeforeContinue + 1, "Delayed rendering must not cause repeated target reloads");
+    assert.match(output, /Browser assistance ended: state=ready, reason=ready, last_check_reason=ready/);
+  }
   const storage = JSON.parse(await fs.readFile(saved, "utf8"));
   assert.ok(storage.cookies.some((cookie: { name: string }) => cookie.name === "fixture-verified"));
   assert.equal(loginPosts, 1, "Login must never be resubmitted"); assert.equal(verificationPosts, 1);

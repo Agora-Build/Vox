@@ -43,6 +43,22 @@ beforeEach(() => {
 });
 
 describe("owner-Core shared capture", () => {
+  it("forwards active and final v0.4.5 readiness outcomes without changing controller authority", async () => {
+    await open(a); await take(a);
+    const reason = { wait_id: waitId, kind: "authentication", state: "checking", reason: "selector_absent", last_check_reason: "selector_absent", page_id: "page", remaining_seconds: 20 };
+    send.mockImplementationOnce(async (_target, operation: BrowserOperation) => ({
+      version: 1, type: "response", id: operation.request!.id, ok: true,
+      result: { session_id: "session", browser_generation: "browser", capabilities: [], viewing: true, controlling: true,
+        pages: [{ page_id: "page", document_epoch: 1, origin: null }], next_sequence: 1,
+        assistance: reason, last_assistance: { ...reason, state: "expired", reason: "assistance_expired" } },
+    }));
+    const response = await run(b, "session.status");
+    expect(response.result?.assistance).toEqual(reason);
+    expect(response.result?.last_assistance).toMatchObject({ state: "expired", reason: "assistance_expired" });
+    expect(response.result?.controlling).toBe(false);
+    expect(response.viewer?.controller).toBe("other");
+  });
+
   it("opens one upstream viewer and fans the same frame out without consuming it per viewer", async () => {
     const [first, second] = await Promise.all([open(a), open(b)]);
     expect(first.viewer).toMatchObject({ count: 2, controller: null }); expect(second.result?.lease_id).toBe(first.result?.lease_id);

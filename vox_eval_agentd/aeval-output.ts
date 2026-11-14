@@ -97,8 +97,9 @@ const DEFAULT_MIN_NEEDLE_LENGTH = 4;
  * Order of preference:
  *  1. aeval's own loguru ERROR lines (its actual diagnosis, e.g.
  *     "Step 1 failed: platform.setup - Unknown variable source: secrets"),
- *     taking the LAST few so an early recoverable error can't bury the fatal
- *     one. Scans both arguments — loguru's sink may be either stream.
+ *     keeping a failed step ahead of secondary post-run analysis errors;
+ *     otherwise taking the LAST few so an early recoverable error cannot bury
+ *     the fatal one. Scans both arguments — loguru's sink may be either stream.
  *  2. Otherwise the last few non-noise lines, so we surface a traceback tail
  *     rather than the packaging banner.
  *
@@ -163,10 +164,12 @@ export function summarizeAevalFailure(
 
   const errors = lines.filter((l) => DIAGNOSIS_LINE.test(l)).map(strip);
   if (errors.length > 0) {
-    // Take the LAST errors, not the first: in a long run an early recoverable
-    // ERROR would otherwise bury the fatal one — the same "wrong line wins"
-    // failure this helper exists to fix. For a short trace the two coincide.
-    return scrub(errors.slice(-3).join(' | ')).slice(0, 500);
+    const failedStep = errors.filter((line) => /^Step \d+ failed:/i.test(line)).at(-1);
+    const secondaryAnalysis = failedStep && errors.slice(errors.lastIndexOf(failedStep) + 1).some((line) =>
+      /^(?:Configured analysis failed|Analysis completed with failures|Session failed: Configured analysis failed|Stage ['"][^'"]+['"] failed:)/i.test(line));
+    // A setup failure can leave no recording; analysis of that empty run is not its root cause.
+    const selected = secondaryAnalysis ? [failedStep, ...errors.slice(-2)] : errors.slice(-3);
+    return scrub([...new Set(selected)].join(' | ')).slice(0, 500);
   }
 
   const meaningful = lines.filter((l) => !NOISE.test(l));

@@ -30,6 +30,11 @@ async function viewerFixture(page: Page, options: { authorized?: boolean; delayG
       if (command.command === "viewer.open") response.result = { lease_id: "lease", mode: "read_only" };
       if (command.command === "viewer.take_control") { status.controlling = true; sharing.controller = "you"; status.assistance!.state = "held"; response.result = { control_id: "control", next_sequence: 1 }; }
       if (command.command === "viewer.release_control") { status.controlling = false; sharing.controller = null; }
+      if (command.command === "assistance.continue") {
+        status.controlling = false; sharing.controller = null;
+        status.assistance!.state = "checking"; status.assistance!.reason = "checking";
+        response.result = { checking: true };
+      }
       if (command.command === "viewer.input") {
         if (unknown) return route.fulfill({ json: { ...response, ok: false, error: "OUTCOME_UNKNOWN" } });
         response.result = { next_sequence: Number(command.params.sequence) + 1 };
@@ -79,6 +84,46 @@ test("spectators see exclusive ownership and can explicitly take control only af
   await expect(page.getByTestId("browser-frame")).toBeVisible();
   expect(fixture.commands.filter((command) => command.command === "viewer.release_control")).toHaveLength(1);
   expect(fixture.closed()).toBe(0);
+});
+
+test("continuation shows live readiness, the original evaluation tab, and the confirmed outcome", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  await page.getByTestId("button-open-browser").click();
+  await page.getByTestId("button-take-browser-control").click();
+  await page.getByLabel("Browser tab").click();
+  await page.getByRole("option", { name: /Tab 2/ }).click();
+  await expect(page.getByTestId("browser-evaluation-tab")).toHaveText("Evaluation checks Tab 1; you are viewing another tab");
+  await page.getByTestId("button-take-browser-control").click();
+  await page.getByRole("button", { name: "Check & continue" }).click();
+  const feedback = page.getByTestId("browser-readiness-status");
+  await expect(feedback).toContainText("Checking the evaluation tab");
+  await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
+  fixture.status.assistance!.reason = "selector_absent";
+  fixture.status.assistance!.last_check_reason = "selector_absent";
+  await expect(feedback).toContainText("required page element is not visible yet");
+  await expect(feedback).toContainText("retrying until the assistance deadline");
+  fixture.status.last_assistance = { ...fixture.status.assistance!, state: "ready", reason: "ready", last_check_reason: "ready" };
+  fixture.status.assistance = null;
+  await expect(feedback).toContainText("Readiness confirmed");
+  await expect(feedback).not.toContainText("Checking");
+  await expect(page.getByTestId("button-take-browser-control")).toBeDisabled();
+  expect(fixture.commands.filter((command) => command.command === "assistance.continue")).toHaveLength(1);
+});
+
+test("an expired check replaces Checking with its safe failure reason and never resubmits", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  await page.getByTestId("button-open-browser").click();
+  await page.getByTestId("button-take-browser-control").click();
+  await page.getByRole("button", { name: "Check & continue" }).click();
+  fixture.status.last_assistance = { ...fixture.status.assistance!, state: "expired", reason: "assistance_expired", last_check_reason: "still_on_login", remaining_seconds: 0 };
+  fixture.status.assistance = null;
+  const feedback = page.getByTestId("browser-readiness-status");
+  await expect(feedback).toContainText("Browser assistance expired");
+  await expect(feedback).toContainText("still on the login page");
+  await expect(feedback).not.toContainText("resumed");
+  await expect(feedback).not.toContainText("Checking");
+  await expect(page.getByTestId("button-take-browser-control")).toBeDisabled();
+  expect(fixture.commands.filter((command) => command.command === "assistance.continue")).toHaveLength(1);
 });
 
 test("slow navigation and status do not block the viewer heartbeat", async ({ page }) => {

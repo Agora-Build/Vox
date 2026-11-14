@@ -1,6 +1,6 @@
 # Live Browser Assistance
 
-Vox integrates aeval v0.4.4's private inspection protocol into the existing
+Vox integrates aeval v0.4.5's private inspection protocol into the existing
 evaluation job page. It views the **already running browser**; it does not launch
 a second login, replay a scenario, expose CDP, or move Brokered passwords onto
 an eval agent. The binary and runtime-data submodule are pinned to the same
@@ -23,11 +23,18 @@ release, with architecture-specific binary checksums.
    share cookies; the original login page remains intact. Navigation and tab
    selection revoke control. Refresh status and explicitly take control again.
 5. **Check & continue** releases input and checks the original readiness
-   condition. It does not resubmit the login or retry a failed step. The normal
-   job result remains authoritative.
-6. **Release control** revokes input and resumes automation without closing
-   other viewers. It uses aeval's native release operation: it ends the current
-   assistance hold, rather than reserving it for another viewer. A viewer can
+   condition. Acceptance means the check was requested, not that login or setup
+   succeeded. With aeval v0.4.5, the original evaluation tab returns to its
+   protected target once, then retries readiness while delayed page content
+   renders, within the existing assistance deadline. It does not resubmit login,
+   repeatedly reload the target, or retry a failed step. The viewer labels the
+   evaluation tab separately from the selected verification tab and shows safe
+   readiness reasons, confirmed continuation, or expiry. The normal job result
+   remains authoritative.
+6. **Release control** revokes input and requests the original readiness check
+   without closing other viewers. Automation resumes only after readiness is
+   confirmed. It uses aeval's native release operation, rather than reserving
+   the current hold for another viewer. A viewer can
    explicitly take control again at a subsequent supported wait. There is no
    forced takeover or automatic control transfer.
 7. **Close view** detaches only your viewer. Backgrounding the Vox tab also closes its view.
@@ -40,6 +47,27 @@ release, with architecture-specific binary checksums.
 There is no recording, preparation-action recorder, generated eval flow, LLM
 interaction, arbitrary JavaScript, or general action retry in this release.
 Phone evaluations and Tools > Analyze do not have a live browser viewer.
+
+### Login Readiness And Failure Reporting
+
+An authenticated home page is not necessarily the evaluation's required agent
+preview. Readiness remains pinned to the original evaluation tab and its URL,
+required element and stability checks; selecting another tab only changes the
+shared view. The UI displays the engine's current reason and final
+`last_assistance` outcome instead of leaving a static "Checking..." message.
+Unknown reason values are not displayed; no verification URLs, credentials or
+browser storage are included in readiness feedback.
+
+Deploy both the daemon and broker with v0.4.5 to receive bounded readiness
+retries. Core's new optional status fields still accept v0.4.4 agents during
+rollout, but a Core-only upgrade cannot fix their old one-shot readiness check.
+Absolute assistance/login/job deadlines and explicit controller ownership are
+unchanged. A new controller interrupts pending readiness checks; automation
+does not run while someone controls the browser.
+
+If setup fails and post-run analysis then fails because no audio/events were
+produced, the daemon keeps the failed step first in its redacted error summary.
+The analysis error remains secondary; it is not proof that login was rejected.
 
 ## Authority Is Stronger Than Job Visibility
 
@@ -312,7 +340,7 @@ budget require a separate explicit decision and measurement.
    permit internal Core-to-Core calls, and deny `/internal/core-routing` publicly.
    Keep the broker callback internal. Single-Core deployments need no new settings.
 3. Deploy the broker Docker target and daemon target from this revision. Both
-   include the pinned v0.4.4 binary/runtime assets. No new host privilege, public
+   include the pinned v0.4.5 binary/runtime assets. No new host privilege, public
    port, sound device, or persistent browser credential mount is introduced.
 4. Verify personal owner-and-launcher access, denial of both parties in a borrowed
    personal run, exact-org manager access and member denial (even for a member
@@ -349,6 +377,10 @@ docker run --rm --network none --entrypoint node \
   vox-browser-test /app/runtime-smoke.mjs
 # Also run with --env BROWSER_TEST_RELEASE=1 to verify controller-disconnect
 # release/resume and continued spectator capture against the real engine.
+# Run with --env BROWSER_TEST_DELAYED_READY=1 to verify a second-tab login,
+# 6.5-second delayed rendering, a two-second stability check and one target reload.
+# Run with --env BROWSER_TEST_EXPIRE=1 to verify a missing element expires on
+# the original deadline and retains its safe last-check reason.
 ```
 
 This fixture is not a real-provider login, an iPad-device test, or an
@@ -450,3 +482,21 @@ multi-viewer throughput/audio-latency benchmark is implied by these results.
   fresh-image rerun did not reproduce it. This PR does not change the audio stack.
 - Focused lint and whitespace passed. Fresh per-frame authorization remains
   intentional; the viewer/request limits are not a throughput qualification.
+
+### Login-Readiness Gate On 2026-11-14
+
+- Binary and runtime data are pinned to aeval v0.4.5, with Linux x86_64 and
+  ARM64 release checksums. Production build, isolated schema-71 migration,
+  Core/client and daemon type checks, focused lint and whitespace checks passed.
+- Full unit/integration suite: **3,965 passed, 84 skipped**. All **12
+  browser-assistance UI tests passed**, including live retry feedback, expiry,
+  evaluation-versus-verification tabs and no automatic command replay.
+- Four credential-free fixtures passed against the packaged Linux x86_64
+  engine and real Chromium: normal second-tab verification, controller release
+  with a surviving spectator, a ready element delayed 6.5 seconds plus a
+  two-second stability check, and a permanently missing ready element.
+  Delayed readiness resumes; missing readiness expires on the original deadline.
+  Both cases check one target reload and no repeated login/verification submission.
+- These checks do not cover a real ElevenLabs account, ARM64 execution, a new
+  daemon/broker Docker build, or production deployment. Core, daemon and broker
+  must be deployed together to receive both engine and UI changes.

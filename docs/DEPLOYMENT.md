@@ -5,7 +5,10 @@ This guide covers deploying Vox to production using Coolify (what vox.agora.buil
 ## Live browser assistance rollout (schema 71)
 
 Deploy Core first, then the auth-session broker and eval-agent daemon built with
-aeval v0.4.4. Migration `0068_browser_assistance_mints.sql` adds nullable,
+aeval v0.4.5. This release retries protected-page readiness after browser
+assistance, including delayed SPA rendering, and reports safe readiness outcomes.
+Deploy both daemon and broker images; updating Core alone does not change an
+older engine's one-shot continuation check. Migration `0068_browser_assistance_mints.sql` adds nullable,
 claim-fenced broker operation routing; no credentials or browser frames are
 backfilled. Schema 70 (`0069_core_connection_routing.sql`) adds shared connection
 ownership, replay nonces and browser-viewer grants, without credentials/frames.
