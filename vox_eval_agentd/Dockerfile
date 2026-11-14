@@ -73,10 +73,10 @@ WORKDIR /app
 # default and aeval resolves the card ID by reading it. The broker target
 # never does audio I/O (setup:account only) and needs none of this.
 ARG TARGETARCH
-ARG AEVAL_VERSION=v0.4.4
+ARG AEVAL_VERSION=v0.4.5
 # Override the matching checksum too when selecting a different release.
-ARG AEVAL_SHA256_X86_64=a4e1a1dd1b80bd4db6cb2569a99259da5b26860d833601c1be07a750d682a697
-ARG AEVAL_SHA256_ARM64=84921aeafc976cf7e079f7937c31bfa9e541d27306a0576135c2af60f4c26e64
+ARG AEVAL_SHA256_X86_64=113f6dc66baf59bda0463bc3da30157d5c31800366a19db87df189024e8ea0d5
+ARG AEVAL_SHA256_ARM64=f9d5585ae6956a5b06cb96841c0f977b519ea72c50974f6293b54294062c150a
 RUN case "${TARGETARCH}" in \
       arm64) ARCH=arm64; SHA256="${AEVAL_SHA256_ARM64}" ;; \
       amd64|"") ARCH=x86_64; SHA256="${AEVAL_SHA256_X86_64}" ;; \

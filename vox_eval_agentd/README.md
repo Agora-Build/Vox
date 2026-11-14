@@ -190,12 +190,19 @@ job.config = {
 
 ### Live Browser Assistance
 
-The pinned aeval v0.4.4 release supports the existing live browser session through
+The pinned aeval v0.4.5 release supports the existing live browser session through
 a private Unix socket. Updated daemons advertise `browserAssistance: "1"` and
 connect outbound to Core at `/ws/eval-browser`; no browser/debugging port is
 published. Core authorizes credential owners / exact-org secret managers before
 forwarding transient frames or explicit input. Brokered logins are viewed on the
 broker, never by sending their passwords to this daemon.
+
+Check & continue requests a readiness check, not an unconditional resume. The
+engine restores the original evaluation target once and retries delayed page
+readiness within the existing hold deadline, without resubmitting credentials.
+Vox shows safe failure reasons and final outcomes, and identifies which tab the
+evaluation checks. The daemon preserves a failed setup step ahead of secondary
+analysis errors caused by missing recordings/events.
 
 Viewing is read-only until Take control at a supported wait. Viewer leases expire
 without user heartbeats; holds are absolute, default to 120 seconds per supported

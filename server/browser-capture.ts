@@ -206,7 +206,7 @@ export class BrowserCaptures {
           if (!page) { await this.close(capture); throw new Error("Selected browser tab closed; reopen the viewer"); }
           if (!status.controlling) { capture.controller = null; capture.controlId = null; capture.waitId = null; }
           if (page.document_epoch !== capture.epoch) { capture.epoch = page.document_epoch; capture.frame = null; }
-          response = { ...response, result: { ...response.result, controlling: capture.controller === grant.id } };
+          response = { ...response, result: { ...status, controlling: capture.controller === grant.id } };
         }
       }
       capture.revision++;

@@ -97,8 +97,9 @@ const DEFAULT_MIN_NEEDLE_LENGTH = 4;
  * Order of preference:
  *  1. aeval's own loguru ERROR lines (its actual diagnosis, e.g.
  *     "Step 1 failed: platform.setup - Unknown variable source: secrets"),
- *     taking the LAST few so an early recoverable error can't bury the fatal
- *     one. Scans both arguments — loguru's sink may be either stream.
+ *     keeping a failed step ahead of secondary post-run analysis errors;
+ *     otherwise taking the LAST few so an early recoverable error cannot bury
+ *     the fatal one. Scans both arguments — loguru's sink may be either stream.
  *  2. Otherwise the last few non-noise lines, so we surface a traceback tail
  *     rather than the packaging banner.
  *
@@ -163,10 +164,19 @@ export function summarizeAevalFailure(
 
   const errors = lines.filter((l) => DIAGNOSIS_LINE.test(l)).map(strip);
   if (errors.length > 0) {
-    // Take the LAST errors, not the first: in a long run an early recoverable
-    // ERROR would otherwise bury the fatal one — the same "wrong line wins"
-    // failure this helper exists to fix. For a short trace the two coincide.
-    return scrub(errors.slice(-3).join(' | ')).slice(0, 500);
+    const failedStep = errors.filter((line) => /^Step \d+ failed:/i.test(line)).at(-1);
+    const following = failedStep ? errors.slice(errors.lastIndexOf(failedStep) + 1) : [];
+    const emptyRun = /<no recording>|no parseable events\b/i;
+    const analysisDiagnostic = /^(?:(?:Session failed:\s*)?Configured analysis failed|(?:Error:\s*)?Stage ['"][^'"]+['"] failed:|\[\d+\/\d+\] Failed:)/i;
+    const emptyAnalysis = (line: string) => analysisDiagnostic.test(line) && emptyRun.test(line);
+    const summaryWrapper = /^(?:Analysis completed with failures(?:: \d+\/\d+ recording\(s\) succeeded, \d+ failed)?|Session completed with post-run errors: \S+|(?:Session failed: )?Configured analysis failed)$/i;
+    // Promote only known empty-run fallout; unrelated fatal/stage errors retain the normal tail priority.
+    const secondaryAnalysis = failedStep
+      && following.some(emptyAnalysis)
+      && following.every((line) => summaryWrapper.test(line) || emptyAnalysis(line)
+        || /^Test \d+ failed: Step \d+ \([^)]+\) failed:/i.test(line));
+    const selected = secondaryAnalysis ? [failedStep, ...errors.slice(-2)] : errors.slice(-3);
+    return scrub([...new Set(selected)].join(' | ')).slice(0, 500);
   }
 
   const meaningful = lines.filter((l) => !NOISE.test(l));

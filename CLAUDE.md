@@ -186,7 +186,7 @@ Region locations are admin-managed; site IDs are `<location-base>-<sequence>` (e
 
 ### Auth-Session Broker
 
-**Live browser assistance (aeval v0.4.4):** maintained contract in
+**Live browser assistance (aeval v0.4.5):** maintained contract in
 `docs/browser-assistance.md`; schema 69 persists fenced mint routing and schema
 70 adds Core connection ownership, replay nonces and shared viewer grants; schema
 71 permits concurrent target grants. The owner-Core's `BrowserCaptures` module

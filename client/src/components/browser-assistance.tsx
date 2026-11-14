@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { browserStatusSchema, browserFrameSchema, type BrowserCommand, type BrowserResponse, type BrowserStatus, type BrowserFrame, type BrowserViewerState } from "@shared/browser-assistance";
+import { browserReadinessMessage } from "@/lib/browser-readiness";
 
 type Availability = { available: boolean; target?: "agent" | "broker"; deadline?: string; status?: BrowserStatus };
 type View = { id: string; leaseId: string; pageId: string; epoch: number; sessionId: string; generation: string; revision: number };
@@ -244,7 +245,9 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
     try {
       const response = await command("assistance.continue", { ...identity(), wait_id: status.assistance.wait_id });
       if (!response.ok) protocolError(response);
-      control.current = null; setInteractive(false); setMessage("Checking the original readiness condition. No login or submission will be repeated.");
+      control.current = null; setInteractive(false); setMessage(null);
+      setStatus((current) => current?.assistance?.wait_id === status.assistance!.wait_id
+        ? { ...current, assistance: { ...current.assistance, state: "checking", reason: "checking" } } : current);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Continuation unavailable"); }
     finally { setBusy(false); }
   };
@@ -255,10 +258,18 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
     try {
       const response = await command("viewer.release_control", { ...identity(), control_id: current.id });
       if (!response.ok) protocolError(response);
-      setStatus(null); setMessage("Control released. The evaluation resumes; viewers can take control at the next supported wait.");
+      setMessage(null);
+      setStatus((status) => status?.assistance?.wait_id === current.waitId
+        ? { ...status, assistance: { ...status.assistance, state: "checking", reason: "checking" } } : status);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Control release could not be confirmed. Close and reopen the view."); }
     finally { setBusy(false); }
   };
+
+  const readinessMessage = browserReadinessMessage(status);
+  const evaluationPageId = status?.assistance?.page_id ?? status?.last_assistance?.page_id;
+  const evaluationTab = status?.pages.findIndex((page) => page.page_id === evaluationPageId) ?? -1;
+  const canTakeControl = !!status?.assistance && ["waiting", "held", "checking"].includes(status.assistance.state)
+    && status.assistance.remaining_seconds !== 0;
 
   if (!data?.available && !open) return null;
   return <>
@@ -284,12 +295,13 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
               control.current = null; setInteractive(false); setFrame(null);
             } catch (error) { setMessage(error instanceof Error ? error.message : "Tab unavailable"); }
           }}><SelectTrigger className="w-full sm:w-72" aria-label="Browser tab"><SelectValue placeholder="Choose tab" /></SelectTrigger><SelectContent>
-            {status.pages.map((page, index) => <SelectItem key={page.page_id} value={page.page_id}>Tab {index + 1} · {page.origin ?? "Loading"}</SelectItem>)}
+            {status.pages.map((page, index) => <SelectItem key={page.page_id} value={page.page_id}>Tab {index + 1}{page.page_id === evaluationPageId ? " (evaluation)" : ""} · {page.origin ?? "Loading"}</SelectItem>)}
           </SelectContent></Select>}
-          {interactive ? <Button size="sm" variant="outline" onClick={() => void releaseControl()} disabled={busy} title="Release input and resume automation; other viewers stay connected" data-testid="button-release-browser-control">Release control</Button>
-            : <Button size="sm" onClick={() => void takeControl()} disabled={busy || sharing?.controller === "other" || !status?.assistance || !view.current} data-testid="button-take-browser-control"><MousePointer2 className="mr-1 h-4 w-4" />{sharing?.controller === "other" ? "Another viewer has control" : "Take control"}</Button>}
+          {interactive ? <Button size="sm" variant="outline" onClick={() => void releaseControl()} disabled={busy} title="Release input and check readiness; other viewers stay connected" data-testid="button-release-browser-control">Release control</Button>
+            : <Button size="sm" onClick={() => void takeControl()} disabled={busy || sharing?.controller === "other" || !canTakeControl || !view.current} data-testid="button-take-browser-control"><MousePointer2 className="mr-1 h-4 w-4" />{sharing?.controller === "other" ? "Another viewer has control" : "Take control"}</Button>}
           <Button size="sm" variant="outline" onClick={() => void continueRun()} disabled={busy || !interactive || !status?.assistance || !view.current}><Play className="mr-1 h-4 w-4" /> Check &amp; continue</Button>
           {status?.assistance?.remaining_seconds != null && <span className="text-xs text-muted-foreground">Hold: {Math.ceil(status.assistance.remaining_seconds)}s remaining</span>}
+          {evaluationTab >= 0 && <span className="text-xs text-muted-foreground" data-testid="browser-evaluation-tab">Evaluation checks Tab {evaluationTab + 1}{view.current && view.current.pageId !== evaluationPageId ? "; you are viewing another tab" : ""}</span>}
         </div>
         <div ref={surface} tabIndex={0} role="group" aria-label="Remote browser viewport" style={{ touchAction: interactive ? "none" : "auto" }} className="min-h-40 max-h-[60vh] overflow-auto bg-muted/50 outline-none focus-visible:ring-2 focus-visible:ring-primary"
           onKeyDown={(event) => {
@@ -346,6 +358,7 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
             });
           }}><Input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="Paste a verification link" aria-label="Verification URL" autoComplete="off" /><Button type="submit" variant="outline" disabled={!url}><ExternalLink className="mr-1 h-4 w-4" /> Open in new tab</Button></form>}
           {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
+          {readinessMessage && <Alert role="status" aria-live="polite" data-testid="browser-readiness-status"><AlertDescription>{readinessMessage}</AlertDescription></Alert>}
           {receipt && view.current && <Button size="sm" variant="outline" onClick={async () => {
             try {
               const response = await command("command.status", { lease_id: view.current!.leaseId, command_id: receipt });

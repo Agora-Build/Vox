@@ -1971,6 +1971,78 @@ describe("summarizeAevalFailure", () => {
     expect(summarizeAevalFailure("", "")).toBe("unknown error");
   });
 
+  it("keeps the original failed step ahead of secondary missing-recording analysis errors", () => {
+    const log = [
+      "Step 1 failed: platform.setup - ASSISTANCE_EXPIRED",
+      "Test 1 failed: Step 1 (platform.setup) failed: ASSISTANCE_EXPIRED",
+      "Stage 'events' failed: Configured events extraction found no parseable events in console.log.",
+      "[1/1] Failed: <no recording>",
+      "Error: Stage 'events' failed: Configured events extraction found no parseable events in console.log.",
+      "Analysis completed with failures: 0/1 recording(s) succeeded, 1 failed",
+      "Configured analysis failed: Configured analysis failed for one or more inputs: <no recording>: Stage 'events' failed: Configured events extraction found no parseable events in console.log.",
+      "Session completed with post-run errors: session-id",
+      "Session failed: Configured analysis failed for <no recording>",
+    ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
+    const summary = summarizeAevalFailure("", log);
+    expect(summary).toMatch(/^Step 1 failed: platform.setup - ASSISTANCE_EXPIRED/);
+    expect(summary).toContain("Configured analysis failed");
+    expect(summary.length).toBeLessThanOrEqual(500);
+  });
+
+  it("preserves the latest failed step and still scrubs credentials in that root cause", () => {
+    const secret = "password-from-filled-yaml";
+    const log = [
+      "Step 1 failed: platform.setup - recovered first attempt",
+      `Step 4 failed: browser.click - rejected ${secret}`,
+      "Configured analysis failed: <no recording>",
+      "Session completed with post-run errors: session-id",
+      "Session failed: Configured analysis failed",
+    ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
+    const summary = summarizeAevalFailure(log, "", [secret]);
+    expect(summary).toMatch(/^Step 4 failed: browser.click/);
+    expect(summary).toContain("[redacted]");
+    expect(summary).not.toContain(secret);
+    expect(summary).not.toContain("recovered first attempt");
+  });
+
+  it("does not replace a later fatal error with an old failed step when no analysis follows", () => {
+    const log = ["Step 1 failed: transient retry", "retry failed", "cleanup failed", "fatal: disk full"]
+      .map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
+    expect(summarizeAevalFailure(log, "")).toContain("fatal: disk full");
+    expect(summarizeAevalFailure(log, "")).not.toContain("transient retry");
+  });
+
+  it.each([
+    ["Stage 'transcript' failed: provider rate limit", "Configured analysis failed: provider rate limit"],
+    ["fatal: disk full", "Configured analysis failed: <no recording>"],
+    ["Stage 'transcript' failed: provider rate limit", "Configured analysis failed: <no recording>"],
+  ])("does not promote a recovered step over %s", (fatal, analysis) => {
+    const log = [
+      "Step 1 failed: recovered transient retry", fatal, analysis,
+      "Session completed with post-run errors: session-id",
+      "Session failed: Configured analysis failed",
+    ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
+    const summary = summarizeAevalFailure(log, "");
+    expect(summary).toContain(analysis);
+    expect(summary).not.toContain("recovered transient retry");
+  });
+
+  it.each([
+    "Configured analysis failed: provider rate limit",
+    "Analysis completed with failures: provider rate limit",
+    "Session failed: Configured analysis failed: provider rate limit",
+  ])("preserves an independent wrapper diagnostic after empty-run fallout: %s", (independent) => {
+    const log = [
+      "Step 1 failed: recovered transient retry",
+      "Configured analysis failed: <no recording>", independent,
+      "Session completed with post-run errors: session-id",
+      "Session failed: Configured analysis failed",
+    ].map((line) => `2026-11-14 00:17:00 | ERROR | ${line}`).join("\n");
+    const summary = summarizeAevalFailure(log, "");
+    expect(summary).toContain(independent);
+    expect(summary).not.toContain("recovered transient retry");
+  });
+
   it("caps length so one bad run can't bloat the job's error column", () => {
     const flood = Array.from({ length: 200 }, (_, i) => `2026-01-01 00:00:00 | ERROR    | line ${i}`).join("\n");
     expect(summarizeAevalFailure(flood, "").length).toBeLessThanOrEqual(500);
