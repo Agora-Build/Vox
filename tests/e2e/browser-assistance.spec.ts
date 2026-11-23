@@ -35,6 +35,11 @@ async function viewerFixture(page: Page, options: { authorized?: boolean; delayG
         status.assistance!.state = "checking"; status.assistance!.reason = "checking";
         response.result = { checking: true };
       }
+      if (command.command === "authentication.continue") {
+        status.controlling = false; sharing.controller = null;
+        status.assistance!.state = "checking"; status.assistance!.authentication = null;
+        response.result = { checking: true };
+      }
       if (command.command === "viewer.input") {
         if (unknown) return route.fulfill({ json: { ...response, ok: false, error: "OUTCOME_UNKNOWN" } });
         response.result = { next_sequence: Number(command.params.sequence) + 1 };
@@ -126,6 +131,65 @@ test("an expired check replaces Checking with its safe failure reason and never 
   expect(fixture.commands.filter((command) => command.command === "assistance.continue")).toHaveLength(1);
 });
 
+test("a recognized post-verification stage needs explicit credential consent and uses engine stage fences", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  fixture.status.assistance!.authentication = { stage_id: "password", page_id: "verification", stage_token: "opaque-stage" };
+  await page.getByTestId("button-open-browser").click();
+  const signIn = page.getByRole("button", { name: "Sign in & continue", exact: true });
+  await expect(signIn).toBeDisabled();
+  await expect(page.getByTestId("browser-readiness-status")).toContainText("authorizes aeval");
+  expect(fixture.commands.filter((command) => command.command === "authentication.continue")).toHaveLength(0);
+  await page.getByTestId("button-take-browser-control").click();
+  await expect(signIn).toBeEnabled();
+  await signIn.click();
+  await expect(signIn).not.toBeVisible();
+  await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
+  const submitted = fixture.commands.filter((command) => command.command === "authentication.continue");
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0]).toMatchObject({ session_id: "session", browser_generation: "generation", params: {
+    lease_id: "lease", page_id: "login", document_epoch: 1, wait_id: "wait", stage_id: "password", stage_token: "opaque-stage",
+  } });
+  expect(fixture.commands.filter((command) => command.command === "assistance.continue")).toHaveLength(0);
+  await page.waitForTimeout(1300);
+  expect(fixture.commands.filter((command) => command.command === "authentication.continue")).toHaveLength(1);
+});
+
+test("a readiness-only check needing credentials retains control for explicit consent", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  await page.route("**/api/eval-jobs/987654/browser/viewers/*/commands", async (route) => {
+    const command = route.request().postDataJSON();
+    if (command.command !== "assistance.continue") return route.fallback();
+    fixture.status.assistance!.authentication = { stage_id: "password", page_id: "verification", stage_token: "opaque" };
+    return route.fulfill({ json: { version: 1, type: "response", id: command.id, ok: false, error: "AUTH_CREDENTIAL_CONTINUATION_REQUIRED" } });
+  });
+  await page.getByTestId("button-open-browser").click();
+  await page.getByTestId("button-take-browser-control").click();
+  await page.getByRole("button", { name: "Check & continue" }).click();
+  await expect(page.getByText("You have control")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in & continue", exact: true })).toBeEnabled();
+  expect(fixture.commands.filter((command) => command.command === "authentication.continue")).toHaveLength(0);
+});
+
+test("an unconfirmed credential action closes control and offers an explicit reopen without replay", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  fixture.status.assistance!.authentication = { stage_id: "password", page_id: "verification", stage_token: "opaque" };
+  let attempts = 0;
+  await page.route("**/api/eval-jobs/987654/browser/viewers/*/commands", async (route) => {
+    const command = route.request().postDataJSON();
+    if (command.command !== "authentication.continue") return route.fallback();
+    attempts++;
+    return route.fulfill({ json: { version: 1, type: "response", id: command.id, ok: false, error: "OUTCOME_UNKNOWN" } });
+  });
+  await page.getByTestId("button-open-browser").click();
+  await page.getByTestId("button-take-browser-control").click();
+  await page.getByRole("button", { name: "Sign in & continue", exact: true }).click();
+  await expect(page.getByText(/Reopen the browser and inspect its state/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reopen", exact: true })).toBeVisible();
+  await expect.poll(fixture.closed).toBe(1);
+  await page.waitForTimeout(1200);
+  expect(attempts).toBe(1);
+});
+
 test("slow navigation and status do not block the viewer heartbeat", async ({ page }) => {
   const fixture = await viewerFixture(page);
   let resume!: () => void, navigating = false;
@@ -153,9 +217,11 @@ test("slow navigation and status do not block the viewer heartbeat", async ({ pa
 
 test("navigation drops control, and an unknown input outcome is never automatically replayed", async ({ page }) => {
   const fixture = await viewerFixture(page); await page.getByTestId("button-open-browser").click(); await page.getByTestId("button-take-browser-control").click();
+  await expect(page.getByText("You have control")).toBeVisible();
   fixture.status.pages[0].document_epoch++; fixture.status.controlling = false;
   await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
   fixture.unknown(); await page.getByTestId("button-take-browser-control").click();
+  await expect(page.getByText("You have control")).toBeVisible();
   await page.getByLabel("Text to send to browser").fill("once"); await page.getByRole("button", { name: "Send text", exact: true }).click();
   await expect(page.getByText(/The action may have happened/)).toBeVisible();
   await expect(page.getByText("Read-only", { exact: true })).toBeVisible();

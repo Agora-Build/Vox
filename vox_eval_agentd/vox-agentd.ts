@@ -38,6 +38,9 @@ import { describeFetchError, describeRequest, describeHttpFailure, createFailure
 import { StringDecoder } from 'string_decoder';
 import yaml from 'js-yaml';
 import { injectStorageSession } from './session-inject';
+import { newAccountExecutionId } from './account-checkpoints';
+import { prepareAccountRuntime } from './account-session-runtime';
+import { createAccountWorkspace, initializeAccountWorkspaces } from './account-workspace';
 import { normalizeDialableNumber } from '../shared/steps';
 import { DialfClient, probeDialf, resolveDialfSocketPath, withSim, type DialfProbe } from './dialf-client';
 import { runPhoneJob, finishPhoneMetrics } from './phone-eval';
@@ -259,6 +262,9 @@ class VoxEvalAgentDaemon {
   private browserBridge: ReverseBrowserBridge | null = null;
   private cancelRun: (() => void) | null = null;
   private executionCancelled = false;
+  private stopping = false;
+  private accountCompletion: Promise<void> | null = null;
+  private runtimeAccountRevision: string | null = null;
   private browserObservation: "read_only" | "interactive" | null = null;
   private networkEvents = new NetworkEventBuffer();
   private networkObserver = new NetworkObserver();
@@ -540,8 +546,7 @@ class VoxEvalAgentDaemon {
       const body = await response.clone().json() as { superseded?: boolean };
       if (body?.superseded) {
         console.error('[Daemon] Superseded by a newer instance on the same token — exiting.');
-        this.stop();
-        process.exit(1);
+        try { await this.stop(); } finally { process.exit(1); }
       }
     } catch { /* not a superseded response */ }
   }
@@ -692,6 +697,7 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   async fetchSecrets(jobId: number): Promise<Record<string, string>> {
+    this.runtimeAccountRevision = null;
     try {
       const response = await this.fetch(`/api/eval-agent/jobs/${jobId}/secrets?leaseId=${encodeURIComponent(this.leaseId ?? '')}`);
       if (!response.ok) {
@@ -700,6 +706,8 @@ class VoxEvalAgentDaemon {
         return {};
       }
       const secrets: Record<string, string> = await response.json();
+      const revision = response.headers.get('X-Vox-Account-Revision');
+      this.runtimeAccountRevision = revision && /^[a-f0-9]{64}$/.test(revision) ? revision : null;
       const count = Object.keys(secrets).length;
       if (count > 0) {
         console.log(`[Daemon] Fetched ${count} secret(s) for job ${jobId}`);
@@ -939,7 +947,32 @@ class VoxEvalAgentDaemon {
     }
   }
 
-  private runAeval(scenarioConfig: string): Promise<EvalResult> {
+  private async runAeval(scenarioConfig: string): Promise<EvalResult> {
+    if (this.executionCancelled || this.stopping) throw new Error('Evaluation cancelled');
+    let completed!: () => void;
+    const completion = new Promise<void>(resolve => { completed = resolve; });
+    this.accountCompletion = completion;
+    const job = this.claimedJob;
+    const sessionId = newAccountExecutionId(job?.id ?? this.currentJobId!);
+    let account: Awaited<ReturnType<typeof prepareAccountRuntime>> = null;
+    try {
+      account = job?.startedAt && this.leaseId ? await prepareAccountRuntime({
+        scenarioFile: scenarioConfig, sessionId, jobId: job.id, startedAt: job.startedAt, leaseId: this.leaseId,
+        credentialRevision: this.runtimeAccountRevision,
+        fetch: (url, options) => this.fetch(url, options), cancelled: () => this.executionCancelled,
+      }) : null;
+      return await this.runAevalProcess(account?.scenarioFile ?? scenarioConfig, sessionId);
+    }
+    finally {
+      // Checkpoints represent confirmed authentication, even if evaluation or
+      // analysis later failed. Persistence has its own bounded finalization.
+      try { await account?.finish(); }
+      catch { console.warn('[Daemon] Account-session cleanup incomplete; private workspace sweep will retry'); }
+      completed(); if (this.accountCompletion === completion) this.accountCompletion = null;
+    }
+  }
+
+  private runAevalProcess(scenarioConfig: string, sessionId: string): Promise<EvalResult> {
     if (this.executionCancelled) return Promise.reject(new Error('Evaluation cancelled'));
     let browserDir: string | null = null;
     if (supportsBrowserAssistance(this.aevalVersion)) {
@@ -947,7 +980,7 @@ class VoxEvalAgentDaemon {
       this.browserSessions = new LocalBrowserSessions(path.join(browserDir, 'control.sock'));
     }
     return new Promise<EvalResult>((resolve, reject) => {
-      const args = ['run', scenarioConfig];
+      const args = ['run', scenarioConfig, '--session-id', sessionId];
       if (browserDir) args.push('--browser-control-socket', path.join(browserDir, 'control.sock'), '--browser-assistance-timeout', String(browserAssistanceTimeoutSeconds()));
 
       if (!this.config.headless) {
@@ -2289,6 +2322,7 @@ class VoxEvalAgentDaemon {
     const stepsSuffix = toText(config.stepsSuffix, parsed.stepsSuffix, filled.parts.stepsSuffix);
 
     const tempFiles: (string | null)[] = [];
+    const accountWorkspaces: ReturnType<typeof createAccountWorkspace>[] = [];
 
     try {
       // session-injected jobs get a Core-minted storageState instead of
@@ -2297,7 +2331,9 @@ class VoxEvalAgentDaemon {
       if (sessionCfg) {
         const bundle = await this.fetchSession(job.id); // throws → job fails before any eval time
         if (bundle && stepsPrefix) {
-          const storageFile = path.join(os.tmpdir(), `vox-session-${job.id}-${Date.now()}.json`);
+          const workspace = createAccountWorkspace();
+          accountWorkspaces.push(workspace);
+          const storageFile = workspace.storageFile;
           fs.writeFileSync(storageFile, JSON.stringify(bundle.storageState), { mode: 0o600 });
           tempFiles.push(storageFile);
           const injectResult = injectStorageSession(stepsPrefix, storageFile);
@@ -2355,6 +2391,9 @@ class VoxEvalAgentDaemon {
     } finally {
       // Errors propagate so processJobs reports the job as failed (and redacts).
       this.cleanupTempFiles(...tempFiles);
+      for (const workspace of accountWorkspaces) {
+        try { workspace.close(); } catch { console.warn('[Daemon] Account workspace cleanup pending'); }
+      }
     }
   }
 
@@ -2370,7 +2409,7 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   async processJobs(): Promise<void> {
-    if (this.isRunningJob) return;
+    if (this.isRunningJob || this.stopping) return;
 
     const jobs = await this.fetchJobs();
 
@@ -2471,6 +2510,7 @@ class VoxEvalAgentDaemon {
   // -------------------------------------------------------------------------
 
   start(): void {
+    initializeAccountWorkspaces();
     const buildDate = process.env.BUILD_DATE || 'unknown';
     console.log(`[Daemon] Starting vox_eval_agentd`);
     console.log(`  - Build: ${shortBuildTag()} (${buildDate})`);
@@ -2521,7 +2561,8 @@ class VoxEvalAgentDaemon {
     console.log(`[Daemon] Agent daemon started. Press Ctrl+C to stop.`);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopping = true;
     this.executionCancelled = true;
     this.browserBridge?.stop();
     this.browserSessions?.destroy();
@@ -2532,6 +2573,9 @@ class VoxEvalAgentDaemon {
     if (this.networkTimer) clearInterval(this.networkTimer);
     if (this.resourceTimer) clearInterval(this.resourceTimer);
     if (this.healthServer) this.healthServer.close();
+    let drainTimer: NodeJS.Timeout | undefined;
+    await Promise.race([this.accountCompletion, new Promise(resolve => { drainTimer = setTimeout(resolve, 16_000); })]);
+    clearTimeout(drainTimer);
   }
 }
 
@@ -2635,15 +2679,10 @@ async function main() {
     process.exit(1);
   }
 
-  process.on('SIGINT', () => {
-    daemon.stop();
-    process.exit(0);
-  });
-
-  process.on('SIGTERM', () => {
-    daemon.stop();
-    process.exit(0);
-  });
+  let shuttingDown = false;
+  const shutdown = async () => { if (shuttingDown) return; shuttingDown = true; await daemon.stop(); process.exit(0); };
+  process.once('SIGINT', () => { void shutdown(); });
+  process.once('SIGTERM', () => { void shutdown(); });
 
   daemon.start();
 }

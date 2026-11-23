@@ -550,6 +550,29 @@ describe("auth-session-broker HTTP service", () => {
     expect(response.status).toBe(200);
   });
 
+  it("requires a separate proof for checkpoint-managed mint requests", async () => {
+    received = [];
+    mintImpl = async () => ({ cookies: [] });
+    const reqBody = { platformId: "elevenlabs", email: "a@b.com", password: "pw", sessionId: "fixture-session",
+      checkpointGrant: "opaque-fixture-grant" };
+    const post = (body: unknown) => fetch(`${baseUrl}/mint`, { method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer s3" }, body: JSON.stringify(body) });
+    expect((await post(reqBody)).status).toBe(400); expect(received).toEqual([]);
+    const complete = { ...reqBody, checkpointToken: "fixture-broker-proof-".padEnd(43, "x") };
+    expect((await post(complete)).status).toBe(200); expect(received).toEqual([complete]);
+  });
+
+  it("redacts checkpoint grants and independent proofs from a failed mint", async () => {
+    const checkpointGrant = "opaque-grant-canary", checkpointToken = "broker-proof-canary-".padEnd(43, "x");
+    mintImpl = async () => { throw new Error(`Failed ${checkpointGrant} ${checkpointToken}`); };
+    const response = await fetch(`${baseUrl}/mint`, { method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer s3" },
+      body: JSON.stringify({ platformId: "elevenlabs", email: "a@b.com", password: "pw", sessionId: "fixture-session", checkpointGrant, checkpointToken }) });
+    expect(response.status).toBe(502);
+    const body = JSON.stringify(await response.json());
+    expect(body).not.toContain(checkpointGrant); expect(body).not.toContain(checkpointToken);
+  });
+
   it("POST /mint with good auth and full body returns 200 with storageState, and mint receives exact request", async () => {
     received = [];
     mintImpl = async () => ({ cookies: [{ name: "session", value: "xyz" }] });

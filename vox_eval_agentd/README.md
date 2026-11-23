@@ -190,7 +190,7 @@ job.config = {
 
 ### Live Browser Assistance
 
-The pinned aeval v0.4.5 release supports the existing live browser session through
+The pinned aeval v0.5.1 release supports the existing live browser session through
 a private Unix socket. Updated daemons advertise `browserAssistance: "1"` and
 connect outbound to Core at `/ws/eval-browser`; no browser/debugging port is
 published. Core authorizes credential owners / exact-org secret managers before
@@ -203,6 +203,37 @@ readiness within the existing hold deadline, without resubmitting credentials.
 Vox shows safe failure reasons and final outcomes, and identifies which tab the
 evaluation checks. The daemon preserves a failed setup step ahead of secondary
 analysis errors caused by missing recordings/events.
+
+When a recognized post-verification form needs credentials, use **Sign in &
+continue** to grant permission for that exact stage. Ordinary **Check & continue**
+never submits credentials; stale or uncertain actions are not replayed.
+
+### Account Session Persistence
+
+For supported Runtime account setup, an explicit `params.storage_file` opts into
+encrypted Core persistence. The daemon maps that logical path to a private
+temporary file; aeval restores valid state before login, falls back within
+account setup when necessary, and publishes confirmed immutable checkpoints.
+Confirmed authentication survives a later evaluation failure. Core binds state
+to owner/organization, provider, source and the delivered credential revision.
+Account mode without an explicit file and storage-only behavior stay unchanged.
+
+Session state lives in Core's database using `CREDENTIAL_ENCRYPTION_KEY`, not in
+the container image, output artifacts or an agent auth volume. Compatible image
+upgrades and rollbacks reuse it without extra manager `.env` settings. Temporary
+files are removed after the run; inactive crash leftovers are swept. Brokered
+passwords remain in trusted Core/broker infrastructure and are never sent here.
+ElevenLabs is the initial reviewed storage scope. Live email verification and
+two-host Runtime/Brokered reuse passed on 2026-11-23; the second host submitted
+no credentials and needed no new verification. This requires the corrected
+runtime-data email-stage selector, which distinguishes Sign in from the retained
+email input on a Resend verification page. The published runtime-data pin
+`51c0c810e5716c6edbf3c7bc3d8cc1ebad567cfe` includes that correction; the original
+stock v0.5.1 profile did not pass. Binary checksums are unchanged. Provider
+device/IP policy may still require verification on future runs. See the
+[maintained design](../designs/2026-11-17-auth-session-persistence-and-assisted-login.md).
+
+### Assistance Timeouts And Cancellation
 
 Viewing is read-only until Take control at a supported wait. Viewer leases expire
 without user heartbeats; holds are absolute, default to 120 seconds per supported

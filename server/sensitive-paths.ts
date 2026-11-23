@@ -28,6 +28,7 @@ export const SENSITIVE_PATHS = new Set([
   "/api/eval-agent-tokens",      // POST returns the agent token in plaintext, once
   "/api/admin/broker-tokens",    // POST returns the registration token, once
   "/api/brokers/register",       // returns the per-broker mintSecret, once
+  "/api/brokers/account-session", // scoped grants and private checkpoint payloads
   // These three carry the credential in a LATER path segment, so a prefix is
   // the only way to reach them. Deliberately broad: redacting a response body
   // costs log detail, whereas an activation link or an org invite recovered

@@ -314,7 +314,8 @@ async function callBroker(what: string, call: () => Promise<Response>): Promise<
 
 export async function mintViaBroker(
   target: BrokerTarget,
-  req: { platformId: string; email: string; password: string; browserOperationId?: string },
+  req: { platformId: string; email: string; password: string; browserOperationId?: string;
+    sessionId?: string; checkpointGrant?: string; checkpointToken?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
   // Bound the call. auth-session.ts's staleMintThresholdSeconds() is derived
@@ -366,7 +367,7 @@ export async function mintViaBroker(
     // also failed to reduce, and a full URL can carry the account in its query
     // (login_hint=) in a spelling no needle covers. reduceUrlsSafely redacts a
     // URL-shaped credential before the reduction could cut it apart.
-    const forms = credentialForms([req.email, req.password]);
+    const forms = credentialForms([req.email, req.password, req.checkpointGrant ?? "", req.checkpointToken ?? ""]);
     // Redact before the reduction as well as after: a credential echoed inside
     // a URL can contain a character that ends the URL run (" ' < > space), so
     // the reduction would cut it in two and neither half would match a needle.

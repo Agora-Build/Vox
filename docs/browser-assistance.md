@@ -1,6 +1,6 @@
 # Live Browser Assistance
 
-Vox integrates aeval v0.4.5's private inspection protocol into the existing
+Vox integrates aeval v0.5.1's private inspection protocol into the existing
 evaluation job page. It views the **already running browser**; it does not launch
 a second login, replay a scenario, expose CDP, or move Brokered passwords onto
 an eval agent. The binary and runtime-data submodule are pinned to the same
@@ -24,13 +24,17 @@ release, with architecture-specific binary checksums.
    selection revoke control. Refresh status and explicitly take control again.
 5. **Check & continue** releases input and checks the original readiness
    condition. Acceptance means the check was requested, not that login or setup
-   succeeded. With aeval v0.4.5, the original evaluation tab returns to its
+   succeeded. The original evaluation tab returns to its
    protected target once, then retries readiness while delayed page content
    renders, within the existing assistance deadline. It does not resubmit login,
    repeatedly reload the target, or retry a failed step. The viewer labels the
    evaluation tab separately from the selected verification tab and shows safe
    readiness reasons, confirmed continuation, or expiry. The normal job result
    remains authoritative.
+   When aeval recognizes an additional credential step after human verification,
+   **Sign in & continue** appears separately. Taking control and clicking it
+   explicitly authorizes that one step to use this flow's account credentials;
+   ordinary checks and viewer disconnects never submit credentials.
 6. **Release control** revokes input and requests the original readiness check
    without closing other viewers. Automation resumes only after readiness is
    confirmed. It uses aeval's native release operation, rather than reserving
@@ -61,9 +65,10 @@ credentials or browser storage are included in readiness feedback. Unrecognized 
 metadata is discarded without breaking the viewer; active states remain strictly
 validated because they determine whether control can be requested.
 
-Deploy both the daemon and broker with v0.4.5 to receive bounded readiness
-retries. Core's new optional status fields still accept v0.4.4 agents during
-rollout, but a Core-only upgrade cannot fix their old one-shot readiness check.
+Deploy Core, daemon and broker together with the pinned v0.5.1 binary and
+runtime data. A Core-only upgrade cannot add restore-first or multi-stage
+authentication to an older engine. There is no old authentication-protocol
+translation or storage/account mode-switching workaround.
 Absolute assistance/login/job deadlines and explicit controller ownership are
 unchanged. A new controller interrupts pending readiness checks; automation
 does not run while someone controls the browser.
@@ -72,6 +77,85 @@ If setup fails and only known empty-run analysis errors follow (such as
 `<no recording>` or no parseable events), the daemon keeps the failed step first
 in its redacted error summary. Unrelated fatal or analysis-stage errors retain
 normal tail priority. An empty-run analysis error is not proof that login was rejected.
+
+## Account Storage And Staged Continuation
+
+With `mode: account` and an explicit `params.storage_file`, aeval v0.5.1 restores
+and validates saved state before submitting email/password. Accepted state skips
+login; missing, corrupt or positively rejected state falls back within the same
+setup. A slow preview is not evidence of rejected login. Without an explicit
+file, account login keeps its prior behavior. Storage-only mode has no new
+account fallback. Vox does not switch Runtime account setup to storage mode.
+Brokered injection deliberately stays storage-only: passwords remain at the
+trusted broker, not on the eval agent.
+
+For example, an existing Runtime setup needs no mode migration:
+
+```yaml
+- type: platform.setup
+  platform_id: elevenlabs
+  params:
+    mode: account
+    email: ${secrets.ELEVEN_CONSOLE_EMAIL}
+    password: ${secrets.ELEVEN_CONSOLE_PASSWORD}
+    storage_file: .auth/elevenlabs.json
+```
+
+Vox treats that filename as a logical opt-in, not a shared container cache. For
+supported account setups it maps the file to an absolute private per-execution
+path under `/tmp/vox-account-sessions-<uid>/run-<uuid>/`, restores authorized state
+from Core, and uploads confirmed immutable v3 checkpoints. The directory is
+0700 and files are 0600, outside artifacts; finalization removes them. Inactive
+crash leftovers are reclaimed without uploading them. Prefer tmpfs where useful.
+Vox does not discover or import aeval's default auth folder or old unscoped files.
+
+Both Runtime and Brokered sessions are encrypted in Core's `account_sessions`
+table using the existing `CREDENTIAL_ENCRYPTION_KEY`. Owner/org, provider/tenant,
+current credential revision and Runtime/Brokered source are isolated. Container
+upgrades/compatible rollbacks reuse the database state, not local files; retain
+the same encryption key across replicas/deployments. Only trusted broker mints
+can replace Brokered state. Agents never receive Brokered passwords. A cache
+failure does not discard an otherwise authorized Runtime evaluation. A confirmed
+checkpoint survives a later preview, evaluation or analysis failure.
+
+Restore and refresh-generation claim are atomic, so a newly claimed writer
+cannot start with an earlier execution's stale token. Upload grants use a
+separate HKDF-derived encryption key. Broker restore/checkpoint/release also
+require an independent per-mint bearer proof, kept in broker memory and never
+sent to aeval or an eval agent. A crashed Runtime writer can hold its refresh
+fence for up to 30 minutes; other authorized runs may restore existing state
+but run without saving new checkpoints until release/expiry. Normal bounded
+shutdown releases the fence sooner.
+
+Initial persistence supports one unambiguous account setup with scoped
+email/password references and the reviewed ElevenLabs profile. Other Runtime
+variables/API keys are not persisted. See the maintained [session-persistence
+design](../designs/2026-11-17-auth-session-persistence-and-assisted-login.md) for
+the endpoints, role split, scope/claim fencing, receipts, limits and cleanup.
+
+Recognized post-human credential stages arrive under
+`assistance.authentication` as `stage_id`, tracked `page_id` and opaque
+`stage_token`. Vox forwards only this validated envelope and fixed readiness
+reasons, including `account_mismatch`. An explicit **Sign in & continue** sends
+`authentication.continue`, with the current session/browser/viewer-lease,
+selected page/document, wait ID, stage ID and stage token. The selected viewer
+tab fences the command; aeval chooses its engine-tracked credential destination.
+No `setup_id`, protocol declaration, new launch flag or automatic replay is
+used. Shared capture requires the current controller and current authorization;
+success releases control, while uncertain outcomes are never retried. Ordinary
+**Check & continue** remains `assistance.continue`, a read-only check.
+
+The released binary advertises `eval.capabilities.v1`, restore-first and
+multi-stage component capabilities, but `authentication.status` is still
+`development` and `providers` is empty. Separate live qualification on
+2026-11-23 passed ElevenLabs email verification and two-host Runtime/Brokered
+restore with the email-stage profile correction documented below. A capability
+alone is not provider qualification; include the corrected runtime data when
+packaging. v0.5.1 checkpoints use
+`schema: auth.checkpoint.v3` and capability `auth.checkpoint.file.v3`; old ready
+records are incompatible, although saved working storage files remain usable.
+Schema 72 adds the active encrypted store and receipt lifecycle. A local file or
+successful engine exit is never a Core persistence acknowledgment.
 
 ## Authority Is Stronger Than Job Visibility
 
@@ -344,7 +428,7 @@ budget require a separate explicit decision and measurement.
    permit internal Core-to-Core calls, and deny `/internal/core-routing` publicly.
    Keep the broker callback internal. Single-Core deployments need no new settings.
 3. Deploy the broker Docker target and daemon target from this revision. Both
-   include the pinned v0.4.5 binary/runtime assets. No new host privilege, public
+   include the pinned v0.5.1 binary/runtime assets. No new host privilege, public
    port, sound device, or persistent browser credential mount is introduced.
 4. Verify personal owner-and-launcher access, denial of both parties in a borrowed
    personal run, exact-org manager access and member denial (even for a member
@@ -387,7 +471,23 @@ docker run --rm --network none --entrypoint node \
 # the original deadline and retains its safe last-check reason.
 ```
 
-This fixture is not a real-provider login, an iPad-device test, or an
+The account fixture additionally checks new-execution restore-first, fallback
+for missing/corrupt/rejected state, unchanged no-file account and storage-only
+modes, and explicit credential continuation after a second-tab verification:
+
+```bash
+npx esbuild scripts/test-account-auth-runtime.ts --bundle --platform=node \
+  --format=esm --outfile=/tmp/vox-account-runtime-smoke.mjs
+docker run --rm --network none --entrypoint node \
+  --mount type=bind,source=/tmp/vox-account-runtime-smoke.mjs,target=/app/account-smoke.mjs,readonly \
+  vox-browser-test /app/account-smoke.mjs
+```
+
+It creates its own localhost HTTPS fixture and ephemeral certificate, never
+changes host trust, and removes its private working files afterward. TLS errors
+are ignored only in the synthetic platform configuration, not production.
+
+These fixtures are not a real-provider login, an iPad-device test, or an
 audio-latency/performance qualification. Separate multi-process tests exercise
 the routing layer, shared sessions/viewers, real PostgreSQL ownership fences,
 agent WebSockets and broker HTTP calls using credential-free stand-ins.
@@ -505,3 +605,81 @@ multi-viewer throughput/audio-latency benchmark is implied by these results.
   or production deployment. CI separately builds and smoke-tests the images.
   Core, daemon and broker must be deployed together to receive both engine and
   UI changes.
+
+### v0.5.1 Upgrade Gate On 2026-11-23
+
+- Pinned binary v0.5.1, Linux x86_64/ARM64 checksums and runtime-data commit
+  `51c0c810e5716c6edbf3c7bc3d8cc1ebad567cfe`. The v0.5.1 tag moved from the
+  original `c88fb57` data revision; binaries/checksums are unchanged, and Vox
+  pins the full published commit containing the qualified provider correction.
+  Both actual daemon and broker Docker
+  targets built; packaged x86_64 execution uses the existing Playwright 1.57.0
+  Chromium installation successfully.
+- **210 focused tests passed**, covering release/data alignment, browser routing
+  authority, shared capture, private socket commands, readiness, broker service,
+  timeouts and storage-only injection. Type checks, focused lint, production
+  build and whitespace checks passed.
+- **15 browser UI tests passed** against an isolated Core and disposable
+  PostgreSQL, including explicit staged consent, read-only checks, unknown
+  credential outcomes without replay, exclusive control and mobile text input.
+  The navigation fixture now waits for control acknowledgment before simulating
+  a document change, rather than racing an unfinished acquisition.
+- The fresh daemon image passed seven local HTTPS/Chromium account scenarios:
+  missing storage, accepted storage in a new execution with no credential
+  submission, unchanged storage-only mode, corrupt/rejected fallback, no-file
+  account behavior, and second-tab verification followed by explicit credentials.
+  The fixture checks exact submitted credentials, rejects stale stage tokens,
+  verifies private state and the v3 immutable checkpoint, and checks submission
+  counts. The retained-email verification page uses the shipped ElevenLabs
+  email-stage selector so the Resend-vs-Sign-in regression cannot drift from
+  runtime data. Fresh daemon/broker images also passed delayed readiness, deadline
+  expiry without repeated submission, and controller-disconnect/spectator checks.
+- These upgrade gates do not qualify live ElevenLabs verification, ARM64
+  execution, native audio hardware or production deployment. The separate #284
+  persistence gate below covers the encrypted cross-job lifecycle.
+
+### Account Persistence Gate On 2026-11-23
+
+The released x86_64 v0.5.1 binary and Chromium pass real Core/HTTP/PostgreSQL
+round trips for Runtime and Brokered sessions against an isolated synthetic HTTPS
+provider. Confirmed authentication persists even when the subsequent evaluation
+or preview fails; the next job/broker refresh restores without new credential
+submission. The gate verifies encrypted canonical state, Runtime/Brokered source
+isolation, private-root cleanup and password/session artifact canaries. It uses
+`scripts/test-account-session-persistence.ts`, not production account credentials.
+
+The final isolated regression gates passed **287 persistence/security tests**,
+**210 browser-assistance tests**, **17 legacy broker tests**, **17 migration
+tests**, **10 independent-Core routing tests** and **15 browser UI tests**.
+Production and explicit test/script type checks, focused lint, both Docker
+targets and the production build passed. Coverage includes rotation between
+credential delivery/restore/claim, fresh legacy-cache migration, organization
+mutation fences, wrong-key state recovery, and private immutable-file cleanup.
+Subsequent full-repository validation passed 4,173 distinct unit/integration
+checks, 308 browser cases and all 29 audio checks. The maintained
+[session-persistence design](../designs/2026-11-17-auth-session-persistence-and-assisted-login.md#8-code-and-validation)
+records the full discovery counts, opt-in reruns and remaining 34 unit/integration
+and 16 browser skips; skips are not coverage.
+
+### Live ElevenLabs And Cross-Host Gate On 2026-11-23
+
+Both Runtime and trusted Brokered paths passed on the current host and the
+separate Volumetric host using the released x86_64 v0.5.1 engine, disposable
+Core/PostgreSQL and authentication-only flows. Runtime completed the real
+verification-email stage, refused credential submission on a read-only check,
+then accepted one explicit current-stage sign-in. Each path restored through
+Core on the second host with zero credential submissions and no new verification
+prompt, leaving one encrypted canonical state and two receipts per path. No
+storage file, profile or auth volume was copied between hosts; completed private
+workspaces were removed.
+
+Live testing found a stock-profile defect: ElevenLabs retains an email input on
+its Resend verification page, which the old email-only selector mistook for a
+new login stage. The tested runtime-data correction requires a Sign in button
+for that stage. The published runtime-data pin includes this exact correction
+for daemon and broker packaging; the original stock profile did not pass. Tests
+used the engine's private protocol through a harness, not a production Vox UI
+deployment. See the
+maintained design for the exact scope and evidence. ARM64/native audio hardware,
+production rollout and future provider-imposed device challenges remain outside
+this qualification.

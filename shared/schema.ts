@@ -1188,6 +1188,7 @@ export const webSessions = pgTable("web_sessions", {
   mintBrokerId: integer("mint_broker_id"),
   mintOperationId: text("mint_operation_id"),
   mintDeadlineAt: timestamp("mint_deadline_at"),
+  accountSessionKey: text("account_session_key"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -1202,6 +1203,47 @@ export const webSessions = pgTable("web_sessions", {
 }));
 
 export type WebSession = typeof webSessions.$inferSelect;
+
+// Canonical encrypted account states. web_sessions retains broker mint status,
+// but cannot independently overwrite a checkpoint-managed state.
+export const accountSessions = pgTable("account_sessions", {
+  sessionKey: text("session_key").primaryKey(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  organizationId: integer("organization_id"),
+  source: text("source").notNull(),
+  platformId: text("platform_id").notNull(),
+  tenantKey: text("tenant_key").notNull(),
+  credentialRevision: text("credential_revision").notNull(),
+  generation: integer("generation").notNull().default(0),
+  refreshOwner: text("refresh_owner"),
+  refreshExpiresAt: timestamp("refresh_expires_at", { withTimezone: true }),
+  lastSequence: bigint("last_sequence", { mode: "number" }).notNull().default(0),
+  encryptedStorageState: text("encrypted_storage_state"),
+  storageFormat: text("storage_format"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("account_sessions_updated_at_idx").on(t.updatedAt),
+  check("account_sessions_scope_ck", sql`num_nonnulls(${t.userId}, ${t.organizationId}) = 1`),
+  check("account_sessions_source_ck", sql`${t.source} IN ('runtime', 'brokered')`),
+  check("account_sessions_generation_ck", sql`${t.generation} >= 0 AND ${t.lastSequence} BETWEEN 0 AND 9999999999`),
+  check("account_sessions_refresh_ck", sql`(${t.refreshOwner} IS NULL) = (${t.refreshExpiresAt} IS NULL)`),
+  check("account_sessions_state_ck", sql`(${t.encryptedStorageState} IS NULL) = (${t.storageFormat} IS NULL)`),
+]);
+
+export const accountSessionCheckpoints = pgTable("account_session_checkpoints", {
+  sessionKey: text("session_key").notNull().references(() => accountSessions.sessionKey, { onDelete: "cascade" }),
+  generation: integer("generation").notNull(),
+  checkpointId: text("checkpoint_id").notNull(),
+  executionKey: text("execution_key").notNull(),
+  sequence: bigint("sequence", { mode: "number" }).notNull(),
+  contentHash: text("content_hash").notNull(),
+  committedAt: timestamp("committed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("account_session_checkpoints_committed_at_idx").on(t.committedAt),
+  primaryKey({ columns: [t.sessionKey, t.generation, t.checkpointId] }),
+  uniqueIndex("account_session_checkpoints_sequence_idx").on(t.sessionKey, t.generation, t.sequence),
+  check("account_session_checkpoints_sequence_ck", sql`${t.generation} > 0 AND ${t.sequence} BETWEEN 1 AND 9999999999`),
+]);
 
 // ==================== CLASH AGENT PROFILES ====================
 

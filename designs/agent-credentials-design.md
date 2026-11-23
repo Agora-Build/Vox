@@ -277,6 +277,25 @@ Runtime use of an auth-session credential is rejected. The daemon is forced
 into storage/session mode when the immutable session-injection stamp exists.
 Permanent login credentials never appear in the agent's secret payload.
 
+### Encrypted Account Sessions (#284)
+
+Core persists both Runtime-derived and Brokered account sessions encrypted with
+the existing credential key. This does not change credential placement or agent
+trust: Runtime email/password still reach only eligible agents; Brokered passwords
+stay in Core/trusted brokers and agent injection stays storage-only. Source,
+owner/org, provider/tenant and current credential revision are isolated.
+
+Runtime account setup opts in through an explicit `storage_file`. Vox maps it to
+a private temporary per-execution path and supplies authorized state; aeval v0.5.1
+owns restore-first and account-login fallback inside the same setup. No file
+keeps prior account behavior; storage-only gains no account fallback. Other
+Runtime variables and API keys are not enrolled. Confirmed immutable checkpoints
+commit independently of later evaluation failure, with live authority, database
+generation fencing and atomic receipts. Only trusted mints can write Brokered state.
+The bundled organizations provider coordinates membership/secret writes with
+same-database advisory fences; providers without that contract fail closed for
+org persistence. See the maintained [implementation ownership and contract](2026-11-17-auth-session-persistence-and-assisted-login.md#2-implementation-ownership--contract).
+
 REST executes only the authorized frozen leading setup operation. Core resolves
 its credential references and constrains any allowed phone-number variable;
 the agent cannot redirect the credential-bearing request via arbitrary overrides.

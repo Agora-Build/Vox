@@ -16,6 +16,10 @@ import { getOrganizations, type OrgSecretRow } from "./organizations";
 import { isOwnerOrOrgManager } from "./permissions";
 import { credentialPoolViolation, ownsCredentialScope } from "./credential-policy";
 import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintTimeoutSeconds } from "./broker-registry";
+import { accountProvider } from "@shared/account-session-setup";
+import { brokerAccountBinding } from "./account-session-service";
+import { mintManagedAccountSession } from "./account-session-broker";
+import { AccountSessionError } from "./account-session-binding";
 
 export interface PlatformSetupInfo {
   platformId: string;
@@ -232,15 +236,26 @@ export async function ensureSession(
 ): Promise<void> {
   try {
     const credentialKey = credentialKeyFor(need);
+    const managed = !!accountProvider(need.platformId);
+    let binding: Awaited<ReturnType<typeof brokerAccountBinding>> | null = null;
+    let bindingError: Error | null = null;
+    if (managed) {
+      try { binding = await brokerAccountBinding(scope, need); }
+      catch (error) { bindingError = error instanceof AccountSessionError ? error : new Error("Account session binding unavailable"); }
+    }
     const existing = await storage.getWebSession(scope, need.platformId, credentialKey);
-    if (existing?.status === "ready" && existing.expiresAt &&
+    if (bindingError && !(bindingError instanceof AccountSessionError) && existing?.status === "ready" &&
+        existing.expiresAt && existing.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000) return;
+    if (existing?.status === "ready" && (!managed || (binding && existing.accountSessionKey === binding.sessionKey)) && existing.expiresAt &&
         existing.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000) {
       return; // fresh — nothing to do
     }
     const claimed = await storage.claimWebSessionMint(
-      scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS);
+      scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS,
+      managed ? binding?.sessionKey ?? "unavailable" : null);
     if (!claimed) return; // another instance is minting, or it turned fresh
     try {
+      if (bindingError) throw bindingError;
       if (!(await brokerAvailable("auth-session"))) {
         throw new Error("no live auth-session broker registered");
       }
@@ -255,6 +270,11 @@ export async function ensureSession(
       const retained = await storage.setWebSessionBrowserTarget(claimed.id, claimed.mintStartedAt!, target.id,
         browserOperationId, new Date(Date.now() + mintTimeoutSeconds() * 1000));
       if (!retained) return;
+      if (binding) {
+        await mintManagedAccountSession({ scope, need, claimed, target, operationId: browserOperationId,
+          bindingKey: binding.sessionKey, email, password, ttlHours: ttlHours(), fetchImpl });
+        return;
+      }
       const mintResult = (await mintViaBroker(target, { platformId: need.platformId, email, password, browserOperationId }, fetchImpl)) as
         | { storageState?: unknown }
         | undefined;

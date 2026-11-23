@@ -36,6 +36,10 @@ import { sessionScopeForEvalFlow, ensureSession, stampOwnerSession, credentialKe
 import { credentialAgentViolation, credentialPoolViolation, ownsCredentialScope, isPersonalCredentialAgent } from "./credential-policy";
 import { createCredentialTrialJob, findCredentialTrialJob, getCredentialTrialAllowance, CredentialTrialError, jobMayUseCredentials } from "./credential-trials";
 import { registerCredentialTrialRoutes } from "./routes-credential-trials";
+import { registerAccountSessionRoutes } from "./routes-account-sessions";
+import { accountSessionStore, runtimeAccountAuthority, runtimeAccountCredentialDelivery } from "./account-session-service";
+import { accountProvider, accountSetupForJob } from "@shared/account-session-setup";
+import { AccountSessionError } from "./account-session-binding";
 import { registerBrowserAssistanceRoutes, canAccessJobBrowser } from "./routes-browser-assistance";
 import { hasBrowserAssistance } from "./browser-agent-bridge";
 import { BrowserAccessError, resolveBrowserTarget } from "./browser-target";
@@ -463,6 +467,7 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   registerCredentialTrialRoutes(app);
+  registerAccountSessionRoutes(app);
   registerBrowserAssistanceRoutes(app);
   registerArtifactPreviewRoutes(app, {
     user: getCurrentUser,
@@ -5142,6 +5147,7 @@ export async function registerRoutes(
 
   // Get decrypted secrets for a claimed job (eval agent Bearer auth)
   app.get("/api/eval-agent/jobs/:jobId/secrets", async (req, res) => {
+    res.set("Cache-Control", "no-store");
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -5216,6 +5222,20 @@ export async function registerRoutes(
         if (violation) return res.status(403).json({ error: violation });
       }
       console.log(`[Secrets] Job ${jobId}: releasing ${Object.keys(released).length} of ${Object.keys(decrypted).length} secret(s)`);
+      const accountSetup = accountSetupForJob(auth.job.config as Record<string, unknown>);
+      if (accountSetup && auth.job.startedAt && Object.hasOwn(released, accountSetup.emailSecret) && Object.hasOwn(released, accountSetup.passwordSecret)) {
+        try {
+          // Keep the ordinary secret response shape. The pair and non-secret
+          // revision come from the same locked rows; an agent never sends the
+          // credentials back to Core to prepare session persistence.
+          const delivery = await runtimeAccountCredentialDelivery({ jobId: auth.job.id, tokenHash,
+            leaseId: String(req.query.leaseId ?? ""), startedAt: auth.job.startedAt.toISOString() });
+          if (delivery) {
+            Object.assign(released, delivery.credentials);
+            res.set("X-Vox-Account-Revision", delivery.credentialRevision);
+          }
+        } catch { /* No revision means no Core account cache, not a failed evaluation. */ }
+      }
       res.json(released);
     } catch (error) {
       console.error("Error fetching job secrets:", error);
@@ -5229,6 +5249,7 @@ export async function registerRoutes(
   // serve the Core-minted login session (storageState) for a claimed
   // job. The agent gets ONLY this bundle — never the login secrets behind it.
   app.get("/api/eval-agent/jobs/:jobId/session", async (req, res) => {
+    res.set("Cache-Control", "no-store");
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -5295,14 +5316,19 @@ export async function registerRoutes(
       const session = await storage.getWebSession(scope, need.platformId, credentialKeyFor(need));
       const fresh = session?.status === "ready" && session.expiresAt &&
         session.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000;
-      if (fresh && session!.encryptedStorageState) {
+      const managedProvider = !!accountProvider(need.platformId);
+      const canonical = managedProvider && fresh && auth.job.startedAt ? await accountSessionStore.read(runtimeAccountAuthority({
+        jobId: auth.job.id, tokenHash: hashToken(authHeader.slice(7)), leaseId: String(req.query.leaseId ?? ""),
+        startedAt: auth.job.startedAt.toISOString(), sessionId: "serve", deadline: new Date(Date.now() + 10_000).toISOString(),
+      }, undefined, "brokered")) : null;
+      if (fresh && (managedProvider ? !!canonical : !!session!.encryptedStorageState)) {
         // Audit trail (layer-2 foundation): who received a session bundle, when,
         // from where. Log line only — the bundle itself is never logged
         // (SENSITIVE_PATHS redacts the response body).
         console.log(`[Session] Job ${auth.job.id}: bundle served to agent ${auth.agent.id} (token ${evalAgentToken.id}, ip ${clientIp(req)})`);
         return res.json({
           required: true, status: "ready", authMode: "storage", platformId: need.platformId,
-          storageState: JSON.parse(decryptValue(session!.encryptedStorageState)),
+          storageState: canonical ? JSON.parse(canonical.state) : JSON.parse(decryptValue(session!.encryptedStorageState!)),
           expiresAt: session!.expiresAt,
         });
       }
@@ -5338,6 +5364,11 @@ export async function registerRoutes(
       void ensureSession(scope, need);
       return res.status(202).json({ required: true, status: "minting" });
     } catch (error) {
+      if (error instanceof AccountSessionError) {
+        const denied = error.code === "unauthorized" || error.code === "invalid-binding";
+        return res.status(denied ? 403 : 503).json({ required: true, status: "failed",
+          error: denied ? "Account session is not authorized for this run" : "Account session unavailable; contact an administrator" });
+      }
       console.error("Error serving job session:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
         return res.status(500).json({ error: "Server encryption not configured" });

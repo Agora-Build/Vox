@@ -124,7 +124,7 @@ describe("owner-Core shared capture", () => {
     const results = await Promise.all([take(a), take(b)]);
     expect(results.map((result) => result.ok)).toEqual([true, false]); expect(results[1].error).toBe("CONTROL_BUSY");
     expect(commands("viewer.take_control")).toHaveLength(1);
-    for (const command of ["viewer.input", "viewer.open_url", "viewer.select_page", "viewer.release_control", "assistance.continue", "assistance.cancel"] as const) {
+    for (const command of ["viewer.input", "viewer.open_url", "viewer.select_page", "viewer.release_control", "assistance.continue", "authentication.continue", "assistance.cancel"] as const) {
       const response = await run(b, command, { ...identity, control_id: results[0].result?.control_id });
       expect(response).toMatchObject({ ok: false, error: "CONTROL_REQUIRED" });
       expect(commands(command)).toHaveLength(0);
@@ -132,6 +132,31 @@ describe("owner-Core shared capture", () => {
     expect((await run(a, "session.status")).result?.controlling).toBe(true);
     const spectator = await run(b, "session.status");
     expect(spectator.result?.controlling).toBe(false); expect(spectator.viewer?.controller).toBe("other");
+  });
+
+  it("forwards stage-bound credential consent once, clears control, and never grants it on release", async () => {
+    await open(a); await open(b); await take(a);
+    const params = { ...identity, wait_id: waitId, stage_id: "password", stage_token: "opaque-stage" };
+    const request = make("authentication.continue", params);
+    const invoke = () => captures.handle({ targetKey: target.key, viewerId: a.id, action: "command", request });
+    expect(await invoke()).toMatchObject({ ok: true, viewer: { controller: null } });
+    expect(commands("authentication.continue")[0].request).toMatchObject({
+      session_id: "session", browser_generation: "browser", params,
+    });
+    expect(await invoke()).toMatchObject({ ok: false, error: "CONTROL_REQUIRED" });
+    expect(commands("authentication.continue")).toHaveLength(1);
+    await take(a);
+    expect(await invoke()).toMatchObject({ ok: false, error: "COMMAND_ALREADY_SUBMITTED" });
+    await run(a, "viewer.release_control", { ...identity, control_id: "control-2" });
+    expect(commands("authentication.continue")).toHaveLength(1);
+  });
+
+  it("does not retry an uncertain credential continuation", async () => {
+    await open(a); await take(a);
+    send.mockImplementationOnce(async () => { throw new Error("transport lost"); });
+    await expect(run(a, "authentication.continue", { ...identity, wait_id: waitId, stage_id: "password", stage_token: "opaque" })).rejects.toThrow("transport lost");
+    expect(commands("authentication.continue")).toHaveLength(1);
+    expect(operations("close")).toHaveLength(1);
   });
 
   it("releases control without closing capture; stale tokens cannot act at a subsequent wait", async () => {

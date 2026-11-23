@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { browserStatusSchema, type BrowserStatus } from "../shared/browser-assistance";
-import { browserReadinessMessage } from "../client/src/lib/browser-readiness";
+import { browserAuthenticationStage, browserReadinessMessage } from "../client/src/lib/browser-readiness";
 
 const status: BrowserStatus = {
   session_id: "session", browser_generation: "generation", capabilities: [], pages: [],
@@ -22,6 +22,22 @@ describe("browser readiness feedback", () => {
 
   it("still rejects unknown active states instead of weakening control validation", () => {
     expect(browserStatusSchema.safeParse({ ...status, assistance: { ...status.assistance, state: "future_state" } }).success).toBe(false);
+  });
+
+  it("preserves current stage grants but never authorizes incomplete, stale, or unknown envelopes", () => {
+    const staged = { ...status, pages: [{ page_id: "verification", document_epoch: 2, origin: "https://example.com" }],
+      assistance: { ...status.assistance!, authentication: { stage_id: "password", page_id: "verification", stage_token: "opaque" } } };
+    expect(browserAuthenticationStage(browserStatusSchema.parse(staged))).toEqual({ stage_id: "password", stage_token: "opaque" });
+    expect(browserReadinessMessage(staged)).toContain("Sign in & continue authorizes");
+    expect(browserAuthenticationStage({ ...staged, pages: [] })).toBeNull();
+    for (const change of [{ state: "expired" as const }, { remaining_seconds: 0 }, { authentication: { stage_id: "password", page_id: null, stage_token: null } }]) {
+      expect(browserAuthenticationStage({ ...staged, assistance: { ...staged.assistance, ...change } })).toBeNull();
+    }
+    const unknown = browserStatusSchema.parse({ ...staged, assistance: { ...staged.assistance,
+      authentication: { ...staged.assistance.authentication, protocol: "old-contract", secret: "not-status" } } });
+    expect(unknown.assistance?.authentication).toBeNull();
+    expect(browserAuthenticationStage(unknown)).toBeNull();
+    expect(JSON.stringify(unknown)).not.toContain("not-status");
   });
 
   it("retains the engine's active and final readiness reasons", () => {
@@ -59,6 +75,7 @@ describe("browser readiness feedback", () => {
     ["navigation_timeout", "took too long to load"], ["wrong_target", "not reached the required page"],
     ["check_timeout", "readiness check timed out"], ["check_failed", "could not finish"],
     ["condition_not_met", "condition is not met"], ["browser_unavailable", "no longer available"],
+    ["account_mismatch", "does not match"], ["credential_continuation_required", "needs your permission"],
   ] as const)("explains %s using fixed, safe copy", (reason, expected) => {
     expect(browserReadinessMessage({ ...status, assistance: { ...status.assistance!, reason } })).toContain(expected);
   });

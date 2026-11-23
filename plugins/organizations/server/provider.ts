@@ -73,6 +73,23 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
 // b13c12a:server/organizations-core.ts`).
 export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider {
   return {
+    accountSessionFencing: "postgres-advisory-v1",
+    accountSessionReader(connection) {
+      const schema = `"${db.schema.replace(/"/g, '""')}"`;
+      return {
+        async getMembership(userId) {
+          const { rows } = await connection.query<{ org_ref: number; role: OrgRole }>(
+            `SELECT org_ref, role FROM ${schema}.memberships WHERE user_ref = $1`, [userId]);
+          return rows.length ? { organizationId: rows[0].org_ref, role: rows[0].role } : null;
+        },
+        async listOrgSecrets(orgId) {
+          const { rows } = await connection.query<SecretRow>(
+            `SELECT id, org_ref, name, encrypted_value, broker_type, is_test_account, created_by, created_at, updated_at
+             FROM ${schema}.org_secrets WHERE org_ref = $1 ORDER BY created_at DESC`, [orgId]);
+          return rows.map(toOrgSecretRow);
+        },
+      };
+    },
     async getMembership(userId) {
       const { rows } = await db.query<{ org_ref: number; role: OrgRole }>(
         "SELECT org_ref, role FROM memberships WHERE user_ref = $1", [userId]);
@@ -140,6 +157,7 @@ export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider
       // schema, so it does — a crash between the two writes here is
       // impossible; in Core it just leaves an org with no owner.
       return db.withTransaction(async (tx) => {
+        await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`account-session:member:${creator.userId}`]);
         const orgResult = await tx.query<OrgRow>(
           `INSERT INTO organizations (name, address) VALUES ($1, $2)
            RETURNING id, name, address, verified, created_at, updated_at`,
@@ -209,10 +227,10 @@ export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider
           `user ${userId} already belongs to organization ${existing.rows[0].org_ref}`);
       }
       try {
-        await db.query(
-          "INSERT INTO memberships (org_ref, user_ref, role) VALUES ($1, $2, $3)",
-          [orgId, userId, role],
-        );
+        await db.withTransaction(async tx => {
+          await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`account-session:member:${userId}`]);
+          await tx.query("INSERT INTO memberships (org_ref, user_ref, role) VALUES ($1, $2, $3)", [orgId, userId, role]);
+        });
       } catch (err) {
         // Race backstop: two concurrent addMember calls for the same user can
         // both pass the precheck above before either INSERT commits. Core
@@ -231,10 +249,10 @@ export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider
       // Scoped to (org_ref, user_ref) — see removeMember below for why.
       // Silent no-op on unknown userId (or org/user mismatch): the adapters'
       // 404 guards sit in Core, ahead of this call (Phase-1 T2 carry).
-      await db.query(
-        "UPDATE memberships SET role = $1 WHERE org_ref = $2 AND user_ref = $3",
-        [role, orgId, userId],
-      );
+      await db.withTransaction(async tx => {
+        await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`account-session:member:${userId}`]);
+        await tx.query("UPDATE memberships SET role = $1 WHERE org_ref = $2 AND user_ref = $3", [role, orgId, userId]);
+      });
     },
     async removeMember(orgId, userId) {
       // Core's removeMember ignores its orgId argument entirely
@@ -244,10 +262,10 @@ export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider
       // has no such structural guarantee at the SQL layer, so it filters on
       // BOTH org_ref and user_ref: removeMember(wrongOrgId, userId) must not
       // remove userId's membership in their ACTUAL org.
-      await db.query(
-        "DELETE FROM memberships WHERE org_ref = $1 AND user_ref = $2",
-        [orgId, userId],
-      );
+      await db.withTransaction(async tx => {
+        await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`account-session:member:${userId}`]);
+        await tx.query("DELETE FROM memberships WHERE org_ref = $1 AND user_ref = $2", [orgId, userId]);
+      });
     },
     async listOrgSecrets(orgId) {
       // ORDER BY created_at DESC — parity with storage.getOrgSecrets
@@ -266,7 +284,9 @@ export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider
       // preserve-original for free, matching storage.upsertOrgSecretRow
       // (server/storage.ts:2753-2781) and the Phase-1 T9 route compensation
       // that depends on the original creator surviving a credential rotation.
-      const { rows } = await db.query<SecretRow>(
+      const { rows } = await db.withTransaction(async tx => {
+        await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`account-session:org:${orgId}`]);
+        return tx.query<SecretRow>(
         `INSERT INTO org_secrets (org_ref, name, encrypted_value, broker_type, is_test_account, created_by)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (org_ref, name) DO UPDATE SET
@@ -276,14 +296,15 @@ export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider
            updated_at = now()
          RETURNING id, org_ref, name, encrypted_value, broker_type, is_test_account, created_by, created_at, updated_at`,
         [orgId, row.name, row.encryptedValue, row.brokerType, row.isTestAccount, row.createdBy],
-      );
+        );
+      });
       return toOrgSecretRow(rows[0]);
     },
     async deleteOrgSecret(orgId, name) {
-      await db.query(
-        "DELETE FROM org_secrets WHERE org_ref = $1 AND name = $2",
-        [orgId, name],
-      );
+      await db.withTransaction(async tx => {
+        await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`account-session:org:${orgId}`]);
+        await tx.query("DELETE FROM org_secrets WHERE org_ref = $1 AND name = $2", [orgId, name]);
+      });
     },
   };
 }

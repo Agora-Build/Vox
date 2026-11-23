@@ -12,7 +12,7 @@ type Capture = {
   receipts: Map<string, { viewerId: string; upstreamId: string }>;
 };
 export type CaptureRequest = { targetKey: string; viewerId: string; action: "command" | "frame" | "leave"; request?: BrowserCommand };
-const mutations = new Set(["viewer.input", "viewer.open_url", "viewer.select_page", "assistance.continue", "assistance.cancel", "viewer.release_control"]);
+const mutations = new Set(["viewer.input", "viewer.open_url", "viewer.select_page", "assistance.continue", "authentication.continue", "assistance.cancel", "viewer.release_control"]);
 
 /** One owner-Core arbiter and one engine capture per fenced browser target. */
 export class BrowserCaptures {
@@ -190,7 +190,7 @@ export class BrowserCaptures {
           capture.controller = grant.id; capture.controlId = response.result.control_id;
           capture.waitId = typeof command.params?.wait_id === "string" ? command.params.wait_id : null;
         }
-        if (["viewer.release_control", "assistance.continue", "assistance.cancel", "viewer.select_page", "viewer.open_url"].includes(command.command)) {
+        if (["viewer.release_control", "assistance.continue", "authentication.continue", "assistance.cancel", "viewer.select_page", "viewer.open_url"].includes(command.command)) {
           capture.controller = null; capture.controlId = null; capture.waitId = null;
           if (typeof response.result?.page_id === "string" && Number.isSafeInteger(response.result.document_epoch)) {
             capture.pageId = response.result.page_id; capture.epoch = Number(response.result.document_epoch);

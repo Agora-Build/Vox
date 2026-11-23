@@ -18,6 +18,7 @@ import { encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
 import type { NotificationsService } from "@vox/plugin-sdk";
 import { pool } from "./storage";
 import { startLocationServices } from "./location";
+import { runAccountSessionRetention } from "./account-session-service";
 import { setupClashWebSocket } from "./clash-ws";
 import { setupBrowserAgentBridge } from "./browser-agent-bridge";
 import { coreRouting } from "./core-routing-runtime";
@@ -92,6 +93,9 @@ declare module "http" {
 }
 
 app.use("/api/eval-jobs/:id/browser", express.json({ limit: "16kb" }));
+// A 2 MiB state can expand sixfold when embedded as a JSON string. Bound the
+// transport before the general artifact API's larger parser gets a chance.
+app.use(["/api/eval-agent/jobs/:id/account-session", "/api/brokers/account-session"], express.json({ limit: "13mb" }));
 app.use(
   express.json({
     limit: "50mb",
@@ -308,8 +312,10 @@ function startBackgroundWorker() {
 
   // Run immediately on startup, then every minute
   runMaintenanceTasks();
+  void runAccountSessionRetention();
   processScheduledJobs();
   setInterval(runMaintenanceTasks, CHECK_INTERVAL_MS);
+  setInterval(() => { void runAccountSessionRetention(); }, CHECK_INTERVAL_MS);
   setInterval(processScheduledJobs, CHECK_INTERVAL_MS);
 
   log("Background worker started (stale job detection + job scheduler)", "worker");
