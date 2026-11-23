@@ -19,8 +19,11 @@ through claim-fenced Core endpoints; trusted brokers restore/save through
 mint-scoped grants. No persistent agent auth volume or extra agent `.env`
 configuration is required. Private temporary files are removed after execution;
 startup/minute sweeps reclaim inactive crash leftovers without uploading them.
-The bundled organizations plugin advertises matching secret/membership fences;
-other providers must implement that contract before org sessions can persist.
+The bundled organizations plugin advertises matching secret/membership fences
+and an `accountSessionReader` using Core's existing transaction connection.
+It never borrows another pool slot while Core holds that transaction, and its
+schema-qualified reads leave Core's search path unchanged. Other providers must
+implement both contracts before org/Team sessions can persist.
 The initial reviewed storage scope is ElevenLabs. Live email verification and
 two-host Runtime/Brokered reuse passed on 2026-11-23, with zero new credential
 submissions on the second host. That qualification requires the runtime-data

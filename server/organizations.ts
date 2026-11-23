@@ -9,6 +9,8 @@
 // resource-ownership columns). Those are Core's own FK columns, stay Core
 // permanently, and are compared as opaque integers.
 
+import type { PluginDb } from "@vox/plugin-sdk";
+
 export type OrgRole = "owner" | "admin" | "member";
 
 export interface Membership {
@@ -80,6 +82,8 @@ export interface OrgSecretRow {
 export interface OrganizationsProvider {
   /** Same-database advisory fences for membership/secret writes; absent disables org session persistence. */
   readonly accountSessionFencing?: "postgres-advisory-v1";
+  /** Read-only, schema-qualified authority reads on the caller's fenced transaction; never checks out another connection. */
+  accountSessionReader?(connection: Pick<PluginDb, "query">): Pick<OrganizationsProvider, "getMembership" | "listOrgSecrets">;
   /** Membership of one user; null = belongs to no org. */
   getMembership(userId: number): Promise<Membership | null>;
   /** Batch form for listings — users with no org are absent from the map. */

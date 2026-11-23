@@ -244,6 +244,8 @@ export async function ensureSession(
       catch (error) { bindingError = error instanceof AccountSessionError ? error : new Error("Account session binding unavailable"); }
     }
     const existing = await storage.getWebSession(scope, need.platformId, credentialKey);
+    if (bindingError && !(bindingError instanceof AccountSessionError) && existing?.status === "ready" &&
+        existing.expiresAt && existing.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000) return;
     if (existing?.status === "ready" && (!managed || (binding && existing.accountSessionKey === binding.sessionKey)) && existing.expiresAt &&
         existing.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000) {
       return; // fresh — nothing to do

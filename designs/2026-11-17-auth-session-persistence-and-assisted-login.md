@@ -163,9 +163,14 @@ Organization reads stay behind the provider seam. The bundled organizations
 provider advertises `accountSessionFencing: postgres-advisory-v1` and takes
 same-database transaction advisory locks for membership and secret mutations.
 Core holds corresponding shared locks while reading through the seam and
-committing session operations. A provider without this contract fails closed for
-org session persistence; no plugin-table reads or cross-plugin transaction are
-introduced. A future external provider needs equivalent revocation fencing.
+committing session operations. The provider's `accountSessionReader` performs
+read-only, schema-qualified membership/secret queries on Core's existing fenced
+transaction connection, without acquiring another pool slot or altering its
+search path. Core never names plugin tables or performs plugin writes. A
+provider lacking either the fencing or transaction-reader contract fails closed
+for org/Team session authority; personal flows on their own Private agents do
+not need org reads. A future external provider needs equivalent revocation
+fencing and a non-blocking authority-read contract.
 
 ## 6. Immutable File Contract And Retention
 
@@ -417,10 +422,21 @@ undecryptable-state recovery instructions. Parent-before-receipt locking avoids
 inverting the save/cascade order. Restore holds its row lock until its inactivity
 touch commits, preventing a concurrent sweep from deleting the restored state.
 
+The second review identified a same-pool connection-starvation cycle: Core held
+one connection while its organization-provider reads attempted to borrow another.
+The provider now supplies read-only, schema-qualified `accountSessionReader`
+operations using the caller's already-fenced connection. No plugin writer or
+search-path change is introduced, and missing contracts fail closed for org/Team
+authority. Four real-database regressions occupy every pool slot before releasing
+simultaneous authorization, covering personal/org and Runtime/Brokered flows;
+they complete without a second checkout. Existing mutation-fence tests still
+pass. A transient binding lookup failure also preserves an otherwise fresh
+web-session row instead of needlessly discarding it.
+
 The final unchanged implementation passed the full Vitest discovery again:
-**4,155 passed, 78 skipped, zero failures** across 224 passing files and six
+**4,162 passed, 78 skipped, zero failures** across 224 passing files and six
 skipped files. This includes the final restore-versus-retention interleaving
-regression. The isolated affected suites separately passed **234/234** checks,
+regression. The isolated affected suites separately passed **241/241** checks,
 including real PostgreSQL, two Core stores, unsupported organization fencing,
 disabled/deleted credentials, safe route errors, single-flight retention and
 execution of the actual daemon supersession method without its CLI entrypoint.

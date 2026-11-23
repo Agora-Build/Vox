@@ -63,6 +63,19 @@ async function lockMemberships(client: PoolClient, ids: number[]) {
   }
 }
 
+function accountOrganizationsReader(client: PoolClient) {
+  const provider = getOrganizations();
+  if (!provider) return null;
+  if (provider.accountSessionFencing !== "postgres-advisory-v1" || !provider.accountSessionReader) {
+    throw new AccountSessionError("unauthorized");
+  }
+  return provider.accountSessionReader({
+    async query<T>(sql: string, params?: unknown[]) {
+      return { rows: (await client.query(sql, params)).rows as T[] };
+    },
+  });
+}
+
 export async function accountBindingForScope(client: PoolClient, scope: AccountSessionScope, source: AccountSessionSource,
   need: AccountSetup, deliveredCredentials?: Record<string, string>) {
   const profile = accountProvider(need.platformId);
@@ -76,8 +89,8 @@ export async function accountBindingForScope(client: PoolClient, scope: AccountS
     rows = result.rows;
   } else {
     await client.query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))", [`account-session:org:${scope.organizationId}`]);
-    const orgs = getOrganizations();
-    if (orgs?.accountSessionFencing !== "postgres-advisory-v1") throw new AccountSessionError("unauthorized");
+    const orgs = accountOrganizationsReader(client);
+    if (!orgs) throw new AccountSessionError("unauthorized");
     rows = await orgs.listOrgSecrets(scope.organizationId);
   }
   const email = rows.find(r => r.name === need.emailSecret), password = rows.find(r => r.name === need.passwordSecret);
@@ -111,7 +124,7 @@ export function runtimeAccountAuthority(input: RuntimeSessionRequest, expectedKe
     await lockMemberships(client, userIds);
     const enabled = await client.query("SELECT id FROM users WHERE id = ANY($1) AND is_enabled ORDER BY id FOR SHARE", [userIds]);
     if (enabled.rows.length !== new Set(userIds).size) return null;
-    const orgs = getOrganizations();
+    const orgs = frozenFlow.organizationId != null || job.dispatch_tier === "team" ? accountOrganizationsReader(client) : null;
     const callerMembership = frozenFlow.organizationId != null ? await orgs?.getMembership(job.created_by) : null;
     const agentMembership = await orgs?.getMembership(job.token_owner);
     if (credentialAgentViolation(frozenFlow, { createdBy: job.token_owner, dispatchTier: job.dispatch_tier,

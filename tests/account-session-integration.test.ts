@@ -10,12 +10,13 @@ import express from "express";
 import { createServer } from "node:http";
 import request from "supertest";
 import { randomBytes, randomUUID } from "node:crypto";
+import { Pool } from "pg";
 import { readFileSync, readdirSync } from "node:fs";
 import type { JobSnapshot } from "../shared/schema";
 import { pool, storage, hashToken, encryptValue, decryptValue } from "../server/storage";
 import { registerAccountSessionRoutes } from "../server/routes-account-sessions";
 import { registerRoutes } from "../server/routes";
-import { accountSessionStore, authorityForAccountGrant, brokerAccountAuthority, brokerAccountBinding, runtimeAccountCredentialDelivery, runAccountSessionRetention, decodeAccountSessionGrant, encodeAccountSessionGrant, type AccountSessionContext } from "../server/account-session-service";
+import { accountSessionStore, authorityForAccountGrant, brokerAccountAuthority, brokerAccountBinding, runtimeAccountAuthority, runtimeAccountCredentialDelivery, runAccountSessionRetention, decodeAccountSessionGrant, encodeAccountSessionGrant, type AccountSessionContext } from "../server/account-session-service";
 import { ACCOUNT_STATE_FORMAT } from "../shared/account-session-protocol";
 import { accountSetupForJob } from "../shared/account-session-setup";
 import { resetOrganizations, setOrganizations } from "../server/organizations";
@@ -23,6 +24,7 @@ import { createPluginDb } from "../server/plugins/db";
 import { createOrganizationsProvider } from "../plugins/organizations/server/provider";
 import { credentialKeyFor, ensureSession } from "../server/auth-session";
 import { AccountSessionError } from "../server/account-session-binding";
+import { AccountSessionStore } from "../server/account-session-store";
 
 const d = process.env.DATABASE_URL ? describe : describe.skip;
 const app = express(); app.use(express.json({ limit: "13mb" })); registerAccountSessionRoutes(app);
@@ -238,6 +240,51 @@ d("account sessions: real Core authorization, routes and PostgreSQL", () => {
     expect(failed?.lastError).not.toContain("broker");
   });
 
+  it("preserves a fresh session during a transient binding lookup failure", async () => {
+    await brokeredReady();
+    const before = await storage.getWebSession({ userId: 1 }, need.platformId, credentialKeyFor(need));
+    const connect = vi.spyOn(pool, "connect").mockRejectedValueOnce(new Error("temporary-database-canary"));
+    try { await ensureSession({ userId: 1 }, need); } finally { connect.mockRestore(); }
+    const after = await storage.getWebSession({ userId: 1 }, need.platformId, credentialKeyFor(need));
+    expect(after).toEqual(before); expect(after?.status).toBe("ready");
+  });
+
+  it.each([
+    [false, "runtime"], [true, "runtime"], [false, "brokered"], [true, "brokered"],
+  ] as const)("authorizes without a second connection with all pool slots occupied (org=%s, %s)", async (organization, source) => {
+    setOrganizations(orgs.provider);
+    const org = await orgs.provider.createOrganization({ name: `Saturation ${randomUUID()}` }, { userId: 1 });
+    if (organization) {
+      for (const name of ["EMAIL", "PASSWORD"]) await orgs.provider.upsertOrgSecret(org.id, {
+        name, encryptedValue: encryptValue("fixture"), brokerType: source === "brokered" ? "auth-session" : null,
+        isTestAccount: false, createdBy: 1,
+      });
+      await pool.query("UPDATE eval_agent_tokens SET dispatch_tier='team'");
+    } else if (source === "brokered") await pool.query("UPDATE secrets SET broker_type='auth-session'");
+    await createJob(organization ? org.id : null, false);
+    if (source === "brokered") await pool.query("UPDATE eval_jobs SET snapshot=$1 WHERE id=$2", [
+      { ...snapshot(organization ? org.id : null), sessionInjection: need }, jobId,
+    ]);
+    const limited = new Pool({ connectionString: process.env.DATABASE_URL, max: 2, connectionTimeoutMillis: 1000 });
+    const provider = createOrganizationsProvider(createPluginDb(limited, "account_session_orgs"));
+    setOrganizations(provider);
+    const store = new AccountSessionStore(limited, { maxStateBytes: 16384, maxCheckpointsPerRefresh: 8, acceptsState: () => true });
+    const authority = runtimeAccountAuthority({ jobId, tokenHash: hashToken("account-fixture-token"), leaseId: "fixture-lease",
+      startedAt, sessionId, deadline: new Date(Date.now() + 10000).toISOString() }, undefined, source);
+    let entered = 0, resume!: () => void;
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const seen = new Set();
+    const reads = Promise.all([1, 2].map(() => store.read(async client => {
+      if (!seen.has(client)) { seen.add(client); if (++entered === 2) resume(); await gate; }
+      return authority(client);
+    })));
+    try {
+      expect(await reads).toEqual([null, null]);
+      expect(entered).toBe(2); expect(limited.waitingCount).toBe(0);
+      expect((await limited.query("SELECT current_schema() AS schema")).rows[0].schema).toBe("public");
+    } finally { resume(); await reads.catch(() => {}); resetOrganizations(); await limited.end(); }
+  });
+
   it("records an unsupported organization fencing contract as a failed mint", async () => {
     await ensureSession({ organizationId: 901 }, need);
     expect(await storage.getWebSession({ organizationId: 901 }, need.platformId, credentialKeyFor(need)))
@@ -303,14 +350,19 @@ d("account sessions: real Core authorization, routes and PostgreSQL", () => {
     await orgs.provider.removeMember(org.id, 1);
   });
 
-  it("fails closed for org persistence when the provider does not advertise mutation fencing", async () => {
-    setOrganizations({ ...orgs.provider, accountSessionFencing: undefined });
+  it.each(["fencing", "reader"])("fails closed for org persistence when the provider lacks the %s contract", async missing => {
+    setOrganizations({ ...orgs.provider, ...(missing === "fencing" ? { accountSessionFencing: undefined } : { accountSessionReader: undefined }) });
     const org = await orgs.provider.createOrganization({ name: `Unfenced ${randomUUID()}` }, { userId: 1 });
     for (const name of ['EMAIL', 'PASSWORD']) await orgs.provider.upsertOrgSecret(org.id,
       { name, encryptedValue: encryptValue('fixture'), brokerType: null, isTestAccount: false, createdBy: 1 });
     await pool.query("UPDATE eval_agent_tokens SET dispatch_tier='team'"); await createJob(org.id, false);
     await prepare().expect(403);
     await orgs.provider.removeMember(org.id, 1);
+  });
+
+  it("does not require the org transaction reader for a personal flow on its own private agent", async () => {
+    setOrganizations({ ...orgs.provider, accountSessionReader: undefined });
+    await prepare().expect(200);
   });
 
   it("refreshes fresh legacy Brokered rows and rotated bindings without waiting for cache expiry", async () => {

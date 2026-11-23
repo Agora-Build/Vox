@@ -74,6 +74,22 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
 export function createOrganizationsProvider(db: PluginDb): OrganizationsProvider {
   return {
     accountSessionFencing: "postgres-advisory-v1",
+    accountSessionReader(connection) {
+      const schema = `"${db.schema.replace(/"/g, '""')}"`;
+      return {
+        async getMembership(userId) {
+          const { rows } = await connection.query<{ org_ref: number; role: OrgRole }>(
+            `SELECT org_ref, role FROM ${schema}.memberships WHERE user_ref = $1`, [userId]);
+          return rows.length ? { organizationId: rows[0].org_ref, role: rows[0].role } : null;
+        },
+        async listOrgSecrets(orgId) {
+          const { rows } = await connection.query<SecretRow>(
+            `SELECT id, org_ref, name, encrypted_value, broker_type, is_test_account, created_by, created_at, updated_at
+             FROM ${schema}.org_secrets WHERE org_ref = $1 ORDER BY created_at DESC`, [orgId]);
+          return rows.map(toOrgSecretRow);
+        },
+      };
+    },
     async getMembership(userId) {
       const { rows } = await db.query<{ org_ref: number; role: OrgRole }>(
         "SELECT org_ref, role FROM memberships WHERE user_ref = $1", [userId]);
