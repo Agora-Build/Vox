@@ -16,6 +16,9 @@ import { getOrganizations, type OrgSecretRow } from "./organizations";
 import { isOwnerOrOrgManager } from "./permissions";
 import { credentialPoolViolation, ownsCredentialScope } from "./credential-policy";
 import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintTimeoutSeconds } from "./broker-registry";
+import { accountProvider } from "@shared/account-session-setup";
+import { brokerAccountBinding } from "./account-session-service";
+import { mintManagedAccountSession } from "./account-session-broker";
 
 export interface PlatformSetupInfo {
   platformId: string;
@@ -232,13 +235,14 @@ export async function ensureSession(
 ): Promise<void> {
   try {
     const credentialKey = credentialKeyFor(need);
+    const binding = accountProvider(need.platformId) ? await brokerAccountBinding(scope, need) : null;
     const existing = await storage.getWebSession(scope, need.platformId, credentialKey);
-    if (existing?.status === "ready" && existing.expiresAt &&
+    if (existing?.status === "ready" && (!binding || existing.accountSessionKey === binding.sessionKey) && existing.expiresAt &&
         existing.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000) {
       return; // fresh — nothing to do
     }
     const claimed = await storage.claimWebSessionMint(
-      scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS);
+      scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS, binding?.sessionKey ?? null);
     if (!claimed) return; // another instance is minting, or it turned fresh
     try {
       if (!(await brokerAvailable("auth-session"))) {
@@ -255,6 +259,11 @@ export async function ensureSession(
       const retained = await storage.setWebSessionBrowserTarget(claimed.id, claimed.mintStartedAt!, target.id,
         browserOperationId, new Date(Date.now() + mintTimeoutSeconds() * 1000));
       if (!retained) return;
+      if (binding) {
+        await mintManagedAccountSession({ scope, need, claimed, target, operationId: browserOperationId,
+          bindingKey: binding.sessionKey, email, password, ttlHours: ttlHours(), fetchImpl });
+        return;
+      }
       const mintResult = (await mintViaBroker(target, { platformId: need.platformId, email, password, browserOperationId }, fetchImpl)) as
         | { storageState?: unknown }
         | undefined;

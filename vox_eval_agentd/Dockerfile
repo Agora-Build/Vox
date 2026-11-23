@@ -59,6 +59,7 @@ RUN apt-get update && apt-get install -y \
     libportaudio2 \
     wget \
     zip \
+    util-linux \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -73,10 +74,10 @@ WORKDIR /app
 # default and aeval resolves the card ID by reading it. The broker target
 # never does audio I/O (setup:account only) and needs none of this.
 ARG TARGETARCH
-ARG AEVAL_VERSION=v0.4.5
+ARG AEVAL_VERSION=v0.5.1
 # Override the matching checksum too when selecting a different release.
-ARG AEVAL_SHA256_X86_64=113f6dc66baf59bda0463bc3da30157d5c31800366a19db87df189024e8ea0d5
-ARG AEVAL_SHA256_ARM64=f9d5585ae6956a5b06cb96841c0f977b519ea72c50974f6293b54294062c150a
+ARG AEVAL_SHA256_X86_64=197a7a2fd9fb08da41d99f3fe96e0fecca42817daa5c445d0bccd9527136b70e
+ARG AEVAL_SHA256_ARM64=b34a339d3d371c41489e6b2cbee3c3267cefae197695a1723bcc97546308d594
 RUN case "${TARGETARCH}" in \
       arm64) ARCH=arm64; SHA256="${AEVAL_SHA256_ARM64}" ;; \
       amd64|"") ARCH=x86_64; SHA256="${AEVAL_SHA256_X86_64}" ;; \
@@ -127,6 +128,8 @@ FROM base AS broker
 WORKDIR /app
 
 COPY vox_eval_agentd/auth-session-broker.ts /app/
+COPY vox_eval_agentd/account-checkpoints.ts vox_eval_agentd/account-workspace.ts /app/
+COPY shared/account-session-protocol.ts shared/account-session-setup.ts shared/placeholders.ts shared/secrets.ts /shared/
 COPY vox_eval_agentd/browser-control.ts /app/
 COPY shared/browser-assistance.ts /shared/browser-assistance.ts
 COPY shared/browser-assistance-timeout.ts /shared/browser-assistance-timeout.ts
@@ -183,6 +186,8 @@ COPY vox_eval_agentd/scenarios/ /app/scenarios/
 COPY vox_eval_agentd/analysis-presets/ /app/analysis-presets/
 COPY vox_eval_agentd/assets/ /app/assets/
 COPY vox_eval_agentd/vox-agentd.ts /app/
+COPY vox_eval_agentd/account-checkpoints.ts vox_eval_agentd/account-workspace.ts vox_eval_agentd/account-session-runtime.ts /app/
+COPY shared/account-session-protocol.ts shared/account-session-setup.ts /shared/
 COPY vox_eval_agentd/browser-control.ts /app/
 COPY vox_eval_agentd/browser-bridge.ts /app/
 COPY shared/browser-assistance.ts /shared/browser-assistance.ts

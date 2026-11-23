@@ -59,6 +59,11 @@ describe("response-body redaction list", () => {
   it("covers per-name and per-job sub-routes by prefix", () => {
     expect(isSensitiveResponsePath("/api/secrets/AGORA_CONSOLE_PASSWORD")).toBe(true);
     expect(isSensitiveResponsePath("/api/eval-agent/jobs/123/secrets")).toBe(true);
+    for (const route of ["/api/eval-agent/jobs/123/account-session", "/api/brokers/account-session"]) {
+      for (const suffix of ["", "/restore", "/checkpoints", "/release"]) {
+        expect(isSensitiveResponsePath(`${route}${suffix}`)).toBe(true);
+      }
+    }
   });
 
   it("does not redact ordinary routes", () => {

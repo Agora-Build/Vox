@@ -10,14 +10,28 @@ function reasonText(reason: BrowserAssistanceStatus["reason"]): string | null {
     case "check_failed": return "The readiness check could not finish.";
     case "condition_not_met": return "The original readiness condition is not met yet.";
     case "browser_unavailable": return "The evaluation browser is no longer available.";
+    case "account_mismatch": return "The signed-in account does not match this flow's authorized account.";
+    case "credential_continuation_required": return "Another sign-in step needs your permission to use this flow's account credentials.";
     default: return null;
   }
+}
+
+export function browserAuthenticationStage(status: BrowserStatus | null) {
+  const wait = status?.assistance;
+  const stage = wait?.authentication;
+  if (wait?.kind !== "authentication" || !["waiting", "held", "checking"].includes(wait.state)
+    || wait.remaining_seconds === 0 || !stage?.stage_id || !stage.page_id || !stage.stage_token
+    || !status?.pages.some((page) => page.page_id === stage.page_id)) return null;
+  return { stage_id: stage.stage_id, stage_token: stage.stage_token };
 }
 
 export function browserReadinessMessage(status: BrowserStatus | null): string | null {
   const assistance = status?.assistance ?? status?.last_assistance;
   if (!assistance) return null;
   const detail = reasonText(assistance.last_check_reason) ?? reasonText(assistance.reason);
+  if (browserAuthenticationStage(status)) {
+    return "A sign-in step is waiting. Sign in & continue authorizes aeval to enter this flow's account credentials for that step. Check & continue only checks readiness.";
+  }
   switch (assistance.state) {
     case "ready": return "Readiness confirmed. The evaluation resumed; check the job for its final result.";
     case "expired": return `Browser assistance expired before readiness was confirmed.${detail ? ` ${detail}` : ""} This wait cannot resume.`;

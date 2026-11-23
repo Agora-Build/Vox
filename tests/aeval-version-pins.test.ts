@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import yaml from "js-yaml";
 
 const root = path.resolve(__dirname, "..");
 const dockerfile = fs.readFileSync(path.join(root, "vox_eval_agentd/Dockerfile"), "utf8");
@@ -39,5 +40,28 @@ describe("aeval release pins", () => {
     const playwrightVersion = dockerfile.match(/playwright==(\d+\.\d+\.\d+)/)?.[1];
     expect(playwrightVersion).toBeDefined();
     expect(localScript.match(/^AEVAL_PLAYWRIGHT_VERSION="([^"]+)"$/m)?.[1]).toBe(playwrightVersion);
+  });
+
+  it.skipIf(!hasRuntimeData)("preserves explicit storage-first intent in the account setup, not storage-only mode", () => {
+    const platform = yaml.load(fs.readFileSync(path.join(dataPath, "config/platforms/elevenlabs.yaml"), "utf8")) as {
+      actions: Record<string, Record<string, unknown>[]>;
+    };
+    expect(platform.actions["setup:account"][0]).toMatchObject({
+      type: "browser.ensure_authenticated", authentication: "${config.authentication}",
+      restore_storage_file: "${params._restore_storage_file}", storage_file: "${params.storage_file}",
+      email: "${params.email}", password: "${params.password}",
+    });
+    expect(platform.actions["setup:storage"].some((step) => step.type === "browser.ensure_authenticated")).toBe(false);
+  });
+
+  it.skipIf(!hasRuntimeData)("pins the qualified ElevenLabs email stage instead of matching Resend verification", () => {
+    const platform = yaml.load(fs.readFileSync(path.join(dataPath, "config/platforms/elevenlabs.yaml"), "utf8")) as {
+      config: { authentication: { stages: Record<string, unknown>[] } };
+    };
+    expect(platform.config.authentication.stages.find((stage) => stage.id === "email")).toMatchObject({
+      selector: "body:has(button[data-testid='sign-in-submit-button']:has-text('Sign in')) input[data-testid='sign-in-email-input']",
+      fields: { email: "input[data-testid='sign-in-email-input']" },
+      submit: "button[data-testid='sign-in-submit-button']",
+    });
   });
 });

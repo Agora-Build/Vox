@@ -92,6 +92,9 @@ declare module "http" {
 }
 
 app.use("/api/eval-jobs/:id/browser", express.json({ limit: "16kb" }));
+// A 2 MiB state can expand sixfold when embedded as a JSON string. Bound the
+// transport before the general artifact API's larger parser gets a chance.
+app.use(["/api/eval-agent/jobs/:id/account-session", "/api/brokers/account-session"], express.json({ limit: "13mb" }));
 app.use(
   express.json({
     limit: "50mb",

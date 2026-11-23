@@ -78,6 +78,8 @@ export interface OrgSecretRow {
 }
 
 export interface OrganizationsProvider {
+  /** Same-database advisory fences for membership/secret writes; absent disables org session persistence. */
+  readonly accountSessionFencing?: "postgres-advisory-v1";
   /** Membership of one user; null = belongs to no org. */
   getMembership(userId: number): Promise<Membership | null>;
   /** Batch form for listings — users with no org are absent from the map. */

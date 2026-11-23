@@ -2,13 +2,39 @@
 
 This guide covers deploying Vox to production using Coolify (what vox.agora.build runs on), or any Docker-based hosting platform (Railway, Render, CapRover, etc.).
 
-## Live browser assistance rollout (schema 71)
+## Account Sessions And Browser Assistance (Schema 72)
 
 Deploy Core first, then the auth-session broker and eval-agent daemon built with
-aeval v0.4.5. This release retries protected-page readiness after browser
-assistance, including delayed SPA rendering, and reports safe readiness outcomes.
+aeval v0.5.1 and matching runtime data. This release restores an explicit account
+`storage_file` before credentials and supports explicit, stage-bound sign-in
+continuation after human verification, alongside bounded readiness retries.
 Deploy both daemon and broker images; updating Core alone does not change an
-older engine's one-shot continuation check. Migration `0068_browser_assistance_mints.sql` adds nullable,
+older engine's authentication behavior. Account mode stays account mode;
+Brokered eval-agent injection stays storage-only and never receives passwords.
+Schema 72 (`0071_account_session_persistence.sql`) adds canonical encrypted
+account sessions and atomic checkpoint receipts. Retain the existing
+`CREDENTIAL_ENCRYPTION_KEY` across all Core replicas, upgrades and backups.
+With an explicit account `storage_file`, eligible Runtime agents restore/save
+through claim-fenced Core endpoints; trusted brokers restore/save through
+mint-scoped grants. No persistent agent auth volume or extra agent `.env`
+configuration is required. Private temporary files are removed after execution;
+startup/minute sweeps reclaim inactive crash leftovers without uploading them.
+The bundled organizations plugin advertises matching secret/membership fences;
+other providers must implement that contract before org sessions can persist.
+The initial reviewed storage scope is ElevenLabs. Live email verification and
+two-host Runtime/Brokered reuse passed on 2026-11-23, with zero new credential
+submissions on the second host. That qualification requires the runtime-data
+email-stage correction: a retained email field beside Resend is not a Sign in
+stage. Runtime-data pin `51c0c810e5716c6edbf3c7bc3d8cc1ebad567cfe` includes
+the corrected `config/platforms/elevenlabs.yaml` in both daemon and broker
+images; the original stock v0.5.1 profile did not pass. The upstream v0.5.1 tag
+moved, but binary assets/checksums are unchanged; keep Vox's exact commit pin.
+These were isolated protocol/persistence tests, not a production rollout. Provider-imposed
+new-device challenges remain possible. The maintained
+[session-persistence design](../designs/2026-11-17-auth-session-persistence-and-assisted-login.md)
+records the live evidence and full-suite results.
+See [account storage and continuation](browser-assistance.md#account-storage-and-staged-continuation).
+Migration `0068_browser_assistance_mints.sql` adds nullable,
 claim-fenced broker operation routing; no credentials or browser frames are
 backfilled. Schema 70 (`0069_core_connection_routing.sql`) adds shared connection
 ownership, replay nonces and browser-viewer grants, without credentials/frames.

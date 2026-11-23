@@ -314,7 +314,8 @@ async function callBroker(what: string, call: () => Promise<Response>): Promise<
 
 export async function mintViaBroker(
   target: BrokerTarget,
-  req: { platformId: string; email: string; password: string; browserOperationId?: string },
+  req: { platformId: string; email: string; password: string; browserOperationId?: string;
+    sessionId?: string; checkpointGrant?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
   // Bound the call. auth-session.ts's staleMintThresholdSeconds() is derived

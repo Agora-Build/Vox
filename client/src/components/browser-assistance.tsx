@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { browserStatusSchema, browserFrameSchema, type BrowserCommand, type BrowserResponse, type BrowserStatus, type BrowserFrame, type BrowserViewerState } from "@shared/browser-assistance";
-import { browserReadinessMessage } from "@/lib/browser-readiness";
+import { browserAuthenticationStage, browserReadinessMessage } from "@/lib/browser-readiness";
 
 type Availability = { available: boolean; target?: "agent" | "broker"; deadline?: string; status?: BrowserStatus };
 type View = { id: string; leaseId: string; pageId: string; epoch: number; sessionId: string; generation: string; revision: number };
@@ -239,15 +239,28 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
     } catch (error) { setMessage(error instanceof Error ? error.message : "Control unavailable"); }
     finally { setBusy(false); }
   };
-  const continueRun = async () => {
+  const continueRun = async (authenticate = false) => {
     if (!status?.assistance) return;
+    const stage = authenticate ? browserAuthenticationStage(status) : null;
+    if (authenticate && !stage) return;
     setBusy(true);
     try {
-      const response = await command("assistance.continue", { ...identity(), wait_id: status.assistance.wait_id });
+      const response = await command(authenticate ? "authentication.continue" : "assistance.continue", {
+        ...identity(), wait_id: status.assistance.wait_id, ...stage,
+      });
+      if (!response.ok && response.error === "AUTH_CREDENTIAL_CONTINUATION_REQUIRED") {
+        setMessage("This sign-in step needs explicit permission. Choose Sign in & continue when it becomes available, or complete it manually.");
+        return;
+      }
+      if (authenticate && !response.ok) {
+        stop();
+        setMessage("The sign-in action could not be confirmed. Reopen the browser and inspect its state before acting again; credentials will not be resubmitted automatically.");
+        return;
+      }
       if (!response.ok) protocolError(response);
       control.current = null; setInteractive(false); setMessage(null);
       setStatus((current) => current?.assistance?.wait_id === status.assistance!.wait_id
-        ? { ...current, assistance: { ...current.assistance, state: "checking", reason: "checking" } } : current);
+        ? { ...current, assistance: { ...current.assistance, state: "checking", reason: "checking", authentication: null } } : current);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Continuation unavailable"); }
     finally { setBusy(false); }
   };
@@ -266,6 +279,7 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
   };
 
   const readinessMessage = browserReadinessMessage(status);
+  const authenticationStage = browserAuthenticationStage(status);
   const evaluationPageId = status?.assistance?.page_id ?? status?.last_assistance?.page_id;
   const evaluationTab = status?.pages.findIndex((page) => page.page_id === evaluationPageId) ?? -1;
   const canTakeControl = !!status?.assistance && ["waiting", "held", "checking"].includes(status.assistance.state)
@@ -300,6 +314,7 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
           {interactive ? <Button size="sm" variant="outline" onClick={() => void releaseControl()} disabled={busy} title="Release input and check readiness; other viewers stay connected" data-testid="button-release-browser-control">Release control</Button>
             : <Button size="sm" onClick={() => void takeControl()} disabled={busy || sharing?.controller === "other" || !canTakeControl || !view.current} data-testid="button-take-browser-control"><MousePointer2 className="mr-1 h-4 w-4" />{sharing?.controller === "other" ? "Another viewer has control" : "Take control"}</Button>}
           <Button size="sm" variant="outline" onClick={() => void continueRun()} disabled={busy || !interactive || !status?.assistance || !view.current}><Play className="mr-1 h-4 w-4" /> Check &amp; continue</Button>
+          {authenticationStage && <Button size="sm" onClick={() => void continueRun(true)} disabled={busy || !interactive || !view.current} data-testid="button-authentication-continue">Sign in &amp; continue</Button>}
           {status?.assistance?.remaining_seconds != null && <span className="text-xs text-muted-foreground">Hold: {Math.ceil(status.assistance.remaining_seconds)}s remaining</span>}
           {evaluationTab >= 0 && <span className="text-xs text-muted-foreground" data-testid="browser-evaluation-tab">Evaluation checks Tab {evaluationTab + 1}{view.current && view.current.pageId !== evaluationPageId ? "; you are viewing another tab" : ""}</span>}
         </div>

@@ -95,6 +95,7 @@ const MIGRATIONS: Array<{ version: number; description: string; file: string | n
   { version: 69, description: "fenced browser assistance routing for session mints", file: "0068_browser_assistance_mints.sql" },
   { version: 70, description: "Core connection ownership and shared browser viewers", file: "0069_core_connection_routing.sql" },
   { version: 71, description: "Concurrent read-only browser viewer grants", file: "0070_concurrent_browser_viewers.sql" },
+  { version: 72, description: "scoped account-session persistence and atomic checkpoint receipts", file: "0071_account_session_persistence.sql" },
 ];
 
 const TARGET_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

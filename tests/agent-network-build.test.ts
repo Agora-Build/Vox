@@ -10,10 +10,12 @@ describe("standalone agent network-monitor packaging", () => {
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), "vox-agent-network-build-"));
     try {
       const dockerfile = fs.readFileSync(path.join(root, "vox_eval_agentd/Dockerfile"), "utf8").split("FROM base AS daemon")[1];
-      for (const match of dockerfile.matchAll(/^COPY (\S+\.ts) (\S+)$/gm)) {
-        const target = path.join(stage, match[2].replace(/^\//, ""), match[2].endsWith("/") ? path.basename(match[1]) : "");
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.copyFileSync(path.join(root, match[1]), target);
+      for (const match of dockerfile.matchAll(/^COPY ((?:\S+\.ts[ \t]+)+)(\S+)$/gm)) {
+        for (const source of match[1].trim().split(/\s+/)) {
+          const target = path.join(stage, match[2].replace(/^\//, ""), match[2].endsWith("/") ? path.basename(source) : "");
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.copyFileSync(path.join(root, source), target);
+        }
       }
       const result = buildSync({ entryPoints: [path.join(stage, "app/vox-agentd.ts")], platform: "node", format: "esm",
         bundle: true, write: false, metafile: true, external: ["js-yaml", "@aws-sdk/client-s3", "ws"],
@@ -23,6 +25,11 @@ describe("standalone agent network-monitor packaging", () => {
       expect(inputs).toContain("network-observer.ts");
       expect(inputs).toContain("network-event-protocol.ts");
       expect(inputs).toContain("browser-assistance.ts");
+      expect(inputs).toContain("account-checkpoints.ts");
+      expect(inputs).toContain("account-session-runtime.ts");
+      expect(inputs).toContain("account-session-protocol.ts");
+      expect(inputs).toContain("account-session-setup.ts");
+      expect(inputs).toContain("account-workspace.ts");
       expect(inputs).not.toContain("shared/schema.ts");
       expect(inputs).not.toContain("server/");
       const networkProtocol = Object.entries(result.metafile!.inputs).find(([name]) => name.endsWith("network-event-protocol.ts"))![1];

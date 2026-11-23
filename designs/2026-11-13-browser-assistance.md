@@ -3,6 +3,11 @@
 Implementation and maintained operating contract:
 [Live Browser Assistance](../docs/browser-assistance.md).
 
+Follow-up implemented against aeval v0.5.1: [Encrypted Account Sessions And
+Assisted Login](2026-11-17-auth-session-persistence-and-assisted-login.md).
+It owns the current Runtime/Brokered persistence and staged-login role split;
+historical engine-version descriptions below are not the current release pin.
+
 The implementation integrates the aeval v0.4.5 protocol-v1 inspection/assistance
 milestone reviewed in the November 10-11 cross-project design. It resolves the
 Vox review's authority, broker placement, bounded-deadline, cancellation and

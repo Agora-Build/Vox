@@ -3792,7 +3792,7 @@ export class DatabaseStorage {
    */
   async claimWebSessionMint(
     scope: SessionScope, platformId: string, credentialKey: string,
-    staleMintSeconds: number, freshMarginSeconds: number,
+    staleMintSeconds: number, freshMarginSeconds: number, accountSessionKey: string | null = null,
   ): Promise<WebSession | undefined> {
     const userId = "userId" in scope ? scope.userId : null;
     const orgId = "organizationId" in scope ? scope.organizationId : null;
@@ -3809,8 +3809,8 @@ export class DatabaseStorage {
     // WHERE in storeWebSessionReady/markWebSessionFailed would never match.
     const nowMs = sql`date_trunc('milliseconds', NOW())`;
     const inserted = await db.execute(sql`
-      INSERT INTO web_sessions (user_id, organization_id, platform_id, credential_key, status, mint_started_at)
-      VALUES (${userId}, ${orgId}, ${platformId}, ${credentialKey}, 'minting', ${nowMs})
+      INSERT INTO web_sessions (user_id, organization_id, platform_id, credential_key, status, mint_started_at, account_session_key)
+      VALUES (${userId}, ${orgId}, ${platformId}, ${credentialKey}, 'minting', ${nowMs}, ${accountSessionKey})
       ON CONFLICT ${conflictTarget} DO NOTHING
       RETURNING *`);
     const insRows = (inserted as unknown as { rows: Record<string, unknown>[] }).rows;
@@ -3819,7 +3819,7 @@ export class DatabaseStorage {
     const updated = await db.execute(sql`
       UPDATE web_sessions
       SET status = 'minting', mint_started_at = ${nowMs}, updated_at = NOW(),
-          mint_broker_id = NULL, mint_operation_id = NULL, mint_deadline_at = NULL
+          mint_broker_id = NULL, mint_operation_id = NULL, mint_deadline_at = NULL, account_session_key = ${accountSessionKey}
       WHERE user_id IS NOT DISTINCT FROM ${userId}
         AND organization_id IS NOT DISTINCT FROM ${orgId}
         AND platform_id = ${platformId}
@@ -3827,7 +3827,8 @@ export class DatabaseStorage {
         AND (status <> 'minting' OR mint_started_at IS NULL
              OR mint_started_at < NOW() - make_interval(secs => ${staleMintSeconds}))
         AND NOT (status = 'ready' AND expires_at IS NOT NULL
-                 AND expires_at > NOW() + make_interval(secs => ${freshMarginSeconds}))
+                 AND expires_at > NOW() + make_interval(secs => ${freshMarginSeconds})
+                 AND (${accountSessionKey}::text IS NULL OR account_session_key IS NOT DISTINCT FROM ${accountSessionKey}))
       RETURNING *`);
     const updRows = (updated as unknown as { rows: Record<string, unknown>[] }).rows;
     if (!updRows?.length) return undefined;

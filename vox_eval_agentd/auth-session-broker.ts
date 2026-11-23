@@ -27,7 +27,6 @@ import http from 'http';
 import { spawn } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StringDecoder } from 'string_decoder';
@@ -37,16 +36,22 @@ import { mintTimeoutSeconds, MAX_MINT_TIMEOUT_SECONDS } from '../shared/mint-tim
 import { LocalBrowserSessions } from './browser-control';
 import { browserOperationSchema } from '../shared/browser-assistance';
 import { browserAssistanceTimeoutSeconds } from '../shared/browser-assistance-timeout';
+import { AccountCheckpointConsumer, accountCheckpointReply } from './account-checkpoints';
+import { createAccountWorkspace, initializeAccountWorkspaces } from './account-workspace';
+import { accountProvider, acceptsProviderAccountState } from '../shared/account-session-setup';
+import { ACCOUNT_CHECKPOINT_LIMITS, engineSessionIdSchema } from '../shared/account-session-protocol';
 export { credentialForms } from '../shared/credentials';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
 
-export interface MintRequest { platformId: string; email: string; password: string; browserOperationId?: string; timeoutSeconds?: number }
+export interface MintRequest { platformId: string; email: string; password: string; browserOperationId?: string; timeoutSeconds?: number;
+  sessionId?: string; checkpointGrant?: string }
 export type MintFn = (req: MintRequest) => Promise<unknown>;
 
 const PLATFORM_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const browserMints = new Map<string, { browser: LocalBrowserSessions; deadline: number }>();
+const mintChildren = new Set<ReturnType<typeof spawn>>();
 
 /**
  * Constant-time bearer-secret check. A plain `!==` on the shared secret leaks
@@ -219,12 +224,30 @@ export function readLastFailedHttpStatus(aevalStderr: string, ...roots: string[]
 }
 
 /** Real mint: one-step aeval scenario running setup:account → save_storage_state. */
-export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promise<unknown> {
+export async function mintWithAeval(req: MintRequest, timeoutMs: number, options: { coreUrl?: string; fetchImpl?: typeof fetch; dataPath?: string } = {}): Promise<unknown> {
   // Core can request a shorter budget than this broker's local configuration.
   timeoutMs = Math.min(timeoutMs, mintTimeoutSeconds() * 1000, (req.timeoutSeconds ?? MAX_MINT_TIMEOUT_SECONDS) * 1000);
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-mint-'));
+  const sessionId = req.sessionId ?? `vox-mint-${crypto.randomUUID()}`;
+  const aevalDataPath = options.dataPath ?? AEVAL_DATA_PATH;
+  engineSessionIdSchema.parse(sessionId);
+  const workspace = createAccountWorkspace();
+  const workDir = workspace.root;
   const storageFile = path.join(workDir, 'session.json');
   const scenarioFile = path.join(workDir, 'mint.yaml');
+  const managed = !!req.checkpointGrant;
+  const abort = new AbortController();
+  const deadline = Date.now() + timeoutMs;
+  const post = async (action: string, body: Record<string, unknown>, signal: AbortSignal) => {
+    const coreUrl = options.coreUrl ?? CORE_URL;
+    if (!coreUrl) throw new Error('Core account-session transport unavailable');
+    return (options.fetchImpl ?? fetch)(`${coreUrl}/api/brokers/account-session/${action}`, {
+      method: 'POST', redirect: 'error', signal, headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ grant: req.checkpointGrant, ...body }),
+    });
+  };
+  let consumer: AccountCheckpointConsumer | null = null, checkpointTimer: NodeJS.Timeout | null = null;
+  let engineChild: ReturnType<typeof spawn> | null = null;
+  let engineClosed: Promise<void> = Promise.resolve();
   const browser = req.browserOperationId ? new LocalBrowserSessions(path.join(workDir, 'control.sock')) : null;
   if (browser && req.browserOperationId) browserMints.set(req.browserOperationId, { browser, deadline: Date.now() + timeoutMs });
   // YAML built with JSON.stringify'd scalars — JSON strings are valid YAML
@@ -253,20 +276,48 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
     `      storage_file: ${JSON.stringify(storageFile)}`,
     '',
   ].join('\n');
-  fs.writeFileSync(scenarioFile, scenario, { mode: 0o600 });
   try {
+    fs.writeFileSync(scenarioFile, scenario, { mode: 0o600 });
+    if (managed) {
+      if (!accountProvider(req.platformId)) throw new Error('Unsupported account-session provider');
+      // Restore through Core's mint-scoped endpoint, not the inter-Core command
+      // envelope. No larger general routing limit or mutable-file upload is needed.
+      try {
+        const response = await post('restore', {}, AbortSignal.timeout(5000));
+        if (response.status === 401 || response.status === 403) throw new Error('Account-session authority revoked');
+        if (response.ok) {
+          const body = await response.json() as { state?: unknown };
+          if (typeof body.state === 'string' && Buffer.byteLength(body.state) <= ACCOUNT_CHECKPOINT_LIMITS.snapshotBytes &&
+              acceptsProviderAccountState(req.platformId, JSON.parse(body.state))) fs.writeFileSync(storageFile, body.state, { mode: 0o600 });
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Account-session authority revoked') throw error;
+        // A cache outage may fall back to account login, never a whole-eval retry.
+      }
+      consumer = new AccountCheckpointConsumer({ storageFile, sessionId, signal: abort.signal,
+        authorized: async () => Date.now() < deadline,
+        acceptsState: state => acceptsProviderAccountState(req.platformId, state),
+        deliver: async (record, state, signal) => {
+          const response = await post('checkpoints', { record, state }, signal);
+          if (response.status === 401 || response.status === 403) { abort.abort(); return { status: 'rejected' }; }
+          return accountCheckpointReply(await response.json());
+        } });
+      checkpointTimer = setInterval(() => { void consumer!.poll(); }, 1000); checkpointTimer.unref();
+    }
     await new Promise<void>((resolve, reject) => {
       // Own process group so the timeout can kill aeval AND its browser children
       // (same discipline as vox-agentd's runAeval).
-      const args = ['run', scenarioFile];
+      const args = ['run', scenarioFile, '--session-id', sessionId];
       if (browser) args.push('--browser-control-socket', path.join(workDir, 'control.sock'),
         '--browser-assistance-timeout', String(browserAssistanceTimeoutSeconds(timeoutMs / 1000)));
       const proc = spawn('aeval', args, {
-        cwd: AEVAL_DATA_PATH,
+        cwd: aevalDataPath,
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       });
+      engineChild = proc; mintChildren.add(proc);
+      engineClosed = new Promise(resolve => proc.once('close', () => { mintChildren.delete(proc); resolve(); }));
       // BOTH streams are buffered, never logged. aeval's loguru sink is stderr
       // in the build we run (the original bug was its trailing INFO banner
       // winning a stderr tail), but that is a property of a version and a TTY,
@@ -289,7 +340,8 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       proc.stdout!.on('data', (d) => outCap.push(outDec.write(d)));
       proc.stderr!.on('data', (d) => errCap.push(errDec.write(d)));
       let settled = false;
-      const finish = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
+      let killTimer: NodeJS.Timeout | undefined;
+      const finish = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); clearTimeout(killTimer); fn(); } };
       const killTree = (signal: NodeJS.Signals) => {
         try { if (proc.pid) { process.kill(-proc.pid, signal); return; } } catch { /* fall through */ }
         try { proc.kill(signal); } catch { /* already gone */ }
@@ -315,7 +367,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       };
       const timer = setTimeout(() => {
         killTree('SIGTERM');
-        setTimeout(() => killTree('SIGKILL'), 5000);
+        killTimer = setTimeout(() => killTree('SIGKILL'), 5000);
         finish(() => {
           // A hung login was the one path still telling the operator nothing —
           // the same complaint this module exists to fix, one branch over. If
@@ -338,7 +390,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // wait_for_url timeout, which exits non-zero and lands in the close
           // handler below — but a broker-level hang that nonetheless wrote
           // artifacts should not lose the status for free. Fails soft to null.
-          const status = readLastFailedHttpStatus(errCap.completeText, AEVAL_DATA_PATH, workDir);
+          const status = readLastFailedHttpStatus(errCap.completeText, aevalDataPath, workDir);
           const httpNote = status === null ? '' : formatLastFailedHttpStatus(status);
           reject(new Error(`login timed out after ${timeoutMs}ms${httpNote}${detail}`));
         });
@@ -358,11 +410,12 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
           // half-emitted, and the banner IS the last line. Same rule
           // capturedFailure applies two lines up.
           const status = readLastFailedHttpStatus(
-            code === null ? errCap.completeText : errCap.text, AEVAL_DATA_PATH, workDir);
+            code === null ? errCap.completeText : errCap.text, aevalDataPath, workDir);
           reject(new Error(`aeval exited ${code}${status === null ? '' : formatLastFailedHttpStatus(status)}: ${summary}`));
         }
       }));
     });
+    if (managed) return null; // Core accepts only committed immutable checkpoints.
     if (!fs.existsSync(storageFile)) {
       throw new Error('login completed but no storage state was saved');
     }
@@ -374,9 +427,24 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number): Promis
       throw new Error('login completed but the saved storage state is not valid JSON');
     }
   } finally {
+    // Timeout may reject before the process closes. Stop its writer before
+    // flushing the outbox or removing the private directory.
+    const activeChild = engineChild as ReturnType<typeof spawn> | null;
+    if (activeChild && activeChild.exitCode === null && activeChild.signalCode === null) {
+      try { if (activeChild.pid) process.kill(-activeChild.pid, 'SIGKILL'); } catch { /* Already exited. */ }
+      let closeTimer: NodeJS.Timeout | undefined;
+      await Promise.race([engineClosed, new Promise<void>(resolve => { closeTimer = setTimeout(resolve, 2000); })]);
+      clearTimeout(closeTimer);
+    }
+    if (checkpointTimer) clearInterval(checkpointTimer);
+    try { await consumer?.finish(); } catch { /* Persistence never changes the mint's engine outcome. */ }
+    abort.abort();
+    if (managed) {
+      try { await post('release', {}, AbortSignal.timeout(1000)); } catch { /* The database refresh fence expires. */ }
+    }
     browser?.destroy();
     if (req.browserOperationId) browserMints.delete(req.browserOperationId);
-    fs.rmSync(workDir, { recursive: true, force: true });
+    try { workspace.close(); } catch { console.warn('[Broker] Private account workspace cleanup pending'); }
   }
 }
 
@@ -422,6 +490,9 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
       if (typeof body.password !== 'string' || !body.password) return json(400, { error: 'password is required' });
       if (body.browserOperationId !== undefined && (typeof body.browserOperationId !== 'string' || !/^[0-9a-f-]{36}$/.test(body.browserOperationId))) return json(400, { error: 'invalid browser operation' });
       if (body.timeoutSeconds !== undefined && (!Number.isSafeInteger(body.timeoutSeconds) || body.timeoutSeconds <= 0 || body.timeoutSeconds > MAX_MINT_TIMEOUT_SECONDS)) return json(400, { error: 'invalid login timeout' });
+      if (body.sessionId !== undefined && !engineSessionIdSchema.safeParse(body.sessionId).success) return json(400, { error: 'invalid account execution' });
+      if (body.checkpointGrant !== undefined && (typeof body.checkpointGrant !== 'string' || body.checkpointGrant.length > 16_384 ||
+          !body.sessionId || !accountProvider(body.platformId))) return json(400, { error: 'invalid account-session grant' });
       // Fingerprint, never the values: lengths plus a hash of the IDENTIFIER
       // only. See fingerprintForLog for why the secret gets its length alone.
       // Logged on the REQUEST rather than only on failure, so a mint that hangs
@@ -512,9 +583,25 @@ export async function heartbeat(): Promise<void> {
 
 // Entrypoint (skipped under vitest import)
 if (process.argv[1] && process.argv[1].endsWith('auth-session-broker.js')) {
+  initializeAccountWorkspaces();
   const port = parseInt(process.env.BROKER_PORT || '8200', 10);
   const timeoutMs = mintTimeoutSeconds() * 1000;
-  const server = createBrokerServer({ mint: (r) => mintWithAeval(r, timeoutMs), getSecret: () => state?.mintSecret });
+  const activeMints = new Set<Promise<unknown>>();
+  const server = createBrokerServer({ mint: (r) => {
+    const mint = mintWithAeval(r, timeoutMs); activeMints.add(mint);
+    void mint.finally(() => activeMints.delete(mint)).catch(() => undefined);
+    return mint;
+  }, getSecret: () => state?.mintSecret });
+  const shutdown = async () => {
+    server.close();
+    for (const child of Array.from(mintChildren)) {
+      try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* Already exited. */ }
+    }
+    await Promise.race([Promise.allSettled(Array.from(activeMints)), new Promise(resolve => setTimeout(resolve, 10_000))]);
+    process.exit(0);
+  };
+  process.once('SIGTERM', () => { void shutdown(); });
+  process.once('SIGINT', () => { void shutdown(); });
   (async () => {
     // Listen first, then register (#129): Core probes the advertised URL as
     // soon as registration lands, so the server has to be answering by then.

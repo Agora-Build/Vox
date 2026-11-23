@@ -10,7 +10,7 @@ export const browserCommandSchema = z.object({
   command: z.enum([
     "session.status", "viewer.open", "viewer.heartbeat", "viewer.close",
     "viewer.take_control", "viewer.input", "viewer.open_url", "viewer.select_page",
-    "viewer.release_control", "assistance.continue", "assistance.cancel", "command.status",
+    "viewer.release_control", "assistance.continue", "authentication.continue", "assistance.cancel", "command.status",
   ]),
   session_id: z.string().max(256).optional(),
   browser_generation: z.string().max(256).nullable().optional(),
@@ -38,12 +38,19 @@ export type BrowserPage = { page_id: string; document_epoch: number; origin: str
 const readinessReasonSchema = z.enum([
   "checking", "ready", "still_on_login", "wrong_target", "selector_absent", "condition_not_met",
   "navigation_timeout", "check_timeout", "check_failed", "assistance_expired", "assistance_cancelled", "browser_unavailable",
+  "account_mismatch", "credential_continuation_required",
 ]).nullable().optional().catch(null);
+const authenticationStageSchema = z.object({
+  stage_id: z.string().min(1).max(256).nullable(),
+  page_id: z.string().min(1).max(256).nullable(),
+  stage_token: z.string().min(1).max(256).nullable(),
+}).strict();
 export const browserAssistanceStatusSchema = z.object({
   wait_id: z.string(), kind: z.enum(["authentication", "element", "url"]),
   state: z.enum(["waiting", "held", "checking", "ready", "expired", "cancelled", "failed"]),
   page_id: z.string(), remaining_seconds: z.number().nullable(),
   reason: readinessReasonSchema, last_check_reason: readinessReasonSchema,
+  authentication: authenticationStageSchema.nullable().optional().catch(null),
 });
 export type BrowserAssistanceStatus = z.infer<typeof browserAssistanceStatusSchema>;
 export const browserStatusSchema = z.object({
