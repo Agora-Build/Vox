@@ -37,3 +37,7 @@ CREATE TABLE "account_sessions" (
 ALTER TABLE "account_session_checkpoints" ADD CONSTRAINT "account_session_checkpoints_session_key_account_sessions_session_key_fk" FOREIGN KEY ("session_key") REFERENCES "public"."account_sessions"("session_key") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "account_sessions" ADD CONSTRAINT "account_sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "account_session_checkpoints_sequence_idx" ON "account_session_checkpoints" USING btree ("session_key","generation","sequence");
+--> statement-breakpoint
+CREATE INDEX "account_sessions_updated_at_idx" ON "account_sessions" USING btree ("updated_at");
+--> statement-breakpoint
+CREATE INDEX "account_session_checkpoints_committed_at_idx" ON "account_session_checkpoints" USING btree ("committed_at");

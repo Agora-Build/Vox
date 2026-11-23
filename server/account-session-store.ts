@@ -3,6 +3,8 @@ import { encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
 import { AccountSessionError, sessionDigest, type AccountSessionBinding } from "./account-session-binding";
 import { parseAccountJson } from "../shared/account-session-protocol";
 
+export const ACCOUNT_SESSION_RETENTION_DAYS = 30;
+
 export interface AccountSessionAuthority {
   binding: AccountSessionBinding;
   /** Core-derived job/claim/execution or trusted-broker mint identity, not file-asserted authority. */
@@ -109,7 +111,7 @@ export class AccountSessionStore {
 
   async read(authorize: AuthorizeAccountSession): Promise<{ format: string; state: string } | null> {
     return this.authorized(authorize, async (client, { binding }) => {
-      const { rows } = await client.query<SessionRow>("SELECT * FROM account_sessions WHERE session_key = $1", [binding.sessionKey]);
+      const { rows } = await client.query<SessionRow>("SELECT * FROM account_sessions WHERE session_key = $1 FOR UPDATE", [binding.sessionKey]);
       const row = rows[0];
       if (!row?.encrypted_storage_state) return null;
       try {
@@ -117,6 +119,7 @@ export class AccountSessionStore {
         if (envelope.version !== 1 || envelope.sessionKey !== binding.sessionKey ||
             envelope.format !== row.storage_format) throw new Error();
         this.parse(binding, envelope.format, envelope.state);
+        await client.query("UPDATE account_sessions SET updated_at = clock_timestamp() WHERE session_key = $1", [binding.sessionKey]);
         return { format: envelope.format as string, state: envelope.state as string };
       } catch { throw new AccountSessionError("state-unavailable"); }
     });
@@ -207,5 +210,34 @@ export class AccountSessionStore {
       // Failed/cancelled refreshes release their fence, never erase last good state.
       return result.rowCount === 1;
     });
+  }
+
+  /** Expired revisions/orgs need no live credentials or encryption key to be erased. */
+  async pruneExpired(limit = 500): Promise<{ sessions: number; checkpoints: number }> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new AccountSessionError("invalid-checkpoint");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Lock parents before receipts, matching save() and FK cascade ordering.
+      const sessions = await client.query(`WITH expired AS (
+        SELECT session_key FROM account_sessions
+        WHERE updated_at < clock_timestamp() - make_interval(days => $1)
+          AND (refresh_expires_at IS NULL OR refresh_expires_at <= clock_timestamp())
+        ORDER BY updated_at LIMIT $2 FOR UPDATE SKIP LOCKED
+      ) DELETE FROM account_sessions s USING expired e WHERE s.session_key = e.session_key`,
+      [ACCOUNT_SESSION_RETENTION_DAYS, limit]);
+      const checkpoints = await client.query(`WITH expired AS (
+        SELECT session_key, generation, checkpoint_id FROM account_session_checkpoints
+        WHERE committed_at < clock_timestamp() - make_interval(days => $1)
+        ORDER BY committed_at LIMIT $2 FOR UPDATE SKIP LOCKED
+      ) DELETE FROM account_session_checkpoints c USING expired e
+        WHERE c.session_key = e.session_key AND c.generation = e.generation AND c.checkpoint_id = e.checkpoint_id`,
+      [ACCOUNT_SESSION_RETENTION_DAYS, limit]);
+      await client.query("COMMIT");
+      return { sessions: sessions.rowCount ?? 0, checkpoints: checkpoints.rowCount ?? 0 };
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch { /* Preserve the original failure. */ }
+      throw error;
+    } finally { client.release(); }
   }
 }

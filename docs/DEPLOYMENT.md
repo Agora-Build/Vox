@@ -34,6 +34,54 @@ new-device challenges remain possible. The maintained
 [session-persistence design](../designs/2026-11-17-auth-session-persistence-and-assisted-login.md)
 records the live evidence and full-suite results.
 See [account storage and continuation](browser-assistance.md#account-storage-and-staged-continuation).
+
+### Account Session Retention And Recovery
+
+Core runs a database-backed retention sweep at startup and every minute. Saved
+account sessions expire after 30 days without authorized use or a refresh;
+successful validated restores renew that inactivity window. Active refresh
+claims are preserved until their deadline. Each sweep selects at most 500 old
+sessions and 500 old checkpoint receipts, using row locks with `SKIP LOCKED`
+across replicas. Deleting a session also cascades its remaining receipts.
+Receipt retention is independently 30 days, even for an actively reused session.
+Cleanup needs neither the encryption key nor a live organization provider, so
+old credential revisions and deleted organizations cannot retain state forever.
+An account unused for 30 days may require login again; this is not a promise
+that the provider keeps its cookies valid for 30 days.
+
+An undecryptable canonical state fails closed with `state-unavailable`; Core
+does not overwrite it with a new login. First restore the original
+`CREDENTIAL_ENCRYPTION_KEY` and ensure every Core replica uses that same key.
+If the key/state is unrecoverable, an authorized database operator can explicitly
+reset that one binding. Stop jobs and broker mints for that account first, then
+identify the exact scope/source/provider/revision using metadata only:
+
+```sql
+SELECT session_key, user_id, organization_id, source, platform_id,
+       credential_revision, updated_at
+FROM account_sessions
+WHERE session_key = '<verified-64-character-session-key>';
+```
+
+After verifying that exact key, remove its ready/mint metadata and canonical
+state in one transaction. Do not reset every account or print/decrypt state:
+
+```sql
+BEGIN;
+DELETE FROM web_sessions
+WHERE account_session_key = '<verified-64-character-session-key>';
+DELETE FROM account_sessions
+WHERE session_key = '<verified-64-character-session-key>';
+COMMIT;
+```
+
+Canonical deletion cascades that binding's receipts. Removing the matching
+`web_sessions` row prevents a stale ready row suppressing reauthentication.
+Run the account flow again with the correct key configured; fresh login and
+possibly human verification are required. This cannot recover lost sessions.
+
+### Browser Routing
+
 Migration `0068_browser_assistance_mints.sql` adds nullable,
 claim-fenced broker operation routing; no credentials or browser frames are
 backfilled. Schema 70 (`0069_core_connection_routing.sql`) adds shared connection

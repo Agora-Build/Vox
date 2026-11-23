@@ -1,6 +1,6 @@
 # Encrypted Account Sessions And Assisted Login
 
-Status: Vox implementation complete locally against released aeval v0.5.1.
+Status: Vox implementation and validation complete for PR #285 against released aeval v0.5.1.
 Updated: 2026-11-23. Runtime and Brokered live two-host qualification passed with
 the ElevenLabs provider-profile correction below. Not deployed to production.
 Coordination: [Vox #284](https://github.com/Agora-Build/Vox/issues/284) and its
@@ -168,6 +168,22 @@ org session persistence; no plugin-table reads or cross-plugin transaction are
 introduced. A future external provider needs equivalent revocation fencing.
 
 ## 6. Immutable File Contract And Retention
+
+Canonical database sessions have a 30-day inactivity window. Authorized,
+validated restores and refresh operations renew it; failed/unauthorized reads
+do not. Core sweeps at startup and every minute, deleting at most 500 inactive
+sessions per batch while preserving unexpired refresh claims. Session deletion
+cascades its receipts. A separate 500-receipt batch expires receipts older than
+30 days even when the session remains active. Row locks and `SKIP LOCKED` allow
+multiple Core replicas to sweep safely. Cleanup does not require credentials,
+an encryption key or a live organization provider, and covers old revisions and
+orphaned org scopes. Idle sessions may require reauthentication after 30 days;
+provider cookie validity remains independent of this retention policy.
+
+An undecryptable state remains fail-closed. Restore the original Core encryption
+key first; if recovery is impossible, an authorized operator may reset only the
+verified binding and its matching `web_sessions` metadata with jobs/mints stopped.
+See [deployment recovery](../docs/DEPLOYMENT.md#account-session-retention-and-recovery).
 
 Example Vox-owned file layout:
 
@@ -389,3 +405,28 @@ Vox UI. Automated browser tests cover the UI separately. Provider policy may
 still require a new-device/IP challenge on future runs; restoration is not a
 promise to bypass a provider's security controls. No production deployment or
 issue closure is implied by this qualification.
+
+## 11. PR Review Resolution And Final Rerun (2026-11-23)
+
+PR #285 review identified missing database retention, unawaited daemon
+supersession cleanup, and broker binding/read failures that lacked terminal
+agent feedback. These are fixed: bounded 30-day retention with replica-safe
+locking and read touches; awaited bounded shutdown; recorded failed mints even
+for invalid bindings; safe no-store 403/503 serve responses; and exact-binding
+undecryptable-state recovery instructions. Parent-before-receipt locking avoids
+inverting the save/cascade order. Restore holds its row lock until its inactivity
+touch commits, preventing a concurrent sweep from deleting the restored state.
+
+The final unchanged implementation passed the full Vitest discovery again:
+**4,155 passed, 78 skipped, zero failures** across 224 passing files and six
+skipped files. This includes the final restore-versus-retention interleaving
+regression. The isolated affected suites separately passed **234/234** checks,
+including real PostgreSQL, two Core stores, unsupported organization fencing,
+disabled/deleted credentials, safe route errors, single-flight retention and
+execution of the actual daemon supersession method without its CLI entrypoint.
+Production build, Core/daemon TypeScript, explicit test/script TypeScript and
+focused lint passed (no lint errors; existing console warnings remain in larger
+legacy modules). Migration 72 was exercised against fresh disposable databases.
+The earlier opt-in, browser, audio, packaged-engine and live two-host evidence
+remains as recorded above; those external/opt-in suites were not rerun for these
+server-side review corrections. No additional provider login was performed.

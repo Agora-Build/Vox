@@ -378,4 +378,105 @@ d("account-session foundation: isolated PostgreSQL, two Core stores", () => {
     await expect(pool.query("UPDATE account_sessions SET organization_id = 1 WHERE session_key = $1", [ticket.sessionKey])).rejects.toThrow();
     await expect(pool.query("UPDATE account_sessions SET source = 'arbitrary' WHERE session_key = $1", [ticket.sessionKey])).rejects.toThrow();
   });
+
+  it("expires inactive personal and orphaned org revisions, cascading their receipts without a key", async () => {
+    for (const auth of [authority(), authority({ orgId: 91 }), authority({ revision: "old" })]) {
+      const ticket = (await store.claim(allow(auth), 30))!;
+      await store.save(allow(auth), ticket, checkpoint());
+      await store.release(allow(auth), ticket);
+    }
+    await pool.query("UPDATE account_sessions SET updated_at=clock_timestamp()-interval '31 days'");
+    vi.stubEnv("CREDENTIAL_ENCRYPTION_KEY", "");
+    expect(await store.pruneExpired()).toEqual({ sessions: 3, checkpoints: 0 });
+    expect((await pool.query("SELECT * FROM account_sessions")).rows).toHaveLength(0);
+    expect(await receipts()).toHaveLength(0);
+  });
+
+  it("refreshes inactivity only on an authorized, validated read", async () => {
+    const auth = authority(), ticket = (await store.claim(allow(auth), 30))!;
+    await store.save(allow(auth), ticket, checkpoint()); await store.release(allow(auth), ticket);
+    await pool.query("UPDATE account_sessions SET updated_at=clock_timestamp()-interval '31 days'");
+    const before = (await raw(ticket.sessionKey)).updated_at;
+    await expect(store.read(async () => null)).rejects.toMatchObject({ code: "unauthorized" });
+    expect((await raw(ticket.sessionKey)).updated_at).toEqual(before);
+    expect(await store.read(allow(auth))).not.toBeNull();
+    expect((await raw(ticket.sessionKey)).updated_at.getTime()).toBeGreaterThan(Date.now() - 5000);
+    expect(await store.pruneExpired()).toEqual({ sessions: 0, checkpoints: 0 });
+  });
+
+  it("preserves recent sessions and active refreshes but expires an abandoned refresh", async () => {
+    const recent = authority(), active = authority({ revision: "active" }), expired = authority({ revision: "expired" });
+    for (const auth of [recent, active, expired]) await store.claim(allow(auth), 30);
+    await pool.query("UPDATE account_sessions SET updated_at=clock_timestamp()-interval '31 days' WHERE session_key <> $1", [recent.binding.sessionKey]);
+    await pool.query("UPDATE account_sessions SET refresh_expires_at=clock_timestamp()-interval '1 second' WHERE session_key=$1", [expired.binding.sessionKey]);
+    expect(await store.pruneExpired()).toEqual({ sessions: 1, checkpoints: 0 });
+    expect(await raw(recent.binding.sessionKey)).toBeDefined();
+    expect(await raw(active.binding.sessionKey)).toBeDefined();
+    expect(await raw(expired.binding.sessionKey)).toBeUndefined();
+  });
+
+  it("prunes old receipts independently of an actively used canonical session", async () => {
+    const auth = authority(), ticket = (await store.claim(allow(auth), 30))!;
+    await store.save(allow(auth), ticket, checkpoint(1)); await store.save(allow(auth), ticket, checkpoint(2));
+    await pool.query("UPDATE account_session_checkpoints SET committed_at=clock_timestamp()-interval '31 days' WHERE sequence=1");
+    expect(await store.pruneExpired()).toEqual({ sessions: 0, checkpoints: 1 });
+    expect((await receipts()).map(row => Number(row.sequence))).toEqual([2]);
+    expect(await store.read(allow(auth))).not.toBeNull();
+  });
+
+  it("bounds deletion batches and safely shares sweeping between two Core stores", async () => {
+    for (let i = 0; i < 6; i++) {
+      const auth = authority({ revision: String(i) }), ticket = (await store.claim(allow(auth), 30))!;
+      await store.save(allow(auth), ticket, checkpoint()); await store.release(allow(auth), ticket);
+    }
+    await pool.query("UPDATE account_sessions SET updated_at=clock_timestamp()-interval '31 days'");
+    await pool.query("UPDATE account_session_checkpoints SET committed_at=clock_timestamp()-interval '31 days'");
+    const swept = await Promise.all([store.pruneExpired(2), otherStore.pruneExpired(2)]);
+    expect(swept.every(result => result.sessions <= 2 && result.checkpoints <= 2)).toBe(true);
+    expect(swept.reduce((n, result) => n + result.sessions, 0)).toBe(4);
+    expect((await pool.query("SELECT * FROM account_sessions")).rows).toHaveLength(2);
+    await store.pruneExpired(2);
+    expect(await receipts()).toHaveLength(0);
+  });
+
+  it("skips a locked active session instead of blocking another Core's sweep", async () => {
+    const auth = authority(), ticket = (await store.claim(allow(auth), 30))!;
+    await store.release(allow(auth), ticket);
+    await pool.query("UPDATE account_sessions SET updated_at=clock_timestamp()-interval '31 days'");
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT session_key FROM account_sessions FOR UPDATE");
+      expect(await otherStore.pruneExpired()).toEqual({ sessions: 0, checkpoints: 0 });
+    } finally { await client.query("ROLLBACK"); client.release(); }
+    expect(await store.pruneExpired()).toEqual({ sessions: 1, checkpoints: 0 });
+  });
+
+  it("protects a restored session from retention between its SELECT and inactivity touch", async () => {
+    const auth = authority(), ticket = (await store.claim(allow(auth), 30))!;
+    await store.save(allow(auth), ticket, checkpoint()); await store.release(allow(auth), ticket);
+    await pool.query("UPDATE account_sessions SET updated_at=clock_timestamp()-interval '31 days'");
+    const client = await pool.connect(), original = client.query.bind(client);
+    let release!: () => void, selected!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { selected = resolve; });
+    const query = vi.spyOn(client, "query").mockImplementation((...args: unknown[]) => {
+      const result = Reflect.apply(original, client, args);
+      if (typeof args[0] === "string" && args[0].startsWith("SELECT * FROM account_sessions")) {
+        return result.then(async (rows: unknown) => { selected(); await blocked; return rows; });
+      }
+      return result;
+    });
+    const reading = new AccountSessionStore({ connect: async () => client } as Pick<Pool, "connect">, options).read(allow(auth));
+    try {
+      await ready;
+      expect(await otherStore.pruneExpired()).toEqual({ sessions: 0, checkpoints: 0 });
+    } finally { release(); await reading; query.mockRestore(); }
+    expect(await raw(ticket.sessionKey)).toBeDefined();
+    expect(await store.pruneExpired()).toEqual({ sessions: 0, checkpoints: 0 });
+  });
+
+  it.each([0, -1, 1001, 1.5, NaN])("rejects an invalid retention batch limit: %s", async limit => {
+    await expect(store.pruneExpired(limit)).rejects.toMatchObject({ code: "invalid-checkpoint" });
+  });
 });

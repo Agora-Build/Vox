@@ -19,6 +19,7 @@ import { brokerAvailable, routeToBroker, mintViaBroker, isKnownBrokerType, mintT
 import { accountProvider } from "@shared/account-session-setup";
 import { brokerAccountBinding } from "./account-session-service";
 import { mintManagedAccountSession } from "./account-session-broker";
+import { AccountSessionError } from "./account-session-binding";
 
 export interface PlatformSetupInfo {
   platformId: string;
@@ -235,16 +236,24 @@ export async function ensureSession(
 ): Promise<void> {
   try {
     const credentialKey = credentialKeyFor(need);
-    const binding = accountProvider(need.platformId) ? await brokerAccountBinding(scope, need) : null;
+    const managed = !!accountProvider(need.platformId);
+    let binding: Awaited<ReturnType<typeof brokerAccountBinding>> | null = null;
+    let bindingError: Error | null = null;
+    if (managed) {
+      try { binding = await brokerAccountBinding(scope, need); }
+      catch (error) { bindingError = error instanceof AccountSessionError ? error : new Error("Account session binding unavailable"); }
+    }
     const existing = await storage.getWebSession(scope, need.platformId, credentialKey);
-    if (existing?.status === "ready" && (!binding || existing.accountSessionKey === binding.sessionKey) && existing.expiresAt &&
+    if (existing?.status === "ready" && (!managed || (binding && existing.accountSessionKey === binding.sessionKey)) && existing.expiresAt &&
         existing.expiresAt.getTime() > Date.now() + SESSION_FRESH_MARGIN_SECONDS * 1000) {
       return; // fresh — nothing to do
     }
     const claimed = await storage.claimWebSessionMint(
-      scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS, binding?.sessionKey ?? null);
+      scope, need.platformId, credentialKey, staleMintThresholdSeconds(), SESSION_FRESH_MARGIN_SECONDS,
+      managed ? binding?.sessionKey ?? "unavailable" : null);
     if (!claimed) return; // another instance is minting, or it turned fresh
     try {
+      if (bindingError) throw bindingError;
       if (!(await brokerAvailable("auth-session"))) {
         throw new Error("no live auth-session broker registered");
       }

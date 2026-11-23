@@ -1222,6 +1222,7 @@ export const accountSessions = pgTable("account_sessions", {
   storageFormat: text("storage_format"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
+  index("account_sessions_updated_at_idx").on(t.updatedAt),
   check("account_sessions_scope_ck", sql`num_nonnulls(${t.userId}, ${t.organizationId}) = 1`),
   check("account_sessions_source_ck", sql`${t.source} IN ('runtime', 'brokered')`),
   check("account_sessions_generation_ck", sql`${t.generation} >= 0 AND ${t.lastSequence} BETWEEN 0 AND 9999999999`),
@@ -1238,6 +1239,7 @@ export const accountSessionCheckpoints = pgTable("account_session_checkpoints", 
   contentHash: text("content_hash").notNull(),
   committedAt: timestamp("committed_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
+  index("account_session_checkpoints_committed_at_idx").on(t.committedAt),
   primaryKey({ columns: [t.sessionKey, t.generation, t.checkpointId] }),
   uniqueIndex("account_session_checkpoints_sequence_idx").on(t.sessionKey, t.generation, t.sequence),
   check("account_session_checkpoints_sequence_ck", sql`${t.generation} > 0 AND ${t.sequence} BETWEEN 1 AND 9999999999`),

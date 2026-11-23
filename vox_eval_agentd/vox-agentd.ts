@@ -546,8 +546,7 @@ class VoxEvalAgentDaemon {
       const body = await response.clone().json() as { superseded?: boolean };
       if (body?.superseded) {
         console.error('[Daemon] Superseded by a newer instance on the same token — exiting.');
-        this.stop();
-        process.exit(1);
+        try { await this.stop(); } finally { process.exit(1); }
       }
     } catch { /* not a superseded response */ }
   }

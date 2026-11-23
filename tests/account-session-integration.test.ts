@@ -15,12 +15,14 @@ import type { JobSnapshot } from "../shared/schema";
 import { pool, storage, hashToken, encryptValue, decryptValue } from "../server/storage";
 import { registerAccountSessionRoutes } from "../server/routes-account-sessions";
 import { registerRoutes } from "../server/routes";
-import { accountSessionStore, authorityForAccountGrant, brokerAccountAuthority, brokerAccountBinding, runtimeAccountCredentialDelivery, decodeAccountSessionGrant, encodeAccountSessionGrant, type AccountSessionContext } from "../server/account-session-service";
+import { accountSessionStore, authorityForAccountGrant, brokerAccountAuthority, brokerAccountBinding, runtimeAccountCredentialDelivery, runAccountSessionRetention, decodeAccountSessionGrant, encodeAccountSessionGrant, type AccountSessionContext } from "../server/account-session-service";
 import { ACCOUNT_STATE_FORMAT } from "../shared/account-session-protocol";
 import { accountSetupForJob } from "../shared/account-session-setup";
 import { resetOrganizations, setOrganizations } from "../server/organizations";
 import { createPluginDb } from "../server/plugins/db";
 import { createOrganizationsProvider } from "../plugins/organizations/server/provider";
+import { credentialKeyFor, ensureSession } from "../server/auth-session";
+import { AccountSessionError } from "../server/account-session-binding";
 
 const d = process.env.DATABASE_URL ? describe : describe.skip;
 const app = express(); app.use(express.json({ limit: "13mb" })); registerAccountSessionRoutes(app);
@@ -185,6 +187,77 @@ d("account sessions: real Core authorization, routes and PostgreSQL", () => {
     await prepare().expect(503);
     expect((await pool.query("SELECT encrypted_storage_state FROM account_sessions")).rows[0].encrypted_storage_state).toBe('v1:corrupt-envelope');
   });
+
+  async function brokeredReady() {
+    await pool.query("UPDATE secrets SET broker_type='auth-session'");
+    const binding = await brokerAccountBinding({ userId: 1 }, need);
+    const claimed = (await storage.claimWebSessionMint({ userId: 1 }, need.platformId, credentialKeyFor(need), 660, 60, binding.sessionKey))!;
+    await storage.storeWebSessionReady(claimed.id, "", 24, claimed.mintStartedAt!);
+    await pool.query("UPDATE eval_jobs SET snapshot=$1 WHERE id=$2", [{ ...snapshot(), sessionInjection: need }, jobId]);
+  }
+
+  it("single-flights overlapping retention ticks and permits the next tick after completion", async () => {
+    let finish!: (value: { sessions: number; checkpoints: number }) => void;
+    const pending = new Promise<{ sessions: number; checkpoints: number }>(resolve => { finish = resolve; });
+    const sweep = vi.spyOn(accountSessionStore, "pruneExpired").mockReturnValueOnce(pending)
+      .mockResolvedValue({ sessions: 0, checkpoints: 0 });
+    try {
+      const first = runAccountSessionRetention();
+      expect(runAccountSessionRetention()).toBe(first); expect(sweep).toHaveBeenCalledOnce();
+      finish({ sessions: 0, checkpoints: 0 }); await first;
+      await runAccountSessionRetention(); expect(sweep).toHaveBeenCalledTimes(2);
+    } finally { finish({ sessions: 0, checkpoints: 0 }); await pending; sweep.mockRestore(); }
+  });
+
+  it("retries a failed retention tick without logging private database errors", async () => {
+    const sweep = vi.spyOn(accountSessionStore, "pruneExpired").mockRejectedValueOnce(new Error("private-database-canary"))
+      .mockResolvedValue({ sessions: 0, checkpoints: 0 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await runAccountSessionRetention(); await runAccountSessionRetention();
+      expect(sweep).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledExactlyOnceWith("[Account sessions] Retention sweep failed; will retry");
+    } finally { sweep.mockRestore(); warn.mockRestore(); }
+  });
+
+  it.each([false, true])("records a managed binding denial promptly with an existing ready row: %s", async ready => {
+    if (ready) await brokeredReady();
+    else await pool.query("UPDATE secrets SET broker_type='auth-session'");
+    await pool.query("UPDATE users SET is_enabled=false WHERE id=1");
+    await ensureSession({ userId: 1 }, need);
+    const failed = await storage.getWebSession({ userId: 1 }, need.platformId, credentialKeyFor(need));
+    expect(failed).toMatchObject({ status: "failed", lastError: "Account session: unauthorized" });
+  });
+
+  it("records a deleted credential binding failure instead of leaving the row minting", async () => {
+    await brokeredReady(); await pool.query("DELETE FROM secrets WHERE name='PASSWORD'");
+    await ensureSession({ userId: 1 }, need);
+    const failed = await storage.getWebSession({ userId: 1 }, need.platformId, credentialKeyFor(need));
+    expect(failed?.status).toBe("failed");
+    expect(failed?.lastError).toMatch(/Account session:/);
+    expect(failed?.lastError).not.toContain("broker");
+  });
+
+  it("records an unsupported organization fencing contract as a failed mint", async () => {
+    await ensureSession({ organizationId: 901 }, need);
+    expect(await storage.getWebSession({ organizationId: 901 }, need.platformId, credentialKeyFor(need)))
+      .toMatchObject({ status: "failed", lastError: "Account session: unauthorized" });
+  });
+
+  it.each([["unauthorized", 403], ["invalid-binding", 403], ["state-unavailable", 503]] as const)(
+    "serves a safe %s failure with HTTP %s instead of a generic server fault", async (code, status) => {
+      await brokeredReady();
+      const error = new AccountSessionError(code);
+      error.message = "private-provider-state-canary";
+      const read = vi.spyOn(accountSessionStore, "read").mockRejectedValueOnce(error);
+      try {
+        const response = await auth(request(app).get(`/api/eval-agent/jobs/${jobId}/session?leaseId=fixture-lease`)).expect(status);
+        expect(read).toHaveBeenCalledOnce();
+        expect(response.headers['cache-control']).toBe('no-store');
+        expect(response.body).toMatchObject({ required: true, status: "failed" });
+        expect(JSON.stringify(response.body)).not.toContain("canary");
+      } finally { read.mockRestore(); }
+    });
 
   it("fences org membership removal and credential rotation through the plugin seam", async () => {
     setOrganizations(orgs.provider);

@@ -15,6 +15,14 @@ export const accountSessionStore = new AccountSessionStore(pool, {
   acceptsState: (binding, format, state) => format === ACCOUNT_STATE_FORMAT && acceptsProviderAccountState(binding.platformId, state),
 });
 
+let retentionRunning: Promise<void> | null = null;
+export function runAccountSessionRetention(): Promise<void> {
+  if (!retentionRunning) retentionRunning = accountSessionStore.pruneExpired().then(() => undefined,
+    () => { console.warn("[Account sessions] Retention sweep failed; will retry"); })
+    .finally(() => { retentionRunning = null; });
+  return retentionRunning;
+}
+
 const baseGrant = z.object({
   version: z.literal(1), sessionId: engineSessionIdSchema, bindingKey: z.string().regex(/^[a-f0-9]{64}$/),
   deadline: z.string().datetime(),
@@ -184,6 +192,6 @@ export async function brokerAccountBinding(scope: AccountSessionScope, need: Acc
     const binding = await accountBindingForScope(client, scope, "brokered", need);
     await client.query("COMMIT");
     return binding;
-  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  } catch (error) { try { await client.query("ROLLBACK"); } catch { /* Preserve the original failure. */ } throw error; }
   finally { client.release(); }
 }

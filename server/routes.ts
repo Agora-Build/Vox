@@ -39,6 +39,7 @@ import { registerCredentialTrialRoutes } from "./routes-credential-trials";
 import { registerAccountSessionRoutes } from "./routes-account-sessions";
 import { accountSessionStore, runtimeAccountAuthority, runtimeAccountCredentialDelivery } from "./account-session-service";
 import { accountProvider, accountSetupForJob } from "@shared/account-session-setup";
+import { AccountSessionError } from "./account-session-binding";
 import { registerBrowserAssistanceRoutes, canAccessJobBrowser } from "./routes-browser-assistance";
 import { hasBrowserAssistance } from "./browser-agent-bridge";
 import { BrowserAccessError, resolveBrowserTarget } from "./browser-target";
@@ -5248,6 +5249,7 @@ export async function registerRoutes(
   // serve the Core-minted login session (storageState) for a claimed
   // job. The agent gets ONLY this bundle — never the login secrets behind it.
   app.get("/api/eval-agent/jobs/:jobId/session", async (req, res) => {
+    res.set("Cache-Control", "no-store");
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -5362,6 +5364,11 @@ export async function registerRoutes(
       void ensureSession(scope, need);
       return res.status(202).json({ required: true, status: "minting" });
     } catch (error) {
+      if (error instanceof AccountSessionError) {
+        const denied = error.code === "unauthorized" || error.code === "invalid-binding";
+        return res.status(denied ? 403 : 503).json({ required: true, status: "failed",
+          error: denied ? "Account session is not authorized for this run" : "Account session unavailable; contact an administrator" });
+      }
       console.error("Error serving job session:", error);
       if (error instanceof Error && error.message.includes("CREDENTIAL_ENCRYPTION_KEY")) {
         return res.status(500).json({ error: "Server encryption not configured" });

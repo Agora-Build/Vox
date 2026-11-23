@@ -18,6 +18,7 @@ import { encryptValue, decryptValue, isEncryptionConfigured } from "./storage";
 import type { NotificationsService } from "@vox/plugin-sdk";
 import { pool } from "./storage";
 import { startLocationServices } from "./location";
+import { runAccountSessionRetention } from "./account-session-service";
 import { setupClashWebSocket } from "./clash-ws";
 import { setupBrowserAgentBridge } from "./browser-agent-bridge";
 import { coreRouting } from "./core-routing-runtime";
@@ -311,8 +312,10 @@ function startBackgroundWorker() {
 
   // Run immediately on startup, then every minute
   runMaintenanceTasks();
+  void runAccountSessionRetention();
   processScheduledJobs();
   setInterval(runMaintenanceTasks, CHECK_INTERVAL_MS);
+  setInterval(() => { void runAccountSessionRetention(); }, CHECK_INTERVAL_MS);
   setInterval(processScheduledJobs, CHECK_INTERVAL_MS);
 
   log("Background worker started (stale job detection + job scheduler)", "worker");
