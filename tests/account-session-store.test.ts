@@ -95,6 +95,28 @@ d("account-session foundation: isolated PostgreSQL, two Core stores", () => {
     expect(await otherStore.claim(allow(a), 30)).toEqual(ticket);
   });
 
+  it("returns the state current at the claimed generation after an interleaved newer checkpoint", async () => {
+    const a = authority(), b = authority(), c = authority();
+    const initial = (await store.claim(allow(a), 30))!;
+    await store.save(allow(a), initial, checkpoint(1, "old-token")); await store.release(allow(a), initial);
+    let resume!: () => void, entered!: () => void, first = true;
+    const paused = new Promise<void>(resolve => { resume = resolve; });
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const waiting = store.claimAndRead(async () => {
+      if (first) { first = false; entered(); await paused; }
+      return b;
+    }, 30);
+    await ready;
+    try {
+      const newer = (await otherStore.claim(allow(c), 30))!;
+      await otherStore.save(allow(c), newer, checkpoint(1, "rotated-token")); await otherStore.release(allow(c), newer);
+    } finally { resume(); }
+    const result = await waiting;
+    expect(result.ticket?.generation).toBe(initial.generation + 2);
+    expect(result.state?.state).toBe(checkpoint(1, "rotated-token").state);
+    expect(await otherStore.claimAndRead(allow(c), 30)).toEqual({ ticket: null, state: result.state });
+  });
+
   it("allows exactly one refresh owner across simultaneous Core stores", async () => {
     const attempts = Array.from({ length: 12 }, (_, i) => (i % 2 ? store : otherStore).claim(allow(authority()), 30));
     const results = await Promise.all(attempts);

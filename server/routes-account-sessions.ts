@@ -39,10 +39,12 @@ export function registerAccountSessionRoutes(app: Express) {
   const receive = (broker: boolean, release: boolean) => async (req: Request, res: Response) => {
     res.set("Cache-Control", "no-store");
     try {
+      const brokerTokenHash = broker ? tokenHash(req) : null;
       const input = release ? releaseSchema.parse(req.body) : deliverySchema.parse(req.body);
       const { context, ticket } = decodeAccountSessionGrant(input.grant);
       if (broker ? context.kind !== "brokered" : context.kind !== "runtime" ||
         context.jobId !== Number(req.params.jobId) || context.tokenHash !== tokenHash(req)) throw new AccountSessionError("unauthorized");
+      if (context.kind === "brokered" && context.checkpointTokenHash !== brokerTokenHash) throw new AccountSessionError("unauthorized");
       if (!ticket) throw new AccountSessionError("unauthorized");
       const authorize = authorityForAccountGrant(context);
       if (release) return res.json({ released: await accountSessionStore.release(authorize, ticket) });
@@ -58,16 +60,17 @@ export function registerAccountSessionRoutes(app: Express) {
   };
   app.post("/api/eval-agent/jobs/:jobId/account-session/checkpoints", receive(false, false));
   app.post("/api/eval-agent/jobs/:jobId/account-session/release", receive(false, true));
-  // Only Core can mint this authenticated, encrypted, short-lived upload grant.
-  // It is bound to one current broker lease/mint and cannot authorize Runtime writes.
+  // Core supplies a separate per-mint bearer proof to the selected broker.
+  // The encrypted grant alone cannot restore or replace account state.
   app.post("/api/brokers/account-session/checkpoints", receive(true, false));
   app.post("/api/brokers/account-session/release", receive(true, true));
   app.post("/api/brokers/account-session/restore", async (req, res) => {
     res.set("Cache-Control", "no-store");
     try {
+      const brokerTokenHash = tokenHash(req);
       const { grant } = releaseSchema.parse(req.body);
       const { context } = decodeAccountSessionGrant(grant);
-      if (context.kind !== "brokered") throw new AccountSessionError("unauthorized");
+      if (context.kind !== "brokered" || context.checkpointTokenHash !== brokerTokenHash) throw new AccountSessionError("unauthorized");
       return res.json({ state: (await accountSessionStore.read(authorityForAccountGrant(context)))?.state ?? null });
     } catch (error) { return fail(res, error); }
   });

@@ -46,7 +46,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AEVAL_DATA_PATH = path.resolve(__dirname, 'aeval-data');
 
 export interface MintRequest { platformId: string; email: string; password: string; browserOperationId?: string; timeoutSeconds?: number;
-  sessionId?: string; checkpointGrant?: string }
+  sessionId?: string; checkpointGrant?: string; checkpointToken?: string }
 export type MintFn = (req: MintRequest) => Promise<unknown>;
 
 const PLATFORM_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -241,7 +241,7 @@ export async function mintWithAeval(req: MintRequest, timeoutMs: number, options
     const coreUrl = options.coreUrl ?? CORE_URL;
     if (!coreUrl) throw new Error('Core account-session transport unavailable');
     return (options.fetchImpl ?? fetch)(`${coreUrl}/api/brokers/account-session/${action}`, {
-      method: 'POST', redirect: 'error', signal, headers: { 'content-type': 'application/json' },
+      method: 'POST', redirect: 'error', signal, headers: { 'content-type': 'application/json', authorization: `Bearer ${req.checkpointToken}` },
       body: JSON.stringify({ grant: req.checkpointGrant, ...body }),
     });
   };
@@ -492,7 +492,8 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
       if (body.timeoutSeconds !== undefined && (!Number.isSafeInteger(body.timeoutSeconds) || body.timeoutSeconds <= 0 || body.timeoutSeconds > MAX_MINT_TIMEOUT_SECONDS)) return json(400, { error: 'invalid login timeout' });
       if (body.sessionId !== undefined && !engineSessionIdSchema.safeParse(body.sessionId).success) return json(400, { error: 'invalid account execution' });
       if (body.checkpointGrant !== undefined && (typeof body.checkpointGrant !== 'string' || body.checkpointGrant.length > 16_384 ||
-          !body.sessionId || !accountProvider(body.platformId))) return json(400, { error: 'invalid account-session grant' });
+          !body.sessionId || !accountProvider(body.platformId) || typeof body.checkpointToken !== 'string' ||
+          !/^[A-Za-z0-9_-]{32,128}$/.test(body.checkpointToken))) return json(400, { error: 'invalid account-session grant' });
       // Fingerprint, never the values: lengths plus a hash of the IDENTIFIER
       // only. See fingerprintForLog for why the secret gets its length alone.
       // Logged on the REQUEST rather than only on failure, so a mint that hangs
@@ -511,7 +512,7 @@ export function createBrokerServer(deps: { mint: MintFn; getSecret: () => string
         // raw pair: a mint that forgot to scrub is precisely the case where the
         // ESCAPED form arrives here, so a raw-only backstop would miss the one
         // thing it exists to catch.
-        const msg = scrubCredentials(raw, credentialForms([body.email ?? '', body.password ?? '']));
+        const msg = scrubCredentials(raw, credentialForms([body.email ?? '', body.password ?? '', body.checkpointGrant ?? '', body.checkpointToken ?? '']));
         console.error(`[Broker] Mint failed for platform ${body.platformId}: ${msg}`);
         return json(502, { error: msg });
       }

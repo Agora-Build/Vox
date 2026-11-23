@@ -127,6 +127,10 @@ try {
   session = await storage.getWebSession({ userId: 1 }, 'elevenlabs', credentialKeyFor(need));
   assert.equal(session?.status, 'ready'); assert.equal(submissions, 2, 'Broker refresh must restore prior state first');
   process.stdout.write('PASS: Broker refresh restores through a mint-scoped Core endpoint without login\n');
+  const legacy = await mintWithAeval({ platformId: 'elevenlabs', email: 'fixture@example.invalid', password: 'fixture-password' },
+    20_000, { dataPath: root });
+  assert.ok(JSON.stringify(legacy).includes(cookieCanary), 'New broker must still answer legacy Core mint requests');
+  process.stdout.write('PASS: Updated broker remains compatible with legacy Core mint requests\n');
   const states = (await pool.query('SELECT source,encrypted_storage_state FROM account_sessions ORDER BY source')).rows;
   assert.deepEqual(states.map(r => r.source), ['brokered', 'runtime']);
   for (const row of states) { assert.ok(!row.encrypted_storage_state.includes(cookieCanary)); assert.ok(decryptValue(row.encrypted_storage_state).includes(cookieCanary)); }

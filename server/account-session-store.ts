@@ -109,23 +109,33 @@ export class AccountSessionStore {
     if (!result.rows[0]?.valid) throw new AccountSessionError("unauthorized");
   }
 
+  private restoredState(binding: AccountSessionBinding, row?: SessionRow): { format: string; state: string } | null {
+    if (!row?.encrypted_storage_state) return null;
+    try {
+      const envelope = JSON.parse(decryptValue(row.encrypted_storage_state));
+      if (envelope.version !== 1 || envelope.sessionKey !== binding.sessionKey ||
+          envelope.format !== row.storage_format) throw new Error();
+      this.parse(binding, envelope.format, envelope.state);
+      return { format: envelope.format as string, state: envelope.state as string };
+    } catch { throw new AccountSessionError("state-unavailable"); }
+  }
+
   async read(authorize: AuthorizeAccountSession): Promise<{ format: string; state: string } | null> {
     return this.authorized(authorize, async (client, { binding }) => {
       const { rows } = await client.query<SessionRow>("SELECT * FROM account_sessions WHERE session_key = $1 FOR UPDATE", [binding.sessionKey]);
-      const row = rows[0];
-      if (!row?.encrypted_storage_state) return null;
-      try {
-        const envelope = JSON.parse(decryptValue(row.encrypted_storage_state));
-        if (envelope.version !== 1 || envelope.sessionKey !== binding.sessionKey ||
-            envelope.format !== row.storage_format) throw new Error();
-        this.parse(binding, envelope.format, envelope.state);
-        await client.query("UPDATE account_sessions SET updated_at = clock_timestamp() WHERE session_key = $1", [binding.sessionKey]);
-        return { format: envelope.format as string, state: envelope.state as string };
-      } catch { throw new AccountSessionError("state-unavailable"); }
+      const state = this.restoredState(binding, rows[0]);
+      if (state) await client.query("UPDATE account_sessions SET updated_at = clock_timestamp() WHERE session_key = $1", [binding.sessionKey]);
+      return state;
     });
   }
 
   async claim(authorize: AuthorizeAccountSession, ttlSeconds: number): Promise<AccountSessionTicket | null> {
+    return (await this.claimAndRead(authorize, ttlSeconds)).ticket;
+  }
+
+  async claimAndRead(authorize: AuthorizeAccountSession, ttlSeconds: number): Promise<{
+    ticket: AccountSessionTicket | null; state: { format: string; state: string } | null;
+  }> {
     if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 3600) throw new AccountSessionError("invalid-checkpoint");
     return this.authorized(authorize, async (client, authority) => {
       const b = authority.binding;
@@ -136,16 +146,17 @@ export class AccountSessionStore {
       const { rows } = await client.query<SessionRow & { active: boolean }>(`SELECT *,
         refresh_expires_at > clock_timestamp() AS active FROM account_sessions WHERE session_key = $1 FOR UPDATE`, [b.sessionKey]);
       const row = rows[0];
+      const state = this.restoredState(b, row);
       if (row.active) {
-        if (row.refresh_owner !== authority.executionKey) return null;
-        return { sessionKey: b.sessionKey, generation: row.generation, executionKey: authority.executionKey, expiresAt: row.refresh_expires_at! };
+        if (row.refresh_owner !== authority.executionKey) return { ticket: null, state };
+        return { ticket: { sessionKey: b.sessionKey, generation: row.generation, executionKey: authority.executionKey, expiresAt: row.refresh_expires_at! }, state };
       }
       const claimed = await client.query<SessionRow>(`UPDATE account_sessions SET generation = generation + 1,
         refresh_owner = $2, refresh_expires_at = LEAST(clock_timestamp() + make_interval(secs => $3), $4::timestamptz),
         last_sequence = 0, updated_at = clock_timestamp() WHERE session_key = $1 RETURNING *`,
       [b.sessionKey, authority.executionKey, ttlSeconds, authority.validUntil]);
-      return { sessionKey: b.sessionKey, generation: claimed.rows[0].generation,
-        executionKey: authority.executionKey, expiresAt: claimed.rows[0].refresh_expires_at! };
+      return { ticket: { sessionKey: b.sessionKey, generation: claimed.rows[0].generation,
+        executionKey: authority.executionKey, expiresAt: claimed.rows[0].refresh_expires_at! }, state };
     });
   }
 

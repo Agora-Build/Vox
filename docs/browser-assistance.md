@@ -118,6 +118,15 @@ can replace Brokered state. Agents never receive Brokered passwords. A cache
 failure does not discard an otherwise authorized Runtime evaluation. A confirmed
 checkpoint survives a later preview, evaluation or analysis failure.
 
+Restore and refresh-generation claim are atomic, so a newly claimed writer
+cannot start with an earlier execution's stale token. Upload grants use a
+separate HKDF-derived encryption key. Broker restore/checkpoint/release also
+require an independent per-mint bearer proof, kept in broker memory and never
+sent to aeval or an eval agent. A crashed Runtime writer can hold its refresh
+fence for up to 30 minutes; other authorized runs may restore existing state
+but run without saving new checkpoints until release/expiry. Normal bounded
+shutdown releases the fence sooner.
+
 Initial persistence supports one unambiguous account setup with scoped
 email/password references and the reviewed ElevenLabs profile. Other Runtime
 variables/API keys are not persisted. See the maintained [session-persistence

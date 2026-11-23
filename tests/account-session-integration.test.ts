@@ -77,7 +77,7 @@ d("account sessions: real Core authorization, routes and PostgreSQL", () => {
       if (member) await orgs.provider.removeMember(member.organizationId, userId);
     }
     await pool.query("UPDATE users SET is_enabled=true");
-    await pool.query("TRUNCATE account_sessions CASCADE; DELETE FROM web_sessions; DELETE FROM eval_jobs; DELETE FROM eval_agents; DELETE FROM eval_agent_tokens; DELETE FROM broker_registration_tokens CASCADE; DELETE FROM secrets");
+    await pool.query("TRUNCATE account_sessions CASCADE; DELETE FROM web_sessions; DELETE FROM eval_jobs; DELETE FROM eval_agents; DELETE FROM eval_agent_tokens; DELETE FROM brokers; DELETE FROM broker_registration_tokens CASCADE; DELETE FROM secrets");
     tokenId = (await storage.createEvalAgentToken({ name: "fixture", createdBy: 1, dispatchTier: "private", tokenHash: hashToken("account-fixture-token") })).id;
     agentId = (await storage.createEvalAgent({ name: "fixture", tokenId, currentLeaseId: "fixture-lease", state: "occupied" })).id;
     await pool.query("UPDATE eval_agents SET last_seen_at=clock_timestamp() WHERE id=$1", [agentId]);
@@ -173,8 +173,8 @@ d("account sessions: real Core authorization, routes and PostgreSQL", () => {
     await storage.createOrUpdateSecret(1, "PASSWORD", encryptValue("rotated-password"));
     await prepare().expect(403);
     credentialRevision = (await credentialDelivery())!.credentialRevision;
-    const original = accountSessionStore.claim.bind(accountSessionStore);
-    const claim = vi.spyOn(accountSessionStore, "claim").mockImplementationOnce(async (authorize, ttl) => {
+    const original = accountSessionStore.claimAndRead.bind(accountSessionStore);
+    const claim = vi.spyOn(accountSessionStore, "claimAndRead").mockImplementationOnce(async (authorize, ttl) => {
       // A same-plaintext rewrite is still a new randomized ciphertext revision.
       await storage.createOrUpdateSecret(1, "PASSWORD", encryptValue("rotated-password"));
       return original(authorize, ttl);
@@ -380,6 +380,7 @@ d("account sessions: real Core authorization, routes and PostgreSQL", () => {
   });
 
   async function brokerFixture() {
+    const checkpointToken = "fixture-broker-proof-".padEnd(43, "x");
     await storage.createOrUpdateSecret(1, "EMAIL", encryptValue("broker@example.invalid"), { brokerType: "auth-session" });
     await storage.createOrUpdateSecret(1, "PASSWORD", encryptValue("broker-password"), { brokerType: "auth-session" });
     const binding = await brokerAccountBinding({ userId: 1 }, need);
@@ -391,20 +392,53 @@ d("account sessions: real Core authorization, routes and PostgreSQL", () => {
       RETURNING id,mint_started_at AT TIME ZONE 'UTC' AS mint_started_at`, [broker.rows[0].id, operationId, binding.sessionKey]);
     const context: Extract<AccountSessionContext, { kind: "brokered" }> = { kind: "brokered", version: 1, sessionId: `vox-mint-${randomUUID()}`,
       bindingKey: binding.sessionKey, deadline: new Date(Date.now() + 300_000).toISOString(), mintId: mint.rows[0].id,
-      mintStartedAt: mint.rows[0].mint_started_at.toISOString(), brokerId: broker.rows[0].id, brokerLease: "broker-lease", operationId, scope: { userId: 1 }, need };
+      mintStartedAt: mint.rows[0].mint_started_at.toISOString(), brokerId: broker.rows[0].id, brokerLease: "broker-lease", operationId,
+      checkpointTokenHash: hashToken(checkpointToken), scope: { userId: 1 }, need };
     const ticket = await accountSessionStore.claim(brokerAccountAuthority(context), 300);
     const grant = encodeAccountSessionGrant(context, ticket);
-    return { context, grant };
+    return { context, grant, checkpointToken };
   }
   it("only the current trusted broker mint can restore and replace canonical Brokered state", async () => {
-    const { context, grant } = await brokerFixture();
-    await request(app).post('/api/brokers/account-session/checkpoints').send({ grant, ...checkpoint(context.sessionId) }).expect(200);
-    expect((await request(app).post('/api/brokers/account-session/restore').send({ grant }).expect(200)).body.state).toBe(state());
+    const { context, grant, checkpointToken } = await brokerFixture();
+    const authenticated = (r: request.Test) => r.set("Authorization", `Bearer ${checkpointToken}`);
+    await authenticated(request(app).post('/api/brokers/account-session/checkpoints')).send({ grant, ...checkpoint(context.sessionId) }).expect(200);
+    expect((await authenticated(request(app).post('/api/brokers/account-session/restore')).send({ grant }).expect(200)).body.state).toBe(state());
     await deliver(grant, checkpoint(context.sessionId)).expect(403);
     const runtime = decodeAccountSessionGrant(grant);
     expect(runtime.context.kind).toBe('brokered');
     await pool.query("UPDATE brokers SET current_lease_id='new-lease'");
-    await request(app).post('/api/brokers/account-session/checkpoints').send({ grant, ...checkpoint(context.sessionId, state('stale'), 2) }).expect(403);
-    await request(app).post('/api/brokers/account-session/restore').send({ grant }).expect(403);
+    await authenticated(request(app).post('/api/brokers/account-session/checkpoints')).send({ grant, ...checkpoint(context.sessionId, state('stale'), 2) }).expect(403);
+    await authenticated(request(app).post('/api/brokers/account-session/restore')).send({ grant }).expect(403);
+  });
+
+  it("rejects a stolen broker grant without its separate mint-scoped bearer proof", async () => {
+    const { context, grant, checkpointToken } = await brokerFixture();
+    for (const action of ["restore", "release", "checkpoints"]) {
+      const body = action === "checkpoints" ? { grant, ...checkpoint(context.sessionId) } : { grant };
+      await request(app).post(`/api/brokers/account-session/${action}`).send(body).expect(403);
+      await request(app).post(`/api/brokers/account-session/${action}`).set("Authorization", "Bearer another-mint-proof").send(body).expect(403);
+    }
+    expect((await request(app).post('/api/brokers/account-session/restore').set("Authorization", `Bearer ${checkpointToken}`)
+      .send({ grant }).expect(200)).body.state).toBeNull();
+    expect(JSON.stringify(decodeAccountSessionGrant(grant))).not.toContain(checkpointToken);
+  });
+
+  it("separates grant encryption from user-secret ciphertext and rejects tampering", async () => {
+    const prepared = await prepare().expect(200), decoded = decodeAccountSessionGrant(prepared.body.grant);
+    const userSecret = encryptValue(JSON.stringify(decoded));
+    const [, iv, tag, data] = userSecret.split(":");
+    const forged = `asg1.${Buffer.concat([iv, tag, data].map(part => Buffer.from(part, "base64"))).toString("base64url")}`;
+    for (const value of [userSecret, forged, prepared.body.grant.slice(0, 20) + "!" + prepared.body.grant.slice(21)]) {
+      expect(() => decodeAccountSessionGrant(value)).toThrow("unauthorized");
+    }
+  });
+
+  it("prepares state and generation atomically without a separate stale-state read", async () => {
+    const first = await prepare().expect(200); await deliver(first.body.grant).expect(200);
+    await auth(request(app).post(`${endpoint()}/release`)).send({ grant: first.body.grant }).expect(200);
+    sessionId = `vox-${jobId}-${randomUUID()}`;
+    const read = vi.spyOn(accountSessionStore, "read").mockRejectedValue(new Error("Separate restore must not run"));
+    try { expect((await prepare().expect(200)).body.state).toBe(state()); expect(read).not.toHaveBeenCalled(); }
+    finally { read.mockRestore(); }
   });
 });

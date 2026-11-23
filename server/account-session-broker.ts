@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { WebSession } from "@shared/schema";
-import { pool, type SessionScope } from "./storage";
+import { hashToken, pool, type SessionScope } from "./storage";
 import { mintViaBroker, mintTimeoutSeconds, type BrokerTarget } from "./broker-registry";
 import { accountSessionStore, brokerAccountAuthority, encodeAccountSessionGrant, type AccountSessionContext } from "./account-session-service";
 import type { AccountSetup } from "@shared/account-session-setup";
@@ -11,23 +11,24 @@ export async function mintManagedAccountSession(input: {
   bindingKey: string; email: string; password: string; ttlHours: number; fetchImpl: typeof fetch;
 }) {
   if (!input.target.owner?.leaseId || !input.claimed.mintStartedAt) throw new Error("Account-session broker lease unavailable");
+  const checkpointToken = randomBytes(32).toString("base64url");
   const context: Extract<AccountSessionContext, { kind: "brokered" }> = {
     kind: "brokered", version: 1, sessionId: `vox-mint-${randomUUID()}`, bindingKey: input.bindingKey,
     deadline: new Date(Date.now() + mintTimeoutSeconds() * 1000).toISOString(),
     mintId: input.claimed.id, mintStartedAt: input.claimed.mintStartedAt.toISOString(), brokerId: input.target.id,
     brokerLease: input.target.owner.leaseId, operationId: input.operationId, scope: input.scope, need: input.need,
+    checkpointTokenHash: hashToken(checkpointToken),
   };
   const authorize = brokerAccountAuthority(context);
   // Do not replace state encrypted under a missing/wrong key or corrupt envelope.
   // Only missing state may proceed to login; undecryptable state needs recovery.
-  await accountSessionStore.read(authorize);
-  const ticket = await accountSessionStore.claim(authorize, mintTimeoutSeconds());
+  const { ticket } = await accountSessionStore.claimAndRead(authorize, mintTimeoutSeconds());
   if (!ticket) throw new Error("Account-session refresh already in progress");
   let mintError: unknown;
   try {
     await mintViaBroker(input.target, { platformId: input.need.platformId, email: input.email, password: input.password,
       browserOperationId: input.operationId, sessionId: context.sessionId,
-      checkpointGrant: encodeAccountSessionGrant(context, ticket) }, input.fetchImpl);
+      checkpointGrant: encodeAccountSessionGrant(context, ticket), checkpointToken }, input.fetchImpl);
   } catch (error) { mintError = error; }
   // A confirmed checkpoint is independent of subsequent preview/analysis failure.
   // Check the committed receipt, never the mutable final file or broker's exit code.

@@ -1,9 +1,10 @@
 import type { PoolClient } from "pg";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { JobSnapshot } from "@shared/schema";
 import { accountProvider, accountSetupForJob, acceptsProviderAccountState, type AccountSetup } from "@shared/account-session-setup";
 import { ACCOUNT_STATE_FORMAT, ACCOUNT_CHECKPOINT_LIMITS, engineSessionIdSchema } from "@shared/account-session-protocol";
-import { pool, encryptValue, decryptValue } from "./storage";
+import { pool, decryptValue } from "./storage";
 import { getOrganizations } from "./organizations";
 import { credentialAgentViolation, ownsCredentialScope } from "./credential-policy";
 import { isSessionServable } from "./permissions";
@@ -34,6 +35,7 @@ const runtimeGrant = baseGrant.extend({
 const brokerGrant = baseGrant.extend({
   kind: z.literal("brokered"), mintId: z.number().int().positive(), mintStartedAt: z.string().datetime(),
   brokerId: z.number().int().positive(), brokerLease: z.string().min(1), operationId: z.string().uuid(),
+  checkpointTokenHash: z.string().regex(/^[a-f0-9]{64}$/),
   scope: z.union([z.object({ userId: z.number().int().positive() }).strict(), z.object({ organizationId: z.number().int().positive() }).strict()]),
   need: z.object({ platformId: z.string(), emailSecret: z.string(), passwordSecret: z.string() }).strict(),
 }).strict();
@@ -43,14 +45,26 @@ const ticketSchema = z.object({ sessionKey: z.string(), generation: z.number().i
   executionKey: z.string(), expiresAt: z.string().datetime() }).strict();
 const grantSchema = z.object({ context: contextSchema, ticket: ticketSchema.nullable() }).strict();
 
+function grantKey() {
+  const key = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  if (!key || !/^[a-f0-9]{64}$/i.test(key)) throw new AccountSessionError("state-unavailable");
+  return Buffer.from(hkdfSync("sha256", Buffer.from(key, "hex"), "vox-account-session-v1", "upload-grant", 32));
+}
+
 export function encodeAccountSessionGrant(context: AccountSessionContext, ticket: AccountSessionTicket | null): string {
-  return encryptValue(JSON.stringify({ context, ticket: ticket ? { ...ticket, expiresAt: ticket.expiresAt.toISOString() } : null }));
+  const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", grantKey(), iv);
+  const data = Buffer.concat([cipher.update(JSON.stringify({ context, ticket: ticket ? { ...ticket, expiresAt: ticket.expiresAt.toISOString() } : null }), "utf8"), cipher.final()]);
+  return `asg1.${Buffer.concat([iv, cipher.getAuthTag(), data]).toString("base64url")}`;
 }
 
 export function decodeAccountSessionGrant(value: unknown) {
   try {
-    if (typeof value !== "string" || value.length > 16_384) throw new Error();
-    const parsed = grantSchema.parse(JSON.parse(decryptValue(value)));
+    if (typeof value !== "string" || value.length > 16_384 || !/^asg1\.[A-Za-z0-9_-]+$/.test(value)) throw new Error();
+    const data = Buffer.from(value.slice(5), "base64url");
+    if (data.length <= 28) throw new Error();
+    const decipher = createDecipheriv("aes-256-gcm", grantKey(), data.subarray(0, 12));
+    decipher.setAuthTag(data.subarray(12, 28));
+    const parsed = grantSchema.parse(JSON.parse(Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString("utf8")));
     return { context: parsed.context, ticket: parsed.ticket ? { ...parsed.ticket, expiresAt: new Date(parsed.ticket.expiresAt) } : null };
   } catch { throw new AccountSessionError("unauthorized"); }
 }
@@ -191,8 +205,7 @@ export async function prepareRuntimeAccountSession(input: Omit<RuntimeSessionReq
   // This deadline never refreshes on checkpoint delivery or retries.
   const request = { ...identity, deadline: new Date(Date.now() + 30 * 60_000).toISOString() };
   const authorize = runtimeAccountAuthority(request, credentialRevision);
-  const prior = await accountSessionStore.read(authorize);
-  const ticket = await accountSessionStore.claim(authorize, 1800);
+  const { state: prior, ticket } = await accountSessionStore.claimAndRead(authorize, 1800);
   if (!ticket) return { status: "busy" as const, state: prior?.state ?? null };
   const context: AccountSessionContext = { ...request, kind: "runtime", version: 1, bindingKey: ticket.sessionKey };
   return { status: "ready" as const, state: prior?.state ?? null, grant: encodeAccountSessionGrant(context, ticket) };

@@ -4,8 +4,12 @@ This guide covers deploying Vox to production using Coolify (what vox.agora.buil
 
 ## Account Sessions And Browser Assistance (Schema 72)
 
-Deploy Core first, then the auth-session broker and eval-agent daemon built with
-aeval v0.5.1 and matching runtime data. This release restores an explicit account
+Upgrade the auth-session brokers first to the images built with aeval v0.5.1
+and matching runtime data, then deploy Core/schema 72, then upgrade eval-agent
+daemons. New brokers still handle old Core's legacy mint requests (no checkpoint
+grant); old brokers do not implement checkpoint receipts and cannot serve managed
+mints from the new Core. Pause new login mints during this coordinated rollout.
+This release restores an explicit account
 `storage_file` before credentials and supports explicit, stage-bound sign-in
 continuation after human verification, alongside bounded readiness retries.
 Deploy both daemon and broker images; updating Core alone does not change an

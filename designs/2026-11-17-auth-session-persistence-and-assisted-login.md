@@ -69,7 +69,7 @@ translation. Correlation IDs are not authorization.
 ```text
 active claimed job + current eligible agent
   -> Core resolves frozen setup, current secret rows and credential revision
-  -> authorized read + database refresh generation + short-lived scoped grant
+  -> atomic authorized restore + database refresh generation + scoped grant
   -> agent writes prior state to private 0600 file under a 0700 root
   -> aeval account setup restores first; account login only when needed
   -> confirmed immutable checkpoint, independent of later evaluation outcome
@@ -124,9 +124,15 @@ imported into this stronger binding. Providers outside the reviewed profile
 retain their existing broker path and do not gain this new lifecycle.
 
 Broker endpoints `/api/brokers/account-session/{restore,checkpoints,release}`
-require Core's short-lived mint-scoped grant. Its binding includes broker lease,
+require Core's short-lived mint-scoped grant plus an independent random per-mint
+bearer proof delivered only to the selected trusted broker. The grant contains
+only the proof's hash, never the raw proof. Its binding includes broker lease,
 mint claim/start, operation, source and expected engine session. Engine records
 and caller-supplied IDs alone grant nothing. Agents cannot write Brokered state.
+Grants use AES-GCM with an HKDF-derived, grant-specific key and `asg1` framing,
+not the general secret-encryption key. Chosen user-secret ciphertext cannot be
+reinterpreted as a grant. Restore and refresh claim use one locked transaction,
+so the returned state belongs to the row that established that generation.
 
 Large restore/checkpoint payloads go directly between broker and authorized Core
 endpoints. They do not raise the general inter-Core command limit. Core routing
@@ -433,16 +439,33 @@ they complete without a second checkout. Existing mutation-fence tests still
 pass. A transient binding lookup failure also preserves an otherwise fresh
 web-session row instead of needlessly discarding it.
 
+The final concurrency review found a restore/claim gap. `claimAndRead` now
+validates and returns canonical state under the same row lock/transaction that
+establishes the refresh generation, for Runtime and Brokered preparation. A
+two-store interleaving test commits a rotated token before the waiting claim and
+asserts that the new generation receives that token, not the earlier snapshot.
+Core upload grants use a separate HKDF-derived AES-GCM key. Broker routes also
+require a separate, random per-mint bearer proof whose hash is bound into the
+grant; the grant alone is insufficient. Both values are redacted from mint
+failures and never sent to aeval. Rollout is brokers first, then Core/schema 72,
+then eval daemons, with new mints paused during the coordinated update. A real
+released-engine synthetic test confirms the new broker still answers legacy
+Core mint requests without a checkpoint grant.
+
 The final unchanged implementation passed the full Vitest discovery again:
-**4,162 passed, 78 skipped, zero failures** across 224 passing files and six
+**4,168 passed, 78 skipped, zero failures** across 224 passing files and six
 skipped files. This includes the final restore-versus-retention interleaving
-regression. The isolated affected suites separately passed **241/241** checks,
+regression. The isolated affected suites separately passed **247/247** checks,
 including real PostgreSQL, two Core stores, unsupported organization fencing,
 disabled/deleted credentials, safe route errors, single-flight retention and
 execution of the actual daemon supersession method without its CLI entrypoint.
 Production build, Core/daemon TypeScript, explicit test/script TypeScript and
-focused lint passed (no lint errors; existing console warnings remain in larger
-legacy modules). Migration 72 was exercised against fresh disposable databases.
-The earlier opt-in, browser, audio, packaged-engine and live two-host evidence
+focused persistence/transport lint passed (existing console warnings remain).
+The broader `broker-registry.ts` lint reports one existing `prefer-const` error
+in its unchanged claim callback, reproduced on the exact main base; it is not
+introduced by this change. Migration 72 was exercised against fresh disposable databases.
+The earlier opt-in, browser, audio, packaged-account and live two-host evidence
 remains as recorded above; those external/opt-in suites were not rerun for these
-server-side review corrections. No additional provider login was performed.
+server-side review corrections. The released-engine synthetic persistence
+fixture was rerun with the final transport and passed all six cases, including
+legacy Core compatibility. No additional real-provider login was performed.
