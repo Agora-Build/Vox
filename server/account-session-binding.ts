@@ -70,4 +70,3 @@ export function accountSessionBinding(input: {
   const fields = { userId, organizationId, source: input.source, platformId: input.platformId, tenantKey, credentialRevision };
   return Object.freeze({ ...fields, sessionKey: sessionDigest(["account-session-v1", fields]) });
 }
-

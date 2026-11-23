@@ -121,4 +121,3 @@ export function acceptsAccountStorage(state: unknown, scope: {
   }
   return true;
 }
-

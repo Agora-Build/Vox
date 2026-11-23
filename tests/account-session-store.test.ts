@@ -379,4 +379,3 @@ d("account-session foundation: isolated PostgreSQL, two Core stores", () => {
     await expect(pool.query("UPDATE account_sessions SET source = 'arbitrary' WHERE session_key = $1", [ticket.sessionKey])).rejects.toThrow();
   });
 });
-

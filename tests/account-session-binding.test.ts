@@ -53,4 +53,3 @@ describe("Core account-session bindings", () => {
     expect(() => accountSessionBinding({ ...input, ...patch } as typeof input)).toThrow("Account session: invalid-binding");
   });
 });
-

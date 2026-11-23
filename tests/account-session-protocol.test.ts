@@ -80,4 +80,3 @@ describe("provider-scoped initial storage format", () => {
     }
   });
 });
-

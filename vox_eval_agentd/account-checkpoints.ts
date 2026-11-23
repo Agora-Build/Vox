@@ -294,4 +294,3 @@ export class AccountCheckpointConsumer {
     return { status, outcomes };
   }
 }
-
