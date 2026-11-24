@@ -124,7 +124,7 @@ describe("owner-Core shared capture", () => {
     const results = await Promise.all([take(a), take(b)]);
     expect(results.map((result) => result.ok)).toEqual([true, false]); expect(results[1].error).toBe("CONTROL_BUSY");
     expect(commands("viewer.take_control")).toHaveLength(1);
-    for (const command of ["viewer.input", "viewer.open_url", "viewer.select_page", "viewer.release_control", "assistance.continue", "authentication.continue", "assistance.cancel"] as const) {
+    for (const command of ["viewer.input", "viewer.open_url", "viewer.select_page", "viewer.release_control", "assistance.continue", "authentication.continue", "authentication.open_verification", "authentication.continue_flow", "assistance.cancel"] as const) {
       const response = await run(b, command, { ...identity, control_id: results[0].result?.control_id });
       expect(response).toMatchObject({ ok: false, error: "CONTROL_REQUIRED" });
       expect(commands(command)).toHaveLength(0);
@@ -132,6 +132,77 @@ describe("owner-Core shared capture", () => {
     expect((await run(a, "session.status")).result?.controlling).toBe(true);
     const spectator = await run(b, "session.status");
     expect(spectator.result?.controlling).toBe(false); expect(spectator.viewer?.controller).toBe("other");
+  });
+
+  it("binds verification to the controlled wait and follows the engine back to the evaluation tab", async () => {
+    await open(a); await open(b);
+    const control = await take(a);
+    const params = { ...identity, wait_id: waitId, control_id: control.result?.control_id, sequence: 1, url: "https://provider.example/verification" };
+    expect((await run(a, "authentication.open_verification", { ...params, wait_id: "old-wait" })).error).toBe("STALE_CONTROL");
+    send.mockImplementationOnce(async (_target, op: BrowserOperation) => {
+      controlling = false;
+      return { version: 1, type: "response", id: op.request!.id, ok: true,
+        result: { page_id: "verification", document_epoch: 2, next_sequence: 2 } };
+    });
+    const opened = await run(a, "authentication.open_verification", params);
+    expect(opened.viewer).toMatchObject({ page_id: "verification", document_epoch: 2, controller: null });
+    const selected = { ...identity, page_id: "verification", document_epoch: 2, wait_id: waitId };
+    expect((await run(a, "viewer.take_control", selected)).ok).toBe(true);
+    send.mockImplementationOnce(async (_target, op: BrowserOperation) => {
+      controlling = false;
+      return { version: 1, type: "response", id: op.request!.id, ok: true, result: { checking: true } };
+    });
+    expect(await run(a, "authentication.continue_flow", selected)).toMatchObject({ ok: true, viewer: { controller: null } });
+    expect((await take(b)).error).toBe("CONTROL_BUSY");
+    send.mockImplementationOnce(async (_target, op: BrowserOperation) => ({ version: 1, type: "response", id: op.request!.id, ok: true,
+      result: { session_id: "session", browser_generation: "browser", capabilities: ["auth.verification-flow.v1"],
+        viewing: true, controlling: false, next_sequence: 2, assistance: null, selected_page_id: "page",
+        pages: [{ page_id: "page", document_epoch: 3, origin: null }, { page_id: "verification", document_epoch: 2, origin: null }] },
+    }));
+    expect((await run(b, "session.status")).viewer).toMatchObject({ page_id: "page", document_epoch: 3 });
+    expect((await take(b)).ok).toBe(true);
+    expect(commands("authentication.continue_flow")).toHaveLength(1);
+  });
+
+  it("stops the engine sign-in when the authorizing viewer leaves while a spectator remains", async () => {
+    await open(a); await open(b); await take(a);
+    send.mockImplementationOnce(async (_target, op: BrowserOperation) => ({
+      version: 1, type: "response", id: op.request!.id, ok: true, result: { checking: true },
+    }));
+    await run(a, "authentication.continue_flow", { ...identity, wait_id: waitId });
+    grants = [a];
+    await captures.handle({ targetKey: target.key, viewerId: b.id, action: "leave" });
+    expect(operations("close")).toHaveLength(0);
+    grants = [b];
+    await captures.handle({ targetKey: target.key, viewerId: a.id, action: "leave" });
+    expect(operations("close")).toHaveLength(1);
+    expect((await open(b)).ok).toBe(true);
+  });
+
+  it("closes the engine viewer when a sign-in acknowledgement is ambiguous", async () => {
+    await open(a); await take(a);
+    const response = await run(a, "authentication.continue_flow", { ...identity, wait_id: waitId });
+    expect(response).toMatchObject({ ok: false, error: "OUTCOME_UNKNOWN" });
+    expect(commands("authentication.continue_flow")).toHaveLength(1);
+    expect(operations("close")).toHaveLength(1);
+  });
+
+  it("protects a controlled manual tab from other viewers and revokes input without a wait ID", async () => {
+    await open(a); await open(b);
+    send.mockImplementationOnce(async (_target, op: BrowserOperation) => ({ version: 1, type: "response", id: op.request!.id, ok: true,
+      result: { page_id: "manual", document_epoch: 2, next_sequence: 2 },
+    }));
+    await run(a, "viewer.open_tab", { ...identity, sequence: 1, url: "https://provider.example/extra" });
+    const manual = { ...identity, page_id: "manual", document_epoch: 2 };
+    expect((await run(a, "viewer.take_control", manual)).ok).toBe(true);
+    expect((await run(b, "viewer.close_tab", { ...manual, target_page_id: "manual", target_document_epoch: 2 })).error).toBe("CONTROL_BUSY");
+    expect((await run(a, "viewer.close_tab", { ...manual, target_page_id: "page", target_document_epoch: 1 })).error).toBe("STALE_PAGE");
+    expect((await run(a, "authentication.continue_flow", { ...manual, wait_id: waitId })).error).toBe("STALE_CONTROL");
+    grants = [b];
+    await captures.handle({ targetKey: target.key, viewerId: a.id, action: "leave" });
+    expect(commands("viewer.release_control")[0].request?.params).toMatchObject({ ...manual, control_id: "control-1", wait_id: null });
+    expect(commands("viewer.close_tab")).toHaveLength(0);
+    expect(operations("close")).toHaveLength(0);
   });
 
   it("forwards stage-bound credential consent once, clears control, and never grants it on release", async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { browserFrameSchema, browserStatusSchema, type BrowserCommand, type BrowserFrame,
+import { browserFrameSchema, browserStatusSchema, MANUAL_TABS_CAPABILITY, type BrowserCommand, type BrowserFrame,
   type BrowserOperation, type BrowserResponse, type BrowserViewerState } from "@shared/browser-assistance";
 import type { BrowserGrant, BrowserTarget } from "./browser-viewers";
 
@@ -10,9 +10,13 @@ type Capture = {
   frame: BrowserFrame | null; frameAt: number; failed: boolean; revision: number;
   heartbeatAt: number; heartbeat: Promise<BrowserResponse> | null; heartbeatDone: boolean;
   receipts: Map<string, { viewerId: string; upstreamId: string }>;
+  signIn: { viewerId: string; waitId: string } | null;
+  manualTabs: boolean;
 };
 export type CaptureRequest = { targetKey: string; viewerId: string; action: "command" | "frame" | "leave"; request?: BrowserCommand };
-const mutations = new Set(["viewer.input", "viewer.open_url", "viewer.select_page", "assistance.continue", "authentication.continue", "assistance.cancel", "viewer.release_control"]);
+const navigation = ["viewer.open_url", "viewer.select_page", "authentication.open_verification", "viewer.open_tab", "viewer.close_tab"];
+const releasesControl = [...navigation, "viewer.release_control", "assistance.continue", "authentication.continue", "authentication.continue_flow", "assistance.cancel"];
+const mutations = new Set([...releasesControl, "viewer.input"]);
 
 /** One owner-Core arbiter and one engine capture per fenced browser target. */
 export class BrowserCaptures {
@@ -59,7 +63,7 @@ export class BrowserCaptures {
       if (!current.ok) throw new Error("Control state could not be confirmed");
       const status = browserStatusSchema.parse(current.result);
       // The engine may already have released input after navigation or a deadline.
-      if (!status.controlling || status.assistance?.wait_id !== waitId) return;
+      if (!status.controlling || (waitId !== null && status.assistance?.wait_id !== waitId)) return;
       const response = await this.engine(capture, this.internal(capture, "viewer.release_control", {
         ...this.identity(capture), control_id: controlId, wait_id: waitId,
       }));
@@ -72,6 +76,12 @@ export class BrowserCaptures {
   }
   private async reconcile(capture: Capture, grants: BrowserGrant[]): Promise<void> {
     if (!grants.length) { await this.close(capture); return; }
+    const signIn = capture.signIn;
+    if (signIn) {
+      const initiator = grants.find((grant) => grant.id === signIn.viewerId);
+      // The engine sees one socket for all viewers. End it if the user who authorized sign-in leaves.
+      if (!initiator || !await this.authorized(initiator)) { await this.close(capture); return; }
+    }
     const controller = grants.find((grant) => grant.id === capture.controller);
     if (capture.controller && (!controller || !await this.authorized(controller))) await this.release(capture);
   }
@@ -145,7 +155,7 @@ export class BrowserCaptures {
       if (!capture) {
         if (command.command !== "viewer.open") return denied("VIEWER_NOT_OPEN");
         const candidate: Capture = { target: grant.target, upstreamId: randomUUID(), leaseId: "", sessionId: command.session_id ?? "",
-          generation: command.browser_generation ?? "", pageId: "", epoch: 0, controller: null, controlId: null, waitId: null,
+          generation: command.browser_generation ?? "", pageId: "", epoch: 0, controller: null, controlId: null, waitId: null, signIn: null, manualTabs: false,
           frame: null, frameAt: 0, failed: false, revision: 1, heartbeatAt: 0, heartbeat: null, heartbeatDone: false, receipts: new Map() };
         try {
           const response = await this.engine(candidate, { ...command, id: randomUUID() });
@@ -161,10 +171,16 @@ export class BrowserCaptures {
       if (command.command === "viewer.open") return { version: 1, type: "response", id: command.id, ok: true,
         result: { lease_id: capture.leaseId, page_id: capture.pageId, document_epoch: capture.epoch, mode: "read_only" },
         viewer: this.state(capture, grant.id, grants.length) };
-      if (command.command === "viewer.take_control" && capture.controller) return denied("CONTROL_BUSY");
-      if (mutations.has(command.command) && capture.controller !== grant.id) return denied("CONTROL_REQUIRED");
-      if (["viewer.input", "viewer.open_url", "viewer.release_control"].includes(command.command)
+      if (command.command === "viewer.take_control" && (capture.controller || capture.signIn)) return denied("CONTROL_BUSY");
+      const tabManagement = command.command === "viewer.open_tab" || command.command === "viewer.close_tab";
+      const canNavigateWithoutControl = tabManagement || (command.command === "viewer.select_page" && capture.manualTabs);
+      if (canNavigateWithoutControl && (capture.signIn || (capture.controller && capture.controller !== grant.id))) return denied("CONTROL_BUSY");
+      if (mutations.has(command.command) && !canNavigateWithoutControl && capture.controller !== grant.id) return denied("CONTROL_REQUIRED");
+      if (command.command === "viewer.close_tab" && command.params?.target_page_id !== capture.pageId) return denied("STALE_PAGE");
+      if (["viewer.input", "viewer.open_url", "viewer.release_control", "authentication.open_verification"].includes(command.command)
         && command.params?.control_id !== capture.controlId) return denied("STALE_CONTROL");
+      if ((command.command === "authentication.open_verification" || command.command === "authentication.continue_flow")
+        && (!capture.waitId || command.params?.wait_id !== capture.waitId)) return denied("STALE_CONTROL");
       const upstreamId = randomUUID();
       const request = { ...command, id: upstreamId };
       if (command.command === "viewer.release_control") request.params = { ...command.params, wait_id: capture.waitId };
@@ -184,28 +200,44 @@ export class BrowserCaptures {
         if (mutations.has(command.command) || command.command === "viewer.take_control") { capture.failed = true; await this.close(capture); }
         throw error;
       }
+      if (command.command === "authentication.continue_flow"
+        && (response.error === "OUTCOME_UNKNOWN" || (response.ok && response.result?.checking !== true))) {
+        await this.close(capture);
+        return denied("OUTCOME_UNKNOWN");
+      }
       if (response.ok) {
         if (command.command === "viewer.take_control") {
           if (typeof response.result?.control_id !== "string") { await this.close(capture); throw new Error("Invalid control grant"); }
           capture.controller = grant.id; capture.controlId = response.result.control_id;
           capture.waitId = typeof command.params?.wait_id === "string" ? command.params.wait_id : null;
         }
-        if (["viewer.release_control", "assistance.continue", "authentication.continue", "assistance.cancel", "viewer.select_page", "viewer.open_url"].includes(command.command)) {
+        if (command.command === "authentication.continue_flow" && capture.waitId) {
+          capture.signIn = { viewerId: grant.id, waitId: capture.waitId };
+        }
+        if (command.command === "viewer.open_tab") capture.manualTabs = true;
+        if (releasesControl.includes(command.command)) {
           capture.controller = null; capture.controlId = null; capture.waitId = null;
           if (typeof response.result?.page_id === "string" && Number.isSafeInteger(response.result.document_epoch)) {
             capture.pageId = response.result.page_id; capture.epoch = Number(response.result.document_epoch);
           }
-          if (command.command === "viewer.select_page" || command.command === "viewer.open_url") {
+          if (navigation.includes(command.command)) {
             capture.frame = null; capture.frameAt = 0;
           }
         }
         if (command.command === "session.status") {
           const status = browserStatusSchema.parse(response.result);
           if (status.browser_generation !== capture.generation) { await this.close(capture); throw new Error("Browser restarted; reopen the viewer"); }
-          const page = status.pages.find((item) => item.page_id === capture.pageId);
+          capture.manualTabs = status.capabilities.includes(MANUAL_TABS_CAPABILITY);
+          const selectedPageId = status.selected_page_id ?? capture.pageId;
+          const page = status.pages.find((item) => item.page_id === selectedPageId);
           if (!page) { await this.close(capture); throw new Error("Selected browser tab closed; reopen the viewer"); }
+          if (capture.signIn && (status.assistance?.wait_id !== capture.signIn.waitId || status.assistance.state !== "checking")) {
+            capture.signIn = null;
+          }
           if (!status.controlling) { capture.controller = null; capture.controlId = null; capture.waitId = null; }
-          if (page.document_epoch !== capture.epoch) { capture.epoch = page.document_epoch; capture.frame = null; }
+          if (page.page_id !== capture.pageId || page.document_epoch !== capture.epoch) {
+            capture.pageId = page.page_id; capture.epoch = page.document_epoch; capture.frame = null; capture.frameAt = 0;
+          }
           response = { ...response, result: { ...status, controlling: capture.controller === grant.id } };
         }
       }

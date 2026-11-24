@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Monitor, MousePointer2, Eye, Loader2, ExternalLink, X, Play, RefreshCw, Users } from "lucide-react";
+import { Monitor, MousePointer2, Eye, Loader2, ExternalLink, X, Play, Plus, RefreshCw, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { browserStatusSchema, browserFrameSchema, type BrowserCommand, type BrowserResponse, type BrowserStatus, type BrowserFrame, type BrowserViewerState } from "@shared/browser-assistance";
+import { browserStatusSchema, browserFrameSchema, MANUAL_TABS_CAPABILITY, supportsVerificationFlow, type BrowserCommand, type BrowserPage, type BrowserResponse, type BrowserStatus, type BrowserFrame, type BrowserViewerState } from "@shared/browser-assistance";
 import { browserAuthenticationStage, browserReadinessMessage } from "@/lib/browser-readiness";
 
 type Availability = { available: boolean; target?: "agent" | "broker"; deadline?: string; status?: BrowserStatus };
 type View = { id: string; leaseId: string; pageId: string; epoch: number; sessionId: string; generation: string; revision: number };
-type Control = { id: string; sequence: number; waitId: string };
+type Control = { id: string; sequence: number; waitId: string | null };
 
 async function browserFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { ...options, credentials: "same-origin", cache: "no-store",
@@ -39,6 +39,7 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [url, setUrl] = useState("");
+  const [manualUrl, setManualUrl] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [receipt, setReceipt] = useState<string | null>(null);
   const view = useRef<View | null>(null);
@@ -55,7 +56,7 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
     lifecycle.current++;
     const previous = view.current;
     view.current = null; control.current = null; dragging.current = false;
-    setOpening(false); setInteractive(false); setSharing(null); setFrame(null); setUrl(""); setText(""); setStatus(null); setReceipt(null);
+    setOpening(false); setInteractive(false); setSharing(null); setFrame(null); setUrl(""); setManualUrl(null); setText(""); setStatus(null); setReceipt(null);
     if (previous) void browserFetch(`${base}/viewers/${previous.id}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
   }, [base]);
   useEffect(() => { setOpen(false); setMessage(null); return () => { stop(); }; }, [stop]);
@@ -160,7 +161,8 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
         if (page.document_epoch !== current.epoch) {
           current.epoch = page.document_epoch; control.current = null; setInteractive(false); setFrame(null);
         }
-        if (!next.controlling || !next.assistance || control.current?.waitId !== next.assistance.wait_id) {
+        const expectedWait = page.manual ? null : next.assistance?.wait_id;
+        if (!next.controlling || control.current?.waitId !== expectedWait) {
           control.current = null; setInteractive(false);
         }
         })().catch(fail).finally(() => { statusBusy = false; });
@@ -227,27 +229,52 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
     element?.addEventListener("wheel", listener, { passive: false });
     return () => element?.removeEventListener("wheel", listener);
   }, [open, opening]);
+  const acquireControl = async (waitId: string | null) => {
+    const response = await command("viewer.take_control", { ...identity(), ...(waitId ? { wait_id: waitId } : {}) });
+    if (!response.ok) protocolError(response);
+    if (typeof response.result?.control_id !== "string" || !Number.isSafeInteger(response.result.next_sequence)) throw new Error("Browser control changed; reopen the view");
+    control.current = { id: response.result!.control_id as string, sequence: Number(response.result!.next_sequence), waitId };
+    setInteractive(true);
+  };
   const takeControl = async () => {
-    if (!status?.assistance || !view.current) return;
+    if (!view.current || !status) return;
+    const page = status.pages.find((item) => item.page_id === view.current?.pageId);
+    if (!page?.manual && !status.assistance) return;
     setBusy(true); setMessage(null);
     try {
-      const response = await command("viewer.take_control", { ...identity(), wait_id: status.assistance.wait_id });
-      if (!response.ok) protocolError(response);
-      if (!view.current || typeof response.result?.control_id !== "string" || !Number.isSafeInteger(response.result.next_sequence)) throw new Error("Browser control changed; reopen the view");
-      control.current = { id: String(response.result!.control_id), sequence: Number(response.result!.next_sequence), waitId: status.assistance.wait_id };
-      setInteractive(true); surface.current?.focus();
+      await acquireControl(page?.manual ? null : status.assistance!.wait_id);
+      surface.current?.focus();
     } catch (error) { setMessage(error instanceof Error ? error.message : "Control unavailable"); }
     finally { setBusy(false); }
   };
+  const selectPage = async (page: BrowserPage) => {
+    const response = await command("viewer.select_page", { ...identity(), target_page_id: page.page_id, target_document_epoch: page.document_epoch });
+    if (!response.ok) protocolError(response);
+    const current = view.current!;
+    current.pageId = page.page_id; current.epoch = page.document_epoch;
+    control.current = null; setInteractive(false); setFrame(null);
+  };
   const continueRun = async (authenticate = false) => {
-    if (!status?.assistance) return;
-    const stage = authenticate ? browserAuthenticationStage(status) : null;
-    if (authenticate && !stage) return;
+    const wait = status?.assistance;
+    const current = control.current;
+    const page = status?.pages.find((item) => item.page_id === view.current?.pageId);
+    const evaluationPage = status?.pages.find((item) => item.page_id === wait?.page_id);
+    const returnFromManual = authenticate && page?.manual === true && !!evaluationPage;
+    if (!wait || (!returnFromManual && current?.waitId !== wait.wait_id)) return;
+    const useFlow = authenticate && supportsVerificationFlow(status);
+    const stage = authenticate && !useFlow ? browserAuthenticationStage(status) : null;
+    if (authenticate && !useFlow && !stage) return;
+    let name: BrowserCommand["command"] = "assistance.continue";
+    if (authenticate) name = useFlow ? "authentication.continue_flow" : "authentication.continue";
     setBusy(true);
     try {
-      const response = await command(authenticate ? "authentication.continue" : "assistance.continue", {
-        ...identity(), wait_id: status.assistance.wait_id, ...stage,
-      });
+      await queue.current;
+      if (control.current !== current) return;
+      if (returnFromManual) {
+        await selectPage(evaluationPage);
+        await acquireControl(wait.wait_id);
+      }
+      const response = await command(name, { ...identity(), wait_id: wait.wait_id, ...stage });
       if (!response.ok && response.error === "AUTH_CREDENTIAL_CONTINUATION_REQUIRED") {
         setMessage("This sign-in step needs explicit permission. Choose Sign in & continue when it becomes available, or complete it manually.");
         return;
@@ -259,9 +286,45 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
       }
       if (!response.ok) protocolError(response);
       control.current = null; setInteractive(false); setMessage(null);
-      setStatus((current) => current?.assistance?.wait_id === status.assistance!.wait_id
-        ? { ...current, assistance: { ...current.assistance, state: "checking", reason: "checking", authentication: null } } : current);
+      setStatus((latest) => latest?.assistance?.wait_id === wait.wait_id
+        ? { ...latest, assistance: { ...latest.assistance, state: "checking", reason: "checking",
+          authentication: useFlow ? { stage_id: null, page_id: null, stage_token: null, verification_flow: true } : null } } : latest);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Continuation unavailable"); }
+    finally { setBusy(false); }
+  };
+
+  const manageManualTab = async (url?: string) => {
+    if (!view.current || !status || (!url && !selectedPage?.manual)) return;
+    const selected = view.current;
+    const startingPage = selected.pageId;
+    setBusy(true); setMessage(null);
+    try {
+      await queue.current;
+      if (view.current !== selected || selected.pageId !== startingPage) return;
+      const response = url
+        ? await command("viewer.open_tab", { ...identity(), url, sequence: control.current?.sequence ?? status.next_sequence })
+        : await command("viewer.close_tab", { ...identity(), target_page_id: startingPage, target_document_epoch: selected.epoch });
+      if (!response.ok) {
+        if (response.error === "MANUAL_TAB_LIMIT") setMessage("Close a manual tab before opening another.");
+        else if (response.error === "INVALID_URL") setMessage("Enter a valid HTTP or HTTPS page URL.");
+        else protocolError(response);
+        return;
+      }
+      const pageId = response.result?.page_id;
+      const epoch = response.result?.document_epoch;
+      if (typeof pageId !== "string" || typeof epoch !== "number" || !Number.isSafeInteger(epoch)) {
+        stop(); setMessage("The browser did not return an active tab. Reopen the view to inspect it."); return;
+      }
+      selected.pageId = pageId; selected.epoch = epoch;
+      control.current = null; setInteractive(false); setFrame(null); setManualUrl(null);
+      setStatus((latest) => {
+        if (!latest) return latest;
+        const pages = url ? [...latest.pages.filter((page) => page.page_id !== pageId), { page_id: pageId, document_epoch: epoch, origin: null, manual: true as const }]
+          : latest.pages.filter((page) => page.page_id !== startingPage);
+        const sequence = response.result?.next_sequence;
+        return { ...latest, pages, selected_page_id: pageId, next_sequence: typeof sequence === "number" ? sequence : latest.next_sequence };
+      });
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Tab action could not be confirmed"); }
     finally { setBusy(false); }
   };
   const releaseControl = async () => {
@@ -279,11 +342,17 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
   };
 
   const readinessMessage = browserReadinessMessage(status);
+  const verificationFlow = supportsVerificationFlow(status);
   const authenticationStage = browserAuthenticationStage(status);
-  const evaluationPageId = status?.assistance?.page_id ?? status?.last_assistance?.page_id;
+  const manualTabs = status?.capabilities.includes(MANUAL_TABS_CAPABILITY) === true;
+  const selectedPage = status?.pages.find((page) => page.page_id === view.current?.pageId);
+  const evaluationPageId = status?.assistance?.page_id ?? status?.last_assistance?.page_id ?? status?.pages.find((page) => !page.manual)?.page_id;
   const evaluationTab = status?.pages.findIndex((page) => page.page_id === evaluationPageId) ?? -1;
-  const canTakeControl = !!status?.assistance && ["waiting", "held", "checking"].includes(status.assistance.state)
-    && status.assistance.remaining_seconds !== 0;
+  const signingIn = verificationFlow && status?.assistance?.state === "checking";
+  const canAssist = !!status?.assistance && ["waiting", "held", "checking"].includes(status.assistance.state)
+    && status.assistance.remaining_seconds !== 0 && !signingIn;
+  const canManageTabs = manualTabs && sharing?.controller !== "other" && !signingIn && !!view.current;
+  const canTakeControl = canAssist || (canManageTabs && selectedPage?.manual === true);
 
   if (!data?.available && !open) return null;
   return <>
@@ -299,22 +368,21 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
           <DialogDescription>{data?.target === "broker" ? "Secure login browser. Passwords stay in the trusted broker." : "The evaluation's existing browser session."} Everyone shares this view; only one person can control it. Viewing does not pause the evaluation.</DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap items-center gap-2 px-5">
-          {status && <Select disabled={!interactive || busy} value={view.current?.pageId ?? ""} onValueChange={async (id) => {
+          {status && <Select disabled={(!interactive && !canManageTabs) || busy} value={view.current?.pageId ?? ""} onValueChange={async (id) => {
             const page = status.pages.find((item) => item.page_id === id);
             if (!page || !view.current) return;
             try {
-              const response = await command("viewer.select_page", { ...identity(), target_page_id: page.page_id, target_document_epoch: page.document_epoch });
-              if (!response.ok) protocolError(response);
-              view.current.pageId = page.page_id; view.current.epoch = page.document_epoch;
-              control.current = null; setInteractive(false); setFrame(null);
+              await selectPage(page);
             } catch (error) { setMessage(error instanceof Error ? error.message : "Tab unavailable"); }
           }}><SelectTrigger className="w-full sm:w-72" aria-label="Browser tab"><SelectValue placeholder="Choose tab" /></SelectTrigger><SelectContent>
-            {status.pages.map((page, index) => <SelectItem key={page.page_id} value={page.page_id}>Tab {index + 1}{page.page_id === evaluationPageId ? " (evaluation)" : ""} · {page.origin ?? "Loading"}</SelectItem>)}
+            {status.pages.map((page, index) => <SelectItem key={page.page_id} value={page.page_id}>Tab {index + 1}{page.manual ? " (manual)" : page.page_id === evaluationPageId ? " (evaluation)" : ""} · {page.origin ?? "Loading"}</SelectItem>)}
           </SelectContent></Select>}
-          {interactive ? <Button size="sm" variant="outline" onClick={() => void releaseControl()} disabled={busy} title="Release input and check readiness; other viewers stay connected" data-testid="button-release-browser-control">Release control</Button>
+          {manualTabs && <Button size="sm" variant="outline" disabled={busy || !canManageTabs} onClick={() => setManualUrl((value) => value === null ? "" : null)}><Plus className="mr-1 h-4 w-4" /> New tab</Button>}
+          {manualTabs && selectedPage?.manual && <Button size="sm" variant="outline" disabled={busy || !canManageTabs} onClick={() => void manageManualTab()}><X className="mr-1 h-4 w-4" /> Close tab</Button>}
+          {interactive ? <Button size="sm" variant="outline" onClick={() => void releaseControl()} disabled={busy} data-testid="button-release-browser-control">Release control</Button>
             : <Button size="sm" onClick={() => void takeControl()} disabled={busy || sharing?.controller === "other" || !canTakeControl || !view.current} data-testid="button-take-browser-control"><MousePointer2 className="mr-1 h-4 w-4" />{sharing?.controller === "other" ? "Another viewer has control" : "Take control"}</Button>}
-          <Button size="sm" variant="outline" onClick={() => void continueRun()} disabled={busy || !interactive || !status?.assistance || !view.current}><Play className="mr-1 h-4 w-4" /> Check &amp; continue</Button>
-          {authenticationStage && <Button size="sm" onClick={() => void continueRun(true)} disabled={busy || !interactive || !view.current} data-testid="button-authentication-continue">Sign in &amp; continue</Button>}
+          {!verificationFlow && <Button size="sm" variant="outline" onClick={() => void continueRun()} disabled={busy || !interactive || !status?.assistance || !view.current || !!selectedPage?.manual}><Play className="mr-1 h-4 w-4" /> Check &amp; continue</Button>}
+          {(verificationFlow || authenticationStage) && <Button size="sm" onClick={() => void continueRun(true)} disabled={busy || !view.current || !canAssist || (!interactive && !(selectedPage?.manual && canManageTabs))} data-testid="button-authentication-continue">Sign in &amp; continue</Button>}
           {status?.assistance?.remaining_seconds != null && <span className="text-xs text-muted-foreground">Hold: {Math.ceil(status.assistance.remaining_seconds)}s remaining</span>}
           {evaluationTab >= 0 && <span className="text-xs text-muted-foreground" data-testid="browser-evaluation-tab">Evaluation checks Tab {evaluationTab + 1}{view.current && view.current.pageId !== evaluationPageId ? "; you are viewing another tab" : ""}</span>}
         </div>
@@ -358,20 +426,31 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
             : <div className="flex min-h-52 items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{opening ? "Opening secure view" : "Waiting for a browser frame"}</div>}
         </div>
         <div className="space-y-3 px-5 pb-5">
+          {manualUrl !== null && <form className="flex flex-wrap gap-2" onSubmit={(event) => {
+            event.preventDefault(); const link = manualUrl.trim();
+            if (link) void manageManualTab(link);
+          }}><Input className="min-w-40 flex-1" type="url" value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} placeholder="https://example.com" aria-label="New tab URL" autoComplete="off" autoFocus /><Button type="submit" disabled={busy || !canManageTabs || !manualUrl.trim()}>Open tab</Button></form>}
           {interactive && <form className="flex gap-2" onSubmit={(event) => {
             event.preventDefault(); const value = text; setText("");
             if (value) enqueue(() => input({ type: "text", text: value }));
           }}><Input value={text} maxLength={4096} onChange={(event) => setText(event.target.value)} placeholder="Type or paste into the selected field" aria-label="Text to send to browser" autoComplete="off" autoCorrect="off" spellCheck={false} /><Button type="submit" variant="outline" disabled={!text}>Send text</Button></form>}
-          {interactive && <form className="flex gap-2" onSubmit={(event) => {
+          {interactive && !selectedPage?.manual && <form className="flex gap-2" onSubmit={(event) => {
             event.preventDefault(); const selectedUrl = url; setUrl("");
             enqueue(async () => {
               const grant = control.current!;
-              const response = await command("viewer.open_url", { ...identity(), control_id: grant.id, sequence: grant.sequence, url: selectedUrl, new_page: true });
+              const params = { ...identity(), control_id: grant.id, sequence: grant.sequence, url: selectedUrl };
+              const response = verificationFlow
+                ? await command("authentication.open_verification", { ...params, wait_id: grant.waitId })
+                : await command("viewer.open_url", { ...params, new_page: true });
+              if (verificationFlow && !response.ok && response.error !== "OUTCOME_UNKNOWN") {
+                setMessage("Could not open this verification link. Use the provider's verification URL and check that this sign-in is still active.");
+                return;
+              }
               if (!response.ok) protocolError(response);
               view.current!.pageId = String(response.result!.page_id); view.current!.epoch = Number(response.result!.document_epoch);
-              control.current = null; setInteractive(false); setFrame(null);
+              control.current = null; setInteractive(false); setFrame(null); setMessage(null);
             });
-          }}><Input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="Paste a verification link" aria-label="Verification URL" autoComplete="off" /><Button type="submit" variant="outline" disabled={!url}><ExternalLink className="mr-1 h-4 w-4" /> Open in new tab</Button></form>}
+          }}><Input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="Paste a verification link" aria-label="Verification URL" autoComplete="off" /><Button type="submit" variant="outline" disabled={!url || busy}><ExternalLink className="mr-1 h-4 w-4" /> {verificationFlow ? "Open verification link" : "Open in new tab"}</Button></form>}
           {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
           {readinessMessage && <Alert role="status" aria-live="polite" data-testid="browser-readiness-status"><AlertDescription>{readinessMessage}</AlertDescription></Alert>}
           {receipt && view.current && <Button size="sm" variant="outline" onClick={async () => {
