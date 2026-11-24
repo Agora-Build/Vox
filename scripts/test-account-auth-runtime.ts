@@ -8,7 +8,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import yaml from "js-yaml";
 import { BrowserControlConnection } from "../vox_eval_agentd/browser-control";
-import { browserStatusSchema, type BrowserCommand, type BrowserStatus } from "../shared/browser-assistance";
+import { browserStatusSchema, supportsVerificationFlow, type BrowserCommand, type BrowserStatus } from "../shared/browser-assistance";
 
 const elevenlabs = yaml.load(await fs.readFile("/app/aeval-data/config/platforms/elevenlabs.yaml", "utf8")) as {
   config: { authentication: { stages: { id: string; selector: string }[] } };
@@ -17,16 +17,36 @@ const emailStage = elevenlabs.config.authentication.stages.find((stage) => stage
 assert.ok(emailStage, "The packaged ElevenLabs profile must define its email stage");
 
 const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "vox-account-fixture-"));
+const verificationTab = process.env.ACCOUNT_TEST_VERIFICATION_TAB;
+const testManualTabs = process.env.ACCOUNT_TEST_MANUAL_TABS === "1";
 let posts = 0;
 let requireVerification = false;
+let manualSignedIn = false;
+let manualInput = "";
+let evaluationAdvanced = false;
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost",
   "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1", "-keyout", path.join(root, "key.pem"), "-out", path.join(root, "cert.pem")], { stdio: "ignore" });
 const server = https.createServer({ key: await fs.readFile(path.join(root, "key.pem")), cert: await fs.readFile(path.join(root, "cert.pem")) }, async (req, res) => {
+  if (req.url === "/manual-input" && req.method === "POST") {
+    for await (const chunk of req) manualInput += chunk;
+    return res.end();
+  }
+  if (req.url === "/manual") {
+    manualSignedIn = req.headers.cookie?.includes("fixture-session=accepted") ?? false;
+    res.setHeader("Content-Type", "text/html");
+    return res.end('<input autofocus oninput="fetch(\'/manual-input\',{method:\'POST\',body:this.value})">');
+  }
+  if (req.url === "/advanced") {
+    evaluationAdvanced = true;
+    return res.end("Evaluation advanced");
+  }
   if (req.method === "POST") {
     let body = "";
     for await (const chunk of req) body += chunk;
     const submitted = new URLSearchParams(body);
-    if (submitted.get("password") !== "fixture-password" || (req.url === "/login" && submitted.get("email") !== "fixture@example.invalid")) {
+    const expectedEmail = submitted.get("email") === "fixture@example.invalid";
+    if ((req.url === "/email" && !expectedEmail) || (req.url !== "/email" && submitted.get("password") !== "fixture-password")
+      || (req.url === "/login" && !expectedEmail)) {
       res.writeHead(400); return res.end("Invalid fixture credentials");
     }
   }
@@ -42,9 +62,17 @@ const server = https.createServer({ key: await fs.readFile(path.join(root, "key.
     res.writeHead(303, { Location: "/home", "Set-Cookie": "fixture-session=accepted; Path=/; Secure; HttpOnly; SameSite=Lax" });
     return res.end();
   }
+  if (req.method === "POST" && req.url === "/email") {
+    posts++;
+    res.writeHead(303, { Location: "/password" });
+    return res.end();
+  }
   res.setHeader("Content-Type", "text/html");
   if (req.url === "/verify") return res.end('<main>Open the verification link<input id="email" data-testid="sign-in-email-input" value="fixture@example.invalid" readonly><button id="submit" data-testid="sign-in-submit-button" disabled>Resend</button></main>');
-  if (req.url === "/verify-link") return res.end('<form method="POST" action="/password"><input id="password" name="password" type="password"><button id="submit">Sign in</button></form>');
+  if (req.url === "/verify-link" && verificationTab) {
+    return res.end('<form method="POST" action="/email"><input id="email" name="email" data-testid="sign-in-email-input"><button id="submit" data-testid="sign-in-submit-button">Sign in</button></form>');
+  }
+  if (req.url === "/verify-link" || req.url === "/password") return res.end('<form method="POST" action="/password"><input id="password" name="password" type="password"><button id="submit">Sign in</button></form>');
   if (req.url === "/home" || req.url === "/protected") {
     if (!req.headers.cookie?.includes("fixture-session=accepted")) {
       res.writeHead(303, { Location: "/login" }); return res.end();
@@ -60,7 +88,9 @@ const platform = {
   name: "fixture", config: { url: `${origin}/protected`, ignore_https_errors: true, authentication: {
     login_origins: [origin], storage_origins: [origin], cookie_domains: ["localhost"],
     authenticated_url_patterns: ["**/home", "**/protected"], authenticated_selector: "#authenticated", authenticated_stability_ms: 50,
+    ...(verificationTab ? { verification: { tab: verificationTab, origins: [origin] } } : {}),
     stages: [
+      ...(verificationTab ? [{ id: "verify_email", selector: "button:text-is('Resend')" }] : []),
       { id: "email_password", selector: "body:has(#email) #password", fields: { email: "#email", password: "#password" }, submit: "#submit" },
       { id: "email", selector: emailStage.selector, fields: { email: "#email" }, submit: "#submit" },
       { id: "password", selector: "#password", fields: { password: "#password" }, submit: "#submit" },
@@ -94,6 +124,9 @@ async function run(label: string, options: {
   if (options.storage !== null) params.storage_file = options.storage ?? storageFile;
   await fs.writeFile(scenario, yaml.dump({ name: label, audio_io: { mode: "web_hook" }, steps: [
     { type: "platform.setup", platform_id: "fixture", mode: params.mode, params },
+    ...(options.assist && verificationTab ? [{ type: "control.sleep", duration: 2000 }] : []),
+    ...(testManualTabs ? [{ type: "control.sleep", duration: 5000 },
+      { type: "browser.navigate", url: `${origin}/advanced` }, { type: "control.sleep", duration: 3000 }] : []),
   ] }), { mode: 0o600 });
   const engine = spawn(process.env.AEVAL_BINARY ?? "aeval", ["run", scenario, "--session-id", sessionId,
     "--output", path.join(root, "output"), ...(options.assist ? ["--browser-control-socket", socket, "--browser-assistance-timeout", "25"] : [])],
@@ -164,10 +197,48 @@ async function storageCases() {
 }
 
 try {
+  if (testManualTabs) {
+    await run("manual_tab_shares_login_without_holding_the_evaluation", { assist: async (client, status) => {
+      let current = await until(async () => {
+        const state = await status();
+        return state.pages.length > 0 && posts === 1 && !state.assistance ? state : false;
+      });
+      const evaluationPage = current.pages[0];
+      const call = async (command: BrowserCommand["command"], params: Record<string, unknown>) => client.request({
+        version: 1, id: randomUUID(), command, session_id: current.session_id, browser_generation: current.browser_generation, params,
+      });
+      const opened = await call("viewer.open", { page_id: evaluationPage.page_id, document_epoch: evaluationPage.document_epoch });
+      assert.equal(opened.ok, true);
+      const leaseId = opened.result!.lease_id;
+      const heartbeat = setInterval(() => { void call("viewer.heartbeat", { lease_id: leaseId }).catch(() => undefined); }, 1000);
+      try {
+        const openedTab = await call("viewer.open_tab", { lease_id: leaseId, page_id: evaluationPage.page_id,
+          document_epoch: evaluationPage.document_epoch, sequence: current.next_sequence, url: `${origin}/manual` });
+        assert.equal(openedTab.ok, true, JSON.stringify(openedTab));
+        current = await status();
+        const manualPage = current.pages.find((page) => page.page_id === openedTab.result!.page_id)!;
+        assert.equal(manualPage.manual, true);
+        assert.equal(manualSignedIn, true, "The manual tab inherits the evaluation tab's authenticated cookie");
+        const selected = { lease_id: leaseId, page_id: manualPage.page_id, document_epoch: manualPage.document_epoch };
+        const control = await call("viewer.take_control", selected);
+        assert.equal(control.ok, true, JSON.stringify(control));
+        const input = await call("viewer.input", { ...selected, control_id: control.result!.control_id,
+          sequence: control.result!.next_sequence, input: { type: "text", text: "hello" } });
+        assert.equal(input.ok, true, JSON.stringify(input));
+        await until(async () => manualInput === "hello" && evaluationAdvanced);
+        assert.equal((await status()).controlling, true, "The evaluation advances while manual input remains enabled");
+        const closed = await call("viewer.close_tab", { ...selected, target_page_id: manualPage.page_id, target_document_epoch: manualPage.document_epoch });
+        assert.equal(closed.ok, true, JSON.stringify(closed));
+        current = await status();
+        assert.equal(current.selected_page_id, evaluationPage.page_id);
+        assert.deepEqual(current.pages.map((page) => page.page_id), [evaluationPage.page_id]);
+      } finally { clearInterval(heartbeat); }
+    } });
+  } else {
   if (process.env.ACCOUNT_TEST_ASSISTANCE_ONLY !== "1") await storageCases();
   requireVerification = true;
   const assistedPosts = posts;
-  await run("explicit_post_verification_credentials", { storage: path.join(root, "assisted.json"), assist: async (client, status) => {
+  await run(verificationTab ? `verification_flow_${verificationTab}` : "explicit_post_verification_credentials", { storage: path.join(root, "assisted.json"), assist: async (client, status) => {
     let current = await until(async () => { const next = await status(); return next.assistance ? next : false; });
     let selected = current.pages.find((page) => page.page_id === current.assistance!.page_id)!;
     const call = async (command: BrowserCommand["command"], params: Record<string, unknown>) => client.request({
@@ -181,6 +252,29 @@ try {
     try {
       let control = await call("viewer.take_control", { ...identity(), wait_id: current.assistance!.wait_id });
       assert.equal(control.ok, true);
+      if (verificationTab) {
+        assert.equal(supportsVerificationFlow(current), true, JSON.stringify(current));
+        const evaluationPageId = selected.page_id;
+        const navigated = await call("authentication.open_verification", { ...identity(), wait_id: current.assistance!.wait_id,
+          control_id: control.result!.control_id, sequence: control.result!.next_sequence, url: `${origin}/verify-link` });
+        assert.equal(navigated.ok, true, JSON.stringify(navigated));
+        assert.equal(navigated.result!.page_id === evaluationPageId, verificationTab === "original");
+        current = await status();
+        selected = current.pages.find((page) => page.page_id === navigated.result!.page_id)!;
+        control = await call("viewer.take_control", { ...identity(), wait_id: current.assistance!.wait_id });
+        assert.equal(control.ok, true, JSON.stringify(control));
+        assert.equal(posts, assistedPosts + 1, "Opening the verification link does not submit credentials");
+        const submitted = await call("authentication.continue_flow", { ...identity(), wait_id: current.assistance!.wait_id });
+        assert.equal(submitted.ok, true, JSON.stringify(submitted));
+        assert.equal(submitted.result!.checking, true);
+        const ready = await until(async () => {
+          const latest = await status();
+          return latest.last_assistance?.state === "ready" ? latest : false;
+        });
+        assert.equal(ready.selected_page_id, evaluationPageId, "The viewer returns to the original evaluation tab");
+        assert.equal(posts, assistedPosts + 3, "One consent submits the recognized email and password stages exactly once");
+        return;
+      }
       const navigated = await call("viewer.open_url", { ...identity(), control_id: control.result!.control_id,
         sequence: control.result!.next_sequence, url: `${origin}/verify-link`, new_page: true });
       assert.equal(navigated.ok, true);
@@ -215,8 +309,8 @@ try {
       await until(async () => posts === assistedPosts + 2);
     } finally { clearInterval(heartbeat); }
   } });
-  assert.equal(posts, assistedPosts + 2, "The recognized extra stage must submit exactly once");
-  process.stdout.write("PASS: account/storage mode separation, restore-first, fallback, private state and explicit staged assistance\n");
+  assert.equal(posts, assistedPosts + (verificationTab ? 3 : 2), "Each recognized credential stage must submit exactly once");
+  }
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await fs.rm(root, { recursive: true, force: true });

@@ -3,6 +3,8 @@ import { z } from "zod";
 export const BROWSER_PROTOCOL_VERSION = 1;
 export const BROWSER_REQUEST_LIMIT = 16 * 1024;
 export const BROWSER_RESPONSE_LIMIT = 4 * 1024 * 1024;
+export const VERIFICATION_FLOW_CAPABILITY = "auth.verification-flow.v1";
+export const MANUAL_TABS_CAPABILITY = "viewer.manual-tabs.v1";
 
 export const browserCommandSchema = z.object({
   version: z.literal(1),
@@ -11,6 +13,7 @@ export const browserCommandSchema = z.object({
     "session.status", "viewer.open", "viewer.heartbeat", "viewer.close",
     "viewer.take_control", "viewer.input", "viewer.open_url", "viewer.select_page",
     "viewer.release_control", "assistance.continue", "authentication.continue", "assistance.cancel", "command.status",
+    "authentication.open_verification", "authentication.continue_flow", "viewer.open_tab", "viewer.close_tab",
   ]),
   session_id: z.string().max(256).optional(),
   browser_generation: z.string().max(256).nullable().optional(),
@@ -34,16 +37,21 @@ export type BrowserFrame = {
   document_epoch: number; lease_id: string; data: string;
   metadata: Record<string, number>;
 };
-export type BrowserPage = { page_id: string; document_epoch: number; origin: string | null };
+const browserPageSchema = z.object({
+  page_id: z.string(), document_epoch: z.number().int().nonnegative(), origin: z.string().nullable(),
+  manual: z.literal(true).optional().catch(undefined),
+});
+export type BrowserPage = z.infer<typeof browserPageSchema>;
 const readinessReasonSchema = z.enum([
   "checking", "ready", "still_on_login", "wrong_target", "selector_absent", "condition_not_met",
   "navigation_timeout", "check_timeout", "check_failed", "assistance_expired", "assistance_cancelled", "browser_unavailable",
   "account_mismatch", "credential_continuation_required",
 ]).nullable().optional().catch(null);
 const authenticationStageSchema = z.object({
-  stage_id: z.string().min(1).max(256).nullable(),
-  page_id: z.string().min(1).max(256).nullable(),
-  stage_token: z.string().min(1).max(256).nullable(),
+  stage_id: z.string().min(1).max(256).nullable().default(null),
+  page_id: z.string().min(1).max(256).nullable().default(null),
+  stage_token: z.string().min(1).max(256).nullable().default(null),
+  verification_flow: z.boolean().optional(),
 }).strict();
 export const browserAssistanceStatusSchema = z.object({
   wait_id: z.string(), kind: z.enum(["authentication", "element", "url"]),
@@ -55,12 +63,20 @@ export const browserAssistanceStatusSchema = z.object({
 export type BrowserAssistanceStatus = z.infer<typeof browserAssistanceStatusSchema>;
 export const browserStatusSchema = z.object({
   session_id: z.string(), browser_generation: z.string().nullable(), capabilities: z.array(z.string()),
-  pages: z.array(z.object({ page_id: z.string(), document_epoch: z.number().int().nonnegative(), origin: z.string().nullable() })),
+  pages: z.array(browserPageSchema),
+  selected_page_id: z.string().min(1).max(256).nullable().optional().catch(undefined),
   viewing: z.boolean(), controlling: z.boolean(), next_sequence: z.number().int().positive(),
   assistance: browserAssistanceStatusSchema.nullable(),
   last_assistance: browserAssistanceStatusSchema.nullable().optional().catch(null),
 });
 export type BrowserStatus = z.infer<typeof browserStatusSchema>;
+
+export function supportsVerificationFlow(status: BrowserStatus | null): boolean {
+  const wait = status?.assistance;
+  return status?.capabilities.includes(VERIFICATION_FLOW_CAPABILITY) === true
+    && wait?.kind === "authentication"
+    && wait.authentication?.verification_flow === true;
+}
 export const browserFrameSchema: z.ZodType<BrowserFrame> = z.object({
   version: z.literal(1), type: z.literal("event"), event: z.literal("viewer.frame"),
   session_id: z.string(), browser_generation: z.string(), page_id: z.string(), document_epoch: z.number().int().nonnegative(),

@@ -28,7 +28,11 @@ async function viewerFixture(page: Page, options: { authorized?: boolean; delayG
       const response = { version: 1, type: "response", id: command.id, ok: true, result: {} as Record<string, unknown>, viewer: sharing };
       if (command.command === "session.status") response.result = status as unknown as Record<string, unknown>;
       if (command.command === "viewer.open") response.result = { lease_id: "lease", mode: "read_only" };
-      if (command.command === "viewer.take_control") { status.controlling = true; sharing.controller = "you"; status.assistance!.state = "held"; response.result = { control_id: "control", next_sequence: 1 }; }
+      if (command.command === "viewer.take_control") {
+        status.controlling = true; sharing.controller = "you";
+        if (status.assistance && command.params.wait_id) status.assistance.state = "held";
+        response.result = { control_id: "control", next_sequence: status.next_sequence };
+      }
       if (command.command === "viewer.release_control") { status.controlling = false; sharing.controller = null; }
       if (command.command === "assistance.continue") {
         status.controlling = false; sharing.controller = null;
@@ -40,11 +44,38 @@ async function viewerFixture(page: Page, options: { authorized?: boolean; delayG
         status.assistance!.state = "checking"; status.assistance!.authentication = null;
         response.result = { checking: true };
       }
+      if (command.command === "authentication.open_verification") {
+        status.controlling = false; sharing.controller = null;
+        sharing.document_epoch = ++status.pages[0].document_epoch;
+        response.result = { page_id: "login", document_epoch: sharing.document_epoch, next_sequence: 2 };
+      }
+      if (command.command === "authentication.continue_flow") {
+        status.controlling = false; sharing.controller = null;
+        status.assistance!.state = "checking";
+        response.result = { checking: true };
+      }
       if (command.command === "viewer.input") {
         if (unknown) return route.fulfill({ json: { ...response, ok: false, error: "OUTCOME_UNKNOWN" } });
         response.result = { next_sequence: Number(command.params.sequence) + 1 };
       }
-      if (command.command === "viewer.select_page") { status.controlling = false; sharing.controller = null; sharing.page_id = "verification"; response.result = { page_id: "verification", document_epoch: 1 }; }
+      if (command.command === "viewer.open_tab") {
+        status.controlling = false; sharing.controller = null;
+        sharing.page_id = "manual"; sharing.document_epoch = 1;
+        status.pages.push({ page_id: "manual", document_epoch: 1, origin: "https://login.example", manual: true });
+        response.result = { page_id: "manual", document_epoch: 1, next_sequence: ++status.next_sequence };
+      }
+      if (command.command === "viewer.close_tab") {
+        status.controlling = false; sharing.controller = null;
+        status.pages = status.pages.filter((item) => item.page_id !== "manual");
+        sharing.page_id = "login"; sharing.document_epoch = status.pages[0].document_epoch;
+        response.result = { closed: true, page_id: "login", document_epoch: sharing.document_epoch };
+      }
+      if (command.command === "viewer.select_page") {
+        const target = status.pages.find((item) => item.page_id === command.params.target_page_id)!;
+        status.controlling = false; sharing.controller = null;
+        sharing.page_id = target.page_id; sharing.document_epoch = target.document_epoch;
+        response.result = { page_id: target.page_id, document_epoch: target.document_epoch };
+      }
       return route.fulfill({ json: response });
     }
     if (url.pathname.endsWith("/frame")) return route.fulfill({ json: { version: 1, type: "event", event: "viewer.frame", session_id: "session", browser_generation: "generation",
@@ -168,6 +199,71 @@ test("a readiness-only check needing credentials retains control for explicit co
   await expect(page.getByText("You have control")).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in & continue", exact: true })).toBeEnabled();
   expect(fixture.commands.filter((command) => command.command === "authentication.continue")).toHaveLength(0);
+});
+
+test("provider verification uses the evaluation tab and one consent click waits for readiness", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  fixture.status.capabilities.push("auth.verification-flow.v1");
+  fixture.status.assistance!.authentication = { stage_id: null, page_id: null, stage_token: null, verification_flow: true };
+  await page.getByTestId("button-open-browser").click();
+  const signIn = page.getByRole("button", { name: "Sign in & continue", exact: true });
+  await expect(signIn).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Check & continue" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New tab" })).toHaveCount(0);
+  await page.getByTestId("button-take-browser-control").click();
+  await page.getByLabel("Verification URL").fill("https://login.example/verify");
+  await page.getByRole("button", { name: "Open verification link" }).click();
+  await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
+  expect(fixture.commands.find((command) => command.command === "authentication.open_verification")?.params)
+    .toEqual({ lease_id: "lease", page_id: "login", document_epoch: 1, wait_id: "wait", control_id: "control", sequence: 1, url: "https://login.example/verify" });
+  await expect(page.getByLabel("Browser tab")).toHaveText(/Tab 1 \(evaluation\)/);
+  await page.getByTestId("button-take-browser-control").click();
+  await expect(page.getByTestId("browser-readiness-status")).toContainText("use this flow's account credentials");
+  await signIn.click();
+  await expect(page.getByTestId("browser-readiness-status")).toContainText("Finishing sign-in");
+  expect(fixture.commands.filter((command) => command.command === "authentication.continue_flow")).toHaveLength(1);
+  fixture.status.last_assistance = { ...fixture.status.assistance!, state: "ready", reason: "ready" };
+  fixture.status.assistance = null;
+  await expect(page.getByTestId("browser-readiness-status")).toContainText("Readiness confirmed");
+  expect(fixture.commands.filter((command) => command.command === "authentication.continue_flow")).toHaveLength(1);
+  expect(fixture.commands.some((command) => command.command === "authentication.continue" || command.command === "assistance.continue")).toBe(false);
+});
+
+test("manual tabs take input outside a wait and close individually", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  fixture.status.capabilities.push("viewer.manual-tabs.v1");
+  fixture.status.assistance = null;
+  await page.getByTestId("button-open-browser").click();
+  await expect(page.getByTestId("button-take-browser-control")).toBeDisabled();
+  await page.getByRole("button", { name: "New tab", exact: true }).click();
+  await page.getByLabel("New tab URL").fill("https://login.example/other-page");
+  await page.getByRole("button", { name: "Open tab", exact: true }).click();
+  await expect(page.getByLabel("Browser tab")).toHaveText(/\(manual\)/);
+  await page.getByTestId("button-take-browser-control").click();
+  expect(fixture.commands.find((command) => command.command === "viewer.take_control")?.params).toEqual({ lease_id: "lease", page_id: "manual", document_epoch: 1 });
+  await page.getByLabel("Text to send to browser").fill("in the manual tab");
+  await page.getByRole("button", { name: "Send text" }).click();
+  await expect.poll(() => fixture.commands.filter((command) => command.command === "viewer.input").length).toBe(1);
+  await page.getByRole("button", { name: "Close tab", exact: true }).click();
+  await expect(page.getByLabel("Browser tab")).toHaveText(/Tab 1 \(evaluation\)/);
+  await expect(page.getByRole("button", { name: "Close tab", exact: true })).toHaveCount(0);
+  expect(fixture.closed()).toBe(0);
+});
+
+test("sign in from a manual tab goes back to the evaluation before submitting consent", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  fixture.status.capabilities.push("auth.verification-flow.v1", "viewer.manual-tabs.v1");
+  fixture.status.assistance!.authentication = { stage_id: null, page_id: null, stage_token: null, verification_flow: true };
+  await page.getByTestId("button-open-browser").click();
+  await page.getByRole("button", { name: "New tab", exact: true }).click();
+  await page.getByLabel("New tab URL").fill("https://login.example/other-page");
+  await page.getByRole("button", { name: "Open tab", exact: true }).click();
+  await expect(page.getByLabel("Browser tab")).toHaveText(/\(manual\)/);
+  await page.getByRole("button", { name: "Sign in & continue", exact: true }).click();
+  await expect(page.getByTestId("browser-readiness-status")).toContainText("Finishing sign-in");
+  expect(fixture.commands.find((command) => command.command === "authentication.continue_flow")?.params)
+    .toMatchObject({ page_id: "login", wait_id: "wait" });
+  expect(fixture.status.pages.some((tab) => tab.manual)).toBe(true);
 });
 
 test("an unconfirmed credential action closes control and offers an explicit reopen without replay", async ({ page }) => {

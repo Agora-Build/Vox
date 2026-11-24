@@ -1,4 +1,4 @@
-import type { BrowserAssistanceStatus, BrowserStatus } from "@shared/browser-assistance";
+import { supportsVerificationFlow, type BrowserAssistanceStatus, type BrowserStatus } from "@shared/browser-assistance";
 
 function reasonText(reason: BrowserAssistanceStatus["reason"]): string | null {
   switch (reason) {
@@ -29,6 +29,13 @@ export function browserReadinessMessage(status: BrowserStatus | null): string | 
   const assistance = status?.assistance ?? status?.last_assistance;
   if (!assistance) return null;
   const detail = reasonText(assistance.last_check_reason) ?? reasonText(assistance.reason);
+  if (supportsVerificationFlow(status)) {
+    if (assistance.state === "checking") return detail ?? "Finishing sign-in and checking the evaluation page.";
+    if (assistance.state === "held" || assistance.state === "waiting") {
+      const instruction = "Complete verification, then choose Sign in & continue. This lets aeval use this flow's account credentials if another sign-in step is required.";
+      return detail ? `${detail} ${instruction}` : instruction;
+    }
+  }
   if (browserAuthenticationStage(status)) {
     return "A sign-in step is waiting. Sign in & continue authorizes aeval to enter this flow's account credentials for that step. Check & continue only checks readiness.";
   }

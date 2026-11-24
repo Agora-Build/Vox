@@ -1,6 +1,6 @@
 # Live Browser Assistance
 
-Vox integrates aeval v0.5.1's private inspection protocol into the existing
+Vox integrates aeval v0.5.2's private inspection protocol into the existing
 evaluation job page. It views the **already running browser**; it does not launch
 a second login, replay a scenario, expose CDP, or move Brokered passwords onto
 an eval agent. The binary and runtime-data submodule are pinned to the same
@@ -19,10 +19,16 @@ release, with architecture-specific binary checksums.
    field for touch keyboards are supported. Coordinates use the original CSS
    viewport; the evaluated page is not resized to fit the viewer.
 4. Only the controller can switch the shared tab, open verification links,
-   send input, or check/continue the evaluation. A verification link can open a new tab in the same browser context. Tabs
-   share cookies; the original login page remains intact. Navigation and tab
-   selection revoke control. Refresh status and explicitly take control again.
-5. **Check & continue** releases input and checks the original readiness
+   send input, or continue the evaluation. With a provider that supports
+   verification, paste the provider's direct HTTPS link and choose **Open
+   verification link**. aeval opens it in the tab selected by the provider's
+   profile. ElevenLabs uses the evaluation tab. Navigation and tab selection
+   revoke control. Take control again to complete the next step.
+5. After verification, **Sign in & continue** authorizes aeval to complete
+   recognized credential stages and check the original evaluation target. If
+   the provider requests another human action, complete it in the viewer.
+   With older engines and for other waits, **Check & continue** releases input
+   and checks the original readiness
    condition. Acceptance means the check was requested, not that login or setup
    succeeded. The original evaluation tab returns to its
    protected target once, then retries readiness while delayed page content
@@ -31,7 +37,7 @@ release, with architecture-specific binary checksums.
    evaluation tab separately from the selected verification tab and shows safe
    readiness reasons, confirmed continuation, or expiry. The normal job result
    remains authoritative.
-   When aeval recognizes an additional credential step after human verification,
+   With an older engine that recognizes an additional credential step,
    **Sign in & continue** appears separately. Taking control and clicking it
    explicitly authorizes that one step to use this flow's account credentials;
    ordinary checks and viewer disconnects never submit credentials.
@@ -47,6 +53,12 @@ release, with architecture-specific binary checksums.
    If a command's outcome is unknown, inspect the page before a fresh action;
    it is never automatically replayed. A retained receipt may be queried while
    the same viewer lease is still alive.
+8. **New tab** opens a manual page in the evaluation's browser context. Sites
+   can reuse their existing sign-in. **Take control** enables input in the
+   selected manual tab while the evaluation continues. **Close tab** closes the
+   selected manual tab and leaves the evaluation open. If an authentication wait
+   is active, **Sign in & continue** switches back to the evaluation before
+   authorizing aeval to finish sign-in.
 
 There is no recording, preparation-action recorder, generated eval flow, LLM
 interaction, arbitrary JavaScript, or general action retry in this release.
@@ -65,7 +77,7 @@ credentials or browser storage are included in readiness feedback. Unrecognized 
 metadata is discarded without breaking the viewer; active states remain strictly
 validated because they determine whether control can be requested.
 
-Deploy Core, daemon and broker together with the pinned v0.5.1 binary and
+Deploy Core, daemon and broker together with the pinned v0.5.2 binary and
 runtime data. A Core-only upgrade cannot add restore-first or multi-stage
 authentication to an older engine. There is no old authentication-protocol
 translation or storage/account mode-switching workaround.
@@ -144,6 +156,20 @@ No `setup_id`, protocol declaration, new launch flag or automatic replay is
 used. Shared capture requires the current controller and current authorization;
 success releases control, while uncertain outcomes are never retried. Ordinary
 **Check & continue** remains `assistance.continue`, a read-only check.
+
+For v0.5.2 provider-configured waits, Vox looks for `auth.verification-flow.v1`
+in `session.status` and `assistance.authentication.verification_flow: true`.
+The controller can send `authentication.open_verification` and explicitly
+authorize `authentication.continue_flow` for the live wait. Provider runtime
+data defines the approved origins and tab policy. `checking: true` acknowledges
+the click. Vox reads the readiness outcome and selected tab from `session.status`.
+If the authorizing viewer leaves before the sequence finishes, Core closes the
+shared engine capture so aeval can revoke the grant even with spectators present.
+Vox enables manual tabs when the engine reports `viewer.manual-tabs.v1`.
+Manual tabs share cookies with the evaluation and use aeval's independent manual
+input grant. Tab switching, opening, and closing are shared viewer actions, gated
+by the controller when there is one. aeval closes only manual tabs through
+`viewer.close_tab` and keeps them outside its credential-stage selection.
 
 The released binary advertises `eval.capabilities.v1`, restore-first and
 multi-stage component capabilities, but `authentication.status` is still
@@ -486,6 +512,12 @@ docker run --rm --network none --entrypoint node \
 It creates its own localhost HTTPS fixture and ephemeral certificate, never
 changes host trust, and removes its private working files afterward. TLS errors
 are ignored only in the synthetic platform configuration, not production.
+Set `ACCOUNT_TEST_VERIFICATION_TAB=original` or `ACCOUNT_TEST_VERIFICATION_TAB=new`
+on the container to exercise the v0.5.2 provider flow. Each case verifies a
+single explicit continuation submits the email and password stages and returns
+the viewer to the evaluation tab after readiness.
+Set `ACCOUNT_TEST_MANUAL_TABS=1` to verify same-site login reuse, active evaluation
+progress while typing in a manual tab, and individual tab closure.
 
 These fixtures are not a real-provider login, an iPad-device test, or an
 audio-latency/performance qualification. Separate multi-process tests exercise
