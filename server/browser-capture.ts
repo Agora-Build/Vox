@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { browserFrameSchema, browserStatusSchema, MANUAL_TABS_CAPABILITY, type BrowserCommand, type BrowserFrame,
+import { browserFrameSchema, browserStatusSchema, MANUAL_TABS_CAPABILITY, supportsVerificationFlow, type BrowserCommand, type BrowserFrame,
   type BrowserOperation, type BrowserResponse, type BrowserViewerState } from "@shared/browser-assistance";
 import type { BrowserGrant, BrowserTarget } from "./browser-viewers";
+import { extractVerificationUrl, hasEmbeddedVerificationUrl } from "./browser-verification-url";
 
 type Send = (target: BrowserTarget, operation: BrowserOperation) => Promise<unknown>;
 type Capture = {
@@ -183,6 +184,23 @@ export class BrowserCaptures {
         && (!capture.waitId || command.params?.wait_id !== capture.waitId)) return denied("STALE_CONTROL");
       const upstreamId = randomUUID();
       const request = { ...command, id: upstreamId };
+      if (command.command === "authentication.open_verification") {
+        let url = extractVerificationUrl(command.params?.url);
+        if (url && hasEmbeddedVerificationUrl(url)) {
+          const response = await this.engine(capture, this.internal(capture, "session.status"));
+          const parsed = browserStatusSchema.safeParse(response.result);
+          if (!response.ok || !parsed.success) return denied("INVALID_VERIFICATION_LINK");
+          const status = parsed.data;
+          if (status.session_id !== capture.sessionId || status.browser_generation !== capture.generation
+            || status.assistance?.wait_id !== capture.waitId || !status.controlling || !supportsVerificationFlow(status)) {
+            return denied("STALE_CONTROL");
+          }
+          const origin = status.pages.find((page) => page.page_id === status.assistance?.page_id)?.origin;
+          url = origin ? extractVerificationUrl(command.params?.url, origin) : null;
+        }
+        if (!url) return denied("INVALID_VERIFICATION_LINK");
+        request.params = { ...command.params, url };
+      }
       if (command.command === "viewer.release_control") request.params = { ...command.params, wait_id: capture.waitId };
       if (command.command === "command.status") {
         const receipt = capture.receipts.get(String(command.params?.command_id));

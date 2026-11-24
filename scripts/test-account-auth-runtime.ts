@@ -8,7 +8,9 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import yaml from "js-yaml";
 import { BrowserControlConnection } from "../vox_eval_agentd/browser-control";
-import { browserStatusSchema, supportsVerificationFlow, type BrowserCommand, type BrowserStatus } from "../shared/browser-assistance";
+import { browserStatusSchema, supportsVerificationFlow, type BrowserCommand, type BrowserResponse, type BrowserStatus } from "../shared/browser-assistance";
+import { BrowserCaptures } from "../server/browser-capture";
+import type { BrowserGrant } from "../server/browser-viewers";
 
 const elevenlabs = yaml.load(await fs.readFile("/app/aeval-data/config/platforms/elevenlabs.yaml", "utf8")) as {
   config: { authentication: { stages: { id: string; selector: string }[] } };
@@ -19,6 +21,8 @@ assert.ok(emailStage, "The packaged ElevenLabs profile must define its email sta
 const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "vox-account-fixture-"));
 const verificationTab = process.env.ACCOUNT_TEST_VERIFICATION_TAB;
 const testManualTabs = process.env.ACCOUNT_TEST_MANUAL_TABS === "1";
+const verificationPath = "/verify-link?mode=verifyEmail&oobCode=fixture%2Bcode%3D&lang=en";
+const verificationRequests: string[] = [];
 let posts = 0;
 let requireVerification = false;
 let manualSignedIn = false;
@@ -69,7 +73,9 @@ const server = https.createServer({ key: await fs.readFile(path.join(root, "key.
   }
   res.setHeader("Content-Type", "text/html");
   if (req.url === "/verify") return res.end('<main>Open the verification link<input id="email" data-testid="sign-in-email-input" value="fixture@example.invalid" readonly><button id="submit" data-testid="sign-in-submit-button" disabled>Resend</button></main>');
-  if (req.url === "/verify-link" && verificationTab) {
+  if (req.url?.split("?")[0] === "/verify-link" && verificationTab) {
+    verificationRequests.push(req.url);
+    if (req.url !== verificationPath) { res.writeHead(400); return res.end("Fixture verification query was changed"); }
     return res.end('<form method="POST" action="/email"><input id="email" name="email" data-testid="sign-in-email-input"><button id="submit" data-testid="sign-in-submit-button">Sign in</button></form>');
   }
   if (req.url === "/verify-link" || req.url === "/password") return res.end('<form method="POST" action="/password"><input id="password" name="password" type="password"><button id="submit">Sign in</button></form>');
@@ -241,9 +247,23 @@ try {
   await run(verificationTab ? `verification_flow_${verificationTab}` : "explicit_post_verification_credentials", { storage: path.join(root, "assisted.json"), assist: async (client, status) => {
     let current = await until(async () => { const next = await status(); return next.assistance ? next : false; });
     let selected = current.pages.find((page) => page.page_id === current.assistance!.page_id)!;
-    const call = async (command: BrowserCommand["command"], params: Record<string, unknown>) => client.request({
-      version: 1, id: randomUUID(), command, session_id: current.session_id, browser_generation: current.browser_generation, params,
+    const grant: BrowserGrant = { id: randomUUID(), userId: 1, jobId: 1, target: {
+      key: "verification-fixture", kind: "agent", agentId: 1, leaseId: "agent-lease", generation: "agent-generation", jobId: 1, startedAt: "fixture",
+    } };
+    const forwardedLinks: unknown[] = [];
+    const captures = new BrowserCaptures(async () => [grant], async (_target, operation) => {
+      if (operation.action === "close") return client.close();
+      assert.ok(operation.request);
+      if (operation.request.command === "authentication.open_verification") forwardedLinks.push(operation.request.params?.url);
+      return client.request(operation.request);
     });
+    const call = async (command: BrowserCommand["command"], params: Record<string, unknown>): Promise<BrowserResponse> => {
+      const request: BrowserCommand = {
+        version: 1, id: randomUUID(), command, session_id: current.session_id, browser_generation: current.browser_generation, params,
+      };
+      if (!verificationTab) return client.request(request);
+      return await captures.handle({ targetKey: grant.target.key, viewerId: grant.id, action: "command", request }) as BrowserResponse;
+    };
     const opened = await call("viewer.open", { page_id: selected.page_id, document_epoch: selected.document_epoch });
     assert.equal(opened.ok, true);
     const leaseId = opened.result!.lease_id;
@@ -255,9 +275,32 @@ try {
       if (verificationTab) {
         assert.equal(supportsVerificationFlow(current), true, JSON.stringify(current));
         const evaluationPageId = selected.page_id;
-        const navigated = await call("authentication.open_verification", { ...identity(), wait_id: current.assistance!.wait_id,
-          control_id: control.result!.control_id, sequence: control.result!.next_sequence, url: `${origin}/verify-link` });
+        const verificationParams = { ...identity(), wait_id: current.assistance!.wait_id,
+          control_id: control.result!.control_id, sequence: control.result!.next_sequence };
+        const wrap = (target: string) => `https://apc01.safelinks.protection.outlook.com/?url=${encodeURIComponent(
+          `https://protect.checkpoint.com/v2/r01/___${target}___.fixture_signature`,
+        )}&data=fixture%7Cmetadata&reserved=0`;
+        const unknownWrapper = (target: string) => `https://mail-security.example/redirect?destination=${encodeURIComponent(target)}`;
+        const targetUrl = `${origin}${verificationPath}`;
+        const wrongOrigin = origin.replace("localhost", "127.0.0.1");
+        const wrongTarget = `${wrongOrigin}${verificationPath}`;
+        const ambiguous = await call("authentication.open_verification", { ...verificationParams,
+          url: `${unknownWrapper(targetUrl)}&alternate=${encodeURIComponent(`${origin}/other-action`)}` });
+        assert.equal(ambiguous.error, "INVALID_VERIFICATION_LINK");
+        const offOrigin = await call("authentication.open_verification", { ...verificationParams, url: unknownWrapper(wrongTarget) });
+        assert.equal(offOrigin.error, "INVALID_VERIFICATION_LINK");
+        assert.deepEqual(forwardedLinks, [], "Vox rejects ambiguous or off-origin inferred links before dispatch");
+        const refused = await call("authentication.open_verification", { ...verificationParams,
+          url: wrap(wrongTarget) });
+        assert.equal(refused.ok, false, "The active provider must reject a different origin");
+        assert.deepEqual(verificationRequests, [], "Origin rejection happens before Chromium visits the URL");
+        assert.equal((await status()).selected_page_id, evaluationPageId);
+        const wrappedTarget = verificationTab === "original" ? wrap(targetUrl) : unknownWrapper(wrap(targetUrl));
+        const navigated = await call("authentication.open_verification", { ...verificationParams,
+          url: wrappedTarget });
         assert.equal(navigated.ok, true, JSON.stringify(navigated));
+        assert.deepEqual(forwardedLinks, [wrongTarget, targetUrl], "Only the extracted targets reach aeval");
+        assert.deepEqual(verificationRequests, [verificationPath], "Chromium preserves the encoded code and opens the target once");
         assert.equal(navigated.result!.page_id === evaluationPageId, verificationTab === "original");
         current = await status();
         selected = current.pages.find((page) => page.page_id === navigated.result!.page_id)!;

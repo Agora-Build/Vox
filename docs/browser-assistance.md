@@ -20,8 +20,12 @@ release, with architecture-specific binary checksums.
    viewport; the evaluated page is not resized to fit the viewer.
 4. Only the controller can switch the shared tab, open verification links,
    send input, or continue the evaluation. With a provider that supports
-   verification, paste the provider's direct HTTPS link and choose **Open
-   verification link**. aeval opens it in the tab selected by the provider's
+   verification, paste the link from the email and choose **Open verification
+   link**. Vox locally unwraps Outlook Safe Links and Check Point links. It can
+   also unwrap other formats when their query includes a single
+   HTTPS target matching the origin of the active sign-in page. aeval checks
+   the final HTTPS destination against the active provider's approved origins
+   and opens it in the tab selected by the provider's
    profile. ElevenLabs uses the evaluation tab. Navigation and tab selection
    revoke control. Take control again to complete the next step.
 5. After verification, **Sign in & continue** authorizes aeval to complete

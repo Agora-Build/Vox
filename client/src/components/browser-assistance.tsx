@@ -443,7 +443,9 @@ export function BrowserAssistance({ jobId }: { jobId: number }) {
                 ? await command("authentication.open_verification", { ...params, wait_id: grant.waitId })
                 : await command("viewer.open_url", { ...params, new_page: true });
               if (verificationFlow && !response.ok && response.error !== "OUTCOME_UNKNOWN") {
-                setMessage("Could not open this verification link. Use the provider's verification URL and check that this sign-in is still active.");
+                setMessage(response.error === "INVALID_VERIFICATION_LINK"
+                  ? "Vox couldn't find a single verification URL. Try the provider's direct link."
+                  : "Could not open this verification link. Check that it belongs to the provider for this sign-in.");
                 return;
               }
               if (!response.ok) protocolError(response);
