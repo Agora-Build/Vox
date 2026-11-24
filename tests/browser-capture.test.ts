@@ -164,6 +164,52 @@ describe("owner-Core shared capture", () => {
     expect(commands("authentication.continue_flow")).toHaveLength(1);
   });
 
+  it("sends only the unwrapped verification destination to the engine", async () => {
+    await open(a);
+    const control = await take(a);
+    const params = { ...identity, wait_id: waitId, control_id: control.result?.control_id, sequence: 1 };
+    const providerUrl = "https://provider.example/verify?code=fixture%2Bvalue";
+    const checkpoint = `https://protect.checkpoint.com/v2/r01/___${providerUrl}___.fixture_signature`;
+    const wrapped = `https://apc01.safelinks.protection.outlook.com/?url=${encodeURIComponent(checkpoint)}`;
+
+    const invalid = await run(a, "authentication.open_verification", { ...params, url: `${wrapped}&url=${encodeURIComponent(providerUrl)}` });
+    expect(invalid.error).toBe("INVALID_VERIFICATION_LINK");
+    expect(commands("authentication.open_verification")).toHaveLength(0);
+
+    const opened = await run(a, "authentication.open_verification", { ...params, url: wrapped });
+    expect(opened.ok).toBe(true);
+    expect(commands("authentication.open_verification")).toHaveLength(1);
+    expect(commands("authentication.open_verification")[0].request?.params).toEqual({ ...params, url: providerUrl });
+  });
+
+  it("resolves unfamiliar wrappers against the active sign-in page's origin", async () => {
+    await open(a);
+    const control = await take(a);
+    const params = { ...identity, wait_id: waitId, control_id: control.result?.control_id, sequence: 1 };
+    const origin = "https://provider.example";
+    const targetUrl = `${origin}/verify?code=fixture%2Bvalue`;
+    const wrapper = (url: string) => `https://mail-security.example/redirect?destination=${encodeURIComponent(url)}`;
+    const status = (activeWait: string) => send.mockImplementationOnce(async (_target, op: BrowserOperation) => ({
+      version: 1, type: "response", id: op.request!.id, ok: true,
+      result: { session_id: "session", browser_generation: "browser", capabilities: ["auth.verification-flow.v1"],
+        pages: [{ page_id: "page", document_epoch: 1, origin }], viewing: true, controlling: true, next_sequence: 1,
+        assistance: { wait_id: activeWait, kind: "authentication", state: "held", page_id: "page", remaining_seconds: 30,
+          authentication: { verification_flow: true } } },
+    }));
+
+    status("new-wait");
+    expect((await run(a, "authentication.open_verification", { ...params, url: wrapper(targetUrl) })).error).toBe("STALE_CONTROL");
+    status(waitId);
+    expect((await run(a, "authentication.open_verification", { ...params, url: wrapper("https://other.example/verify") })).error)
+      .toBe("INVALID_VERIFICATION_LINK");
+    expect(commands("authentication.open_verification")).toHaveLength(0);
+
+    status(waitId);
+    expect((await run(a, "authentication.open_verification", { ...params, url: wrapper(targetUrl) })).ok).toBe(true);
+    expect(commands("authentication.open_verification")).toHaveLength(1);
+    expect(commands("authentication.open_verification")[0].request?.params).toEqual({ ...params, url: targetUrl });
+  });
+
   it("stops the engine sign-in when the authorizing viewer leaves while a spectator remains", async () => {
     await open(a); await open(b); await take(a);
     send.mockImplementationOnce(async (_target, op: BrowserOperation) => ({

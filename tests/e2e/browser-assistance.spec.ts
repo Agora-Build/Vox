@@ -211,11 +211,14 @@ test("provider verification uses the evaluation tab and one consent click waits 
   await expect(page.getByRole("button", { name: "Check & continue" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New tab" })).toHaveCount(0);
   await page.getByTestId("button-take-browser-control").click();
-  await page.getByLabel("Verification URL").fill("https://login.example/verify");
+  const destination = "https://login.example/verify?mode=verifyEmail&oobCode=fixture%2Bcode";
+  const checkpoint = `https://protect.checkpoint.com/v2/r01/___${destination}___.fixture_signature`;
+  const emailLink = `https://apc01.safelinks.protection.outlook.com/?url=${encodeURIComponent(checkpoint)}&data=fixture`;
+  await page.getByLabel("Verification URL").fill(emailLink);
   await page.getByRole("button", { name: "Open verification link" }).click();
   await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
   expect(fixture.commands.find((command) => command.command === "authentication.open_verification")?.params)
-    .toEqual({ lease_id: "lease", page_id: "login", document_epoch: 1, wait_id: "wait", control_id: "control", sequence: 1, url: "https://login.example/verify" });
+    .toEqual({ lease_id: "lease", page_id: "login", document_epoch: 1, wait_id: "wait", control_id: "control", sequence: 1, url: emailLink });
   await expect(page.getByLabel("Browser tab")).toHaveText(/Tab 1 \(evaluation\)/);
   await page.getByTestId("button-take-browser-control").click();
   await expect(page.getByTestId("browser-readiness-status")).toContainText("use this flow's account credentials");
@@ -227,6 +230,35 @@ test("provider verification uses the evaluation tab and one consent click waits 
   await expect(page.getByTestId("browser-readiness-status")).toContainText("Readiness confirmed");
   expect(fixture.commands.filter((command) => command.command === "authentication.continue_flow")).toHaveLength(1);
   expect(fixture.commands.some((command) => command.command === "authentication.continue" || command.command === "assistance.continue")).toBe(false);
+});
+
+test("a rejected email wrapper keeps control and allows pasting the direct link", async ({ page }) => {
+  const fixture = await viewerFixture(page);
+  fixture.status.capabilities.push("auth.verification-flow.v1");
+  fixture.status.assistance!.authentication = { stage_id: null, page_id: null, stage_token: null, verification_flow: true };
+  let rejected: string | undefined;
+  await page.route("**/api/eval-jobs/987654/browser/viewers/*/commands", (route) => {
+    const command = route.request().postDataJSON();
+    if (command.command !== "authentication.open_verification" || rejected) return route.fallback();
+    rejected = command.params.url;
+    return route.fulfill({ json: { version: 1, type: "response", id: command.id, ok: false, error: "INVALID_VERIFICATION_LINK" } });
+  });
+  await page.getByTestId("button-open-browser").click();
+  await page.getByTestId("button-take-browser-control").click();
+  const wrapped = "https://mail-security.example/link?ticket=opaque";
+  await page.getByLabel("Verification URL").fill(wrapped);
+  await page.getByRole("button", { name: "Open verification link" }).click();
+  await expect(page.getByText(/Try the provider's direct link/)).toBeVisible();
+  await expect(page.getByText("You have control")).toBeVisible();
+  await expect(page.getByLabel("Verification URL")).toHaveValue("");
+  expect(rejected).toBe(wrapped);
+
+  const direct = "https://login.example/verify?code=fixture";
+  await page.getByLabel("Verification URL").fill(direct);
+  await page.getByRole("button", { name: "Open verification link" }).click();
+  await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Try the provider's direct link/)).toHaveCount(0);
+  expect(fixture.commands.find((command) => command.command === "authentication.open_verification")?.params).toMatchObject({ url: direct });
 });
 
 test("manual tabs take input outside a wait and close individually", async ({ page }) => {
