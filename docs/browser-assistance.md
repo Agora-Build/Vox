@@ -1,6 +1,6 @@
 # Live Browser Assistance
 
-Vox integrates aeval v0.5.2's private inspection protocol into the existing
+Vox integrates aeval v0.5.3's private inspection protocol into the existing
 evaluation job page. It views the **already running browser**; it does not launch
 a second login, replay a scenario, expose CDP, or move Brokered passwords onto
 an eval agent. The binary and runtime-data submodule are pinned to the same
@@ -81,7 +81,7 @@ credentials or browser storage are included in readiness feedback. Unrecognized 
 metadata is discarded without breaking the viewer; active states remain strictly
 validated because they determine whether control can be requested.
 
-Deploy Core, daemon and broker together with the pinned v0.5.2 binary and
+Deploy Core, daemon and broker together with the pinned v0.5.3 binary and
 runtime data. A Core-only upgrade cannot add restore-first or multi-stage
 authentication to an older engine. There is no old authentication-protocol
 translation or storage/account mode-switching workaround.
@@ -458,7 +458,8 @@ budget require a separate explicit decision and measurement.
    permit internal Core-to-Core calls, and deny `/internal/core-routing` publicly.
    Keep the broker callback internal. Single-Core deployments need no new settings.
 3. Deploy the broker Docker target and daemon target from this revision. Both
-   include the pinned v0.5.1 binary/runtime assets. No new host privilege, public
+   include the pinned v0.5.3 binary and runtime data at
+   `cb089272706880243712ca6425b1165c228f11d5`. No new host privilege, public
    port, sound device, or persistent browser credential mount is introduced.
 4. Verify personal owner-and-launcher access, denial of both parties in a borrowed
    personal run, exact-org manager access and member denial (even for a member
