@@ -161,7 +161,7 @@ used. Shared capture requires the current controller and current authorization;
 success releases control, while uncertain outcomes are never retried. Ordinary
 **Check & continue** remains `assistance.continue`, a read-only check.
 
-For v0.5.2 provider-configured waits, Vox looks for `auth.verification-flow.v1`
+For provider-configured waits, Vox looks for `auth.verification-flow.v1`
 in `session.status` and `assistance.authentication.verification_flow: true`.
 The controller can send `authentication.open_verification` and explicitly
 authorize `authentication.continue_flow` for the live wait. Provider runtime
@@ -518,7 +518,7 @@ It creates its own localhost HTTPS fixture and ephemeral certificate, never
 changes host trust, and removes its private working files afterward. TLS errors
 are ignored only in the synthetic platform configuration, not production.
 Set `ACCOUNT_TEST_VERIFICATION_TAB=original` or `ACCOUNT_TEST_VERIFICATION_TAB=new`
-on the container to exercise the v0.5.2 provider flow. Each case verifies a
+on the container to exercise provider verification. Each case verifies a
 single explicit continuation submits the email and password stages and returns
 the viewer to the evaluation tab after readiness.
 Set `ACCOUNT_TEST_MANUAL_TABS=1` to verify same-site login reuse, active evaluation

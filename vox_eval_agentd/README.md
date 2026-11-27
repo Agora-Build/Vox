@@ -190,7 +190,7 @@ job.config = {
 
 ### Live Browser Assistance
 
-The pinned aeval v0.5.1 release supports the existing live browser session through
+The pinned aeval release supports the existing live browser session through
 a private Unix socket. Updated daemons advertise `browserAssistance: "1"` and
 connect outbound to Core at `/ws/eval-browser`; no browser/debugging port is
 published. Core authorizes credential owners / exact-org secret managers before
