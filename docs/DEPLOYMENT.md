@@ -4,7 +4,7 @@ This guide covers deploying Vox to production using Coolify (what vox.agora.buil
 
 ## Account Sessions And Browser Assistance (Schema 72)
 
-Upgrade the auth-session brokers first to the images built with aeval v0.5.2
+Upgrade the auth-session brokers first to the images built with aeval v0.5.3
 and matching runtime data, then deploy Core/schema 72, then upgrade eval-agent
 daemons. New brokers still handle old Core's legacy mint requests (no checkpoint
 grant); old brokers do not implement checkpoint receipts and cannot serve managed

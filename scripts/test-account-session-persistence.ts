@@ -1,4 +1,4 @@
-/** Real v0.5.1 + Chromium + disposable Core/PostgreSQL qualification fixture.
+/** Released aeval + Chromium + disposable Core/PostgreSQL qualification fixture.
  * Run only in an isolated container with elevenlabs.io mapped to 127.0.0.1;
  * the HTTPS provider below is synthetic, never a real ElevenLabs account.
  */
@@ -19,7 +19,7 @@ import { createBrokerServer, mintWithAeval } from "../vox_eval_agentd/auth-sessi
 
 assert.equal(process.env.ACCOUNT_SESSION_FIXTURE_ISOLATED, "1", "Requires an isolated disposable container");
 assert.equal((await lookup("elevenlabs.io")).address, "127.0.0.1", "Never contact the real provider");
-assert.match(execFileSync("aeval", ["--version"], { encoding: "utf8" }), /0\.5\.1/);
+assert.match(execFileSync("aeval", ["--version"], { encoding: "utf8" }), /\b0\.5\.3\b/);
 assert.ok(process.env.DATABASE_URL, "Requires a disposable PostgreSQL instance");
 process.env.DATABASE_URL = await prepareIsolatedCoreDb(process.env.DATABASE_URL, `vox_test_real_account_${process.pid}`);
 process.env.CREDENTIAL_ENCRYPTION_KEY = "ab".repeat(32);

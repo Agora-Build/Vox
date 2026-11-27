@@ -1,6 +1,6 @@
 # Live Browser Assistance
 
-Vox integrates aeval v0.5.2's private inspection protocol into the existing
+Vox integrates aeval v0.5.3's private inspection protocol into the existing
 evaluation job page. It views the **already running browser**; it does not launch
 a second login, replay a scenario, expose CDP, or move Brokered passwords onto
 an eval agent. The binary and runtime-data submodule are pinned to the same
@@ -81,7 +81,7 @@ credentials or browser storage are included in readiness feedback. Unrecognized 
 metadata is discarded without breaking the viewer; active states remain strictly
 validated because they determine whether control can be requested.
 
-Deploy Core, daemon and broker together with the pinned v0.5.2 binary and
+Deploy Core, daemon and broker together with the pinned v0.5.3 binary and
 runtime data. A Core-only upgrade cannot add restore-first or multi-stage
 authentication to an older engine. There is no old authentication-protocol
 translation or storage/account mode-switching workaround.
@@ -161,7 +161,7 @@ used. Shared capture requires the current controller and current authorization;
 success releases control, while uncertain outcomes are never retried. Ordinary
 **Check & continue** remains `assistance.continue`, a read-only check.
 
-For v0.5.2 provider-configured waits, Vox looks for `auth.verification-flow.v1`
+For provider-configured waits, Vox looks for `auth.verification-flow.v1`
 in `session.status` and `assistance.authentication.verification_flow: true`.
 The controller can send `authentication.open_verification` and explicitly
 authorize `authentication.continue_flow` for the live wait. Provider runtime
@@ -458,7 +458,8 @@ budget require a separate explicit decision and measurement.
    permit internal Core-to-Core calls, and deny `/internal/core-routing` publicly.
    Keep the broker callback internal. Single-Core deployments need no new settings.
 3. Deploy the broker Docker target and daemon target from this revision. Both
-   include the pinned v0.5.1 binary/runtime assets. No new host privilege, public
+   include the pinned v0.5.3 binary and runtime data at
+   `cb089272706880243712ca6425b1165c228f11d5`. No new host privilege, public
    port, sound device, or persistent browser credential mount is introduced.
 4. Verify personal owner-and-launcher access, denial of both parties in a borrowed
    personal run, exact-org manager access and member denial (even for a member
@@ -517,7 +518,7 @@ It creates its own localhost HTTPS fixture and ephemeral certificate, never
 changes host trust, and removes its private working files afterward. TLS errors
 are ignored only in the synthetic platform configuration, not production.
 Set `ACCOUNT_TEST_VERIFICATION_TAB=original` or `ACCOUNT_TEST_VERIFICATION_TAB=new`
-on the container to exercise the v0.5.2 provider flow. Each case verifies a
+on the container to exercise provider verification. Each case verifies a
 single explicit continuation submits the email and password stages and returns
 the viewer to the evaluation tab after readiness.
 Set `ACCOUNT_TEST_MANUAL_TABS=1` to verify same-site login reuse, active evaluation
