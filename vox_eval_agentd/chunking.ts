@@ -9,8 +9,7 @@
  *
  * Each emitted file's analysis preset is resolved per case from
  * `params.lab.cases[case_id].analysis` (falling back to the scenario's
- * top-level `analysis`), since different cases need different presets
- * (e.g. INT_FALSE uses lab_int_false.yaml).
+ * top-level `analysis`). The built-in INT_FALSE preset follows the audio mode.
  *
  * This module is imported by both the daemon (vox-agentd.ts) and the tests,
  * so the tested logic is the same code that runs in production.
@@ -29,6 +28,7 @@ export interface ParsedScenario {
   name: string;
   description?: string;
   analysis?: Record<string, unknown>;
+  audio_io?: { mode?: string; [key: string]: unknown };
   params?: Record<string, unknown>;
   steps: ScenarioStep[];
 }
@@ -142,10 +142,21 @@ export function groupSamplesByChunk(samples: SampleGroup[]): ChunkGroup[] {
  * Resolve the analysis block for a case: prefer the per-case override at
  * `params.lab.cases[caseId].analysis`, else the scenario's top-level `analysis`.
  */
-export function resolveCaseAnalysis(scenario: ParsedScenario, caseId: string): unknown {
+export function resolveCaseAnalysis(scenario: ParsedScenario, caseId?: string): unknown {
   const lab = scenario.params?.lab as Record<string, unknown> | undefined;
   const cases = lab?.cases as Record<string, { analysis?: unknown }> | undefined;
-  return cases?.[caseId]?.analysis ?? scenario.analysis;
+  const analysis = (caseId === undefined ? undefined : cases?.[caseId]?.analysis) ?? scenario.analysis;
+  if (caseId !== undefined && caseId !== 'INT_FALSE') return analysis;
+  if (!analysis || typeof analysis !== 'object' || !('preset' in analysis)) return analysis;
+
+  const browserPreset = 'config/analysis_presets/lab_int_false.yaml';
+  const nativePreset = 'config/analysis_presets/lab_int_false_native.yaml';
+  if (analysis.preset !== browserPreset && analysis.preset !== nativePreset) return analysis;
+
+  // The pinned aeval defaults to native soundcard I/O when the scenario has no mode.
+  const mode = scenario.audio_io?.mode ?? 'soundcard';
+  const preset = mode === 'soundcard' ? nativePreset : mode === 'web_hook' ? browserPreset : analysis.preset;
+  return preset === analysis.preset ? analysis : { ...analysis, preset };
 }
 
 /**
@@ -177,6 +188,7 @@ export function buildChunkYaml(
   };
   const analysis = resolveCaseAnalysis(scenario, caseId);
   if (analysis) chunkScenario.analysis = analysis;
+  if (scenario.audio_io !== undefined) chunkScenario.audio_io = scenario.audio_io;
 
   const labBase = (scenario.params?.lab && typeof scenario.params.lab === 'object')
     ? { ...(scenario.params.lab as Record<string, unknown>) }
@@ -205,7 +217,9 @@ export function composeScenarioYaml(
 ): string {
   const out: Record<string, unknown> = { name: scenario.name || 'scenario' };
   if (scenario.description) out.description = scenario.description;
-  if (scenario.analysis) out.analysis = scenario.analysis;
+  const analysis = resolveCaseAnalysis(scenario);
+  if (analysis) out.analysis = analysis;
+  if (scenario.audio_io !== undefined) out.audio_io = scenario.audio_io;
   if (scenario.params) out.params = scenario.params;
   out.steps = [...prefix, ...body, ...suffix];
   return yaml.dump(out, { lineWidth: -1, noRefs: true });

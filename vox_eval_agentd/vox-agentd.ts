@@ -70,6 +70,7 @@ import {
   extractSampleGroups,
   groupSamplesByChunk,
   groupHasInterruptPhase,
+  resolveCaseAnalysis,
   buildChunkYaml,
   composeScenarioYaml,
   mergeChunkMetrics,
@@ -819,12 +820,12 @@ class VoxEvalAgentDaemon {
     const groups = groupSamplesByChunk(samples);
     const hasPerCaseAnalysis = !!(parsed.params?.lab as Record<string, unknown> | undefined)?.cases;
 
-    // Fast path: a single group AND no per-case analysis remap → run the
-    // ORIGINAL scenario verbatim (avoids buildChunkYaml renaming/dropping
-    // top-level fields). With per-case analysis we must rebuild so each file
-    // gets its case's preset.
+    // Keep the original single-file scenario unless its preset needs an audio
+    // mode adjustment. Per-case analysis needs a separate YAML for each group.
     if (groups.length <= 1 && !hasPerCaseAnalysis) {
-      const scenarioConfig = this.writeTempYaml(scenario, 'vox-scenario')!;
+      const analysis = resolveCaseAnalysis(parsed, samples[0]?.caseId);
+      const source = analysis === parsed.analysis ? scenario : toYaml({ ...parsed, analysis });
+      const scenarioConfig = this.writeTempYaml(source, 'vox-scenario')!;
       tempFiles.push(scenarioConfig);
       const result = await this.runAeval(scenarioConfig);
       // Rates need sample counts, which only exist for lab.trace bodies.

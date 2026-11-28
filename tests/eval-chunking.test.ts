@@ -34,6 +34,8 @@ import {
 } from "../vox_eval_agentd/chunking";
 
 const pad = (i: number) => String(i).padStart(3, "0");
+const browserFalsePreset = "config/analysis_presets/lab_int_false.yaml";
+const nativeFalsePreset = "config/analysis_presets/lab_int_false_native.yaml";
 
 // Test-only stats helpers — mirror the daemon's metrics parser so we can assert
 // that merged turn-level data produces sensible MED/SD/P95.
@@ -311,7 +313,26 @@ describe("resolveCaseAnalysis", () => {
       },
       steps: [],
     };
-    expect(resolveCaseAnalysis(scenario, "INT_FALSE")).toEqual({ preset: "config/analysis_presets/lab_int_false.yaml" });
+    expect(resolveCaseAnalysis(scenario, "INT_FALSE")).toEqual({ preset: nativeFalsePreset });
+  });
+
+  it.each([
+    { mode: undefined, input: browserFalsePreset, expected: nativeFalsePreset },
+    { mode: "soundcard", input: browserFalsePreset, expected: nativeFalsePreset },
+    { mode: "web_hook", input: browserFalsePreset, expected: browserFalsePreset },
+    { mode: "web_hook", input: nativeFalsePreset, expected: browserFalsePreset },
+    { mode: "soundcard", input: "custom.yaml", expected: "custom.yaml" },
+  ])("uses $expected for INT_FALSE with audio mode $mode", ({ mode, input, expected }) => {
+    const analysis = { preset: input, report: { template: "medialab.html.jinja2" } };
+    const scenario: ParsedScenario = { name: "s", analysis, audio_io: { mode }, steps: [] };
+    expect(resolveCaseAnalysis(scenario, "INT_FALSE")).toEqual({ ...analysis, preset: expected });
+    expect(scenario.analysis.preset).toBe(input);
+  });
+
+  it("leaves stock presets configured for other chunk cases alone", () => {
+    const analysis = { preset: browserFalsePreset };
+    const scenario: ParsedScenario = { name: "s", analysis, steps: [] };
+    expect(resolveCaseAnalysis(scenario, "INT_BASIC")).toBe(analysis);
   });
 
   it("falls back to top-level analysis when no per-case entry", () => {
@@ -377,7 +398,16 @@ describe("buildChunkYaml", () => {
     const rspAnalysis = (yaml.load(rsp) as Record<string, unknown>).analysis as Record<string, unknown>;
     const intAnalysis = (yaml.load(intF) as Record<string, unknown>).analysis as Record<string, unknown>;
     expect(rspAnalysis.preset).toBe("config/analysis_presets/default.yaml");
-    expect(intAnalysis.preset).toBe("config/analysis_presets/lab_int_false.yaml");
+    expect(intAnalysis).toEqual({ preset: nativeFalsePreset, report: { template: "medialab.html.jinja2" } });
+  });
+
+  it.each([
+    { audio_io: { mode: "web_hook" }, preset: browserFalsePreset },
+    { audio_io: { mode: "soundcard", soundcard: { device: "VirtualAudio" } }, preset: nativeFalsePreset },
+  ])("preserves $audio_io.mode and emits its matching preset", ({ audio_io, preset }) => {
+    const samples: SampleGroup[] = [{ steps: [{ type: "lab.trace" }], caseId: "INT_FALSE", chunkId: "chunk_001" }];
+    const chunk = yaml.load(buildChunkYaml({ ...scenario, audio_io }, prefix, samples, suffix, "INT_FALSE", "chunk_001"));
+    expect(chunk).toMatchObject({ audio_io, analysis: { preset } });
   });
 
   it("strips the cases map from the emitted params.lab", () => {
@@ -884,8 +914,7 @@ describe("end-to-end: full chunking pipeline", () => {
       const parsed = yaml.load(buildChunkYaml(scenario, stepsPrefix, g.samples, stepsSuffix, g.caseId, g.chunkId)) as Record<string, unknown>;
       expect(Array.isArray(parsed.steps)).toBe(true);
       const preset = ((parsed.analysis as Record<string, unknown>).preset) as string;
-      // INT_FALSE files get the lab_int_false preset; others get default.
-      expect(preset).toBe(g.caseId === "INT_FALSE" ? "config/analysis_presets/lab_int_false.yaml" : "config/analysis_presets/default.yaml");
+      expect(preset).toBe(g.caseId === "INT_FALSE" ? nativeFalsePreset : "config/analysis_presets/default.yaml");
       names.push(parsed.name as string);
     }
     expect(names).toHaveLength(6);
@@ -1055,6 +1084,18 @@ describe("enrichMetricsWithTurns", () => {
 // ---------------------------------------------------------------------------
 
 describe("composeScenarioYaml", () => {
+  it("preserves the audio mode and selects the matching stock preset for a composed file", () => {
+    const scenario: ParsedScenario = {
+      name: "s", analysis: { preset: browserFalsePreset }, steps: [{ type: "control.for_each" }],
+    };
+    const native = yaml.load(composeScenarioYaml(scenario, [], scenario.steps, []));
+    expect(native).toMatchObject({ analysis: { preset: nativeFalsePreset } });
+
+    const audio_io = { mode: "web_hook" };
+    const legacy = yaml.load(composeScenarioYaml({ ...scenario, audio_io }, [], scenario.steps, []));
+    expect(legacy).toMatchObject({ audio_io, analysis: { preset: browserFalsePreset } });
+  });
+
   it("wraps the body with prefix/suffix and preserves metadata", () => {
     const scenario: ParsedScenario = {
       name: "turn_taking_en",
